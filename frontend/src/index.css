@@ -1,0 +1,745 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --color-bg: #0d0e12;
+  --color-panel: rgba(22, 24, 33, 0.85);
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-text: #f1f3f9;
+  --color-text-muted: #8e95a5;
+  --color-primary: #854dff;
+  --color-primary-glow: rgba(133, 77, 255, 0.4);
+  --color-accent: #00f2fe;
+  --color-success: #00e676;
+  --color-warning: #ffb300;
+  --color-danger: #ff1744;
+  --font-sans: 'Outfit', 'Noto Sans JP', sans-serif;
+  --backdrop-blur-glass: 16px;
+  --transition-duration-400: 400ms;
+  --text-xs: calc(0.75rem * var(--font-scale));
+  --text-sm: calc(0.875rem * var(--font-scale));
+  --text-base: calc(1rem * var(--font-scale));
+  --text-lg: calc(1.125rem * var(--font-scale));
+  --text-xl: calc(1.25rem * var(--font-scale));
+  --text-2xl: calc(1.5rem * var(--font-scale));
+  --text-3xl: calc(1.875rem * var(--font-scale));
+  --text-4xl: calc(2.25rem * var(--font-scale));
+  --text-5xl: calc(3rem * var(--font-scale));
+  --text-6xl: calc(3.75rem * var(--font-scale));
+  --text-7xl: calc(4.5rem * var(--font-scale));
+  --text-8xl: calc(6rem * var(--font-scale));
+  --text-9xl: calc(8rem * var(--font-scale));
+}
+
+/* ── CSS Custom Properties ── */
+:root {
+    --font-scale: 1.125;
+    --bg-color: #0d0e12;
+    --panel-bg: rgba(22, 24, 33, 0.85);
+    --border-color: rgba(255, 255, 255, 0.08);
+    --text-color: #f1f3f9;
+    --text-muted: #8e95a5;
+    --primary: oklch(0.589 0.264 286.376);
+    --primary-glow: rgba(133, 77, 255, 0.4);
+    --accent: oklch(0.85 0.20 200);
+    --success: #00e676;
+    --warning: #ffb300;
+    --danger: #ff1744;
+    --glass-blur: blur(16px);
+    --background: #0d0e12;
+    --foreground: oklch(0.985 0 0);
+    --card: rgba(22, 24, 33, 0.85);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: rgba(22, 24, 33, 0.95);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: rgba(255, 255, 255, 0.06);
+    --muted-foreground: #8e95a5;
+    --accent-foreground: oklch(0.145 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: rgba(255, 255, 255, 0.08);
+    --input: rgba(255, 255, 255, 0.12);
+    --ring: oklch(0.589 0.264 286.376);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+}
+
+/* ── Base ── */
+#root {
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+}
+
+body {
+    font-family: 'Outfit', 'Noto Sans JP', sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+}
+
+/* ── Leaflet Custom Overrides ── */
+.marker-cluster {
+    background-color: rgba(133, 77, 255, 0.2) !important;
+    border: 1px solid rgba(133, 77, 255, 0.4);
+    border-radius: 50%;
+}
+.marker-cluster div {
+    background-color: rgba(133, 77, 255, 0.65) !important;
+    color: #fff !important;
+    font-family: 'Outfit', 'Noto Sans JP', sans-serif;
+    font-weight: 700;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.leaflet-bar {
+    border: 1px solid var(--border-color) !important;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.5) !important;
+}
+.leaflet-bar a {
+    background-color: var(--panel-bg) !important;
+    color: var(--text-color) !important;
+    border-bottom: 1px solid var(--border-color) !important;
+    backdrop-filter: var(--glass-blur);
+}
+.leaflet-bar a:hover {
+    background-color: rgba(255,255,255,0.1) !important;
+}
+.leaflet-control-layers {
+    background-color: var(--panel-bg) !important;
+    color: var(--text-color) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.5) !important;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    font-family: inherit;
+    font-size: calc(12px * var(--font-scale));
+    padding: 6px 10px !important;
+}
+.leaflet-control-layers-list {
+    margin-bottom: 0;
+}
+.leaflet-control-layers-scrollbar {
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 5px;
+}
+
+/* ── Leaflet Custom Tooltip ── */
+.leaflet-tooltip.leaflet-custom-tooltip {
+    background: var(--panel-bg) !important;
+    border: 1px solid var(--border-color) !important;
+    color: var(--text-color) !important;
+    backdrop-filter: var(--glass-blur) !important;
+    -webkit-backdrop-filter: var(--glass-blur) !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5) !important;
+    border-radius: 8px !important;
+    padding: 0 !important;
+}
+.leaflet-tooltip-top.leaflet-custom-tooltip::before {
+    border-top-color: var(--border-color) !important;
+}
+
+/* ── Map Container ── */
+#map {
+    width: 100%;
+    height: 100%;
+    background-color: #1a1a24;
+}
+
+/* ── Marker Pin (used in DivIcon HTML strings via MapPane) ── */
+.custom-div-icon {
+    background: none;
+    border: none;
+}
+.marker-pin {
+    width: 32px;
+    height: 32px;
+    border-radius: 50% 50% 50% 0;
+    background: var(--primary);
+    position: absolute;
+    transform: rotate(-45deg);
+    left: 50%;
+    top: 50%;
+    margin: -16px 0 0 -16px;
+    box-shadow: -2px 2px 8px rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid #fff;
+    transition: all 0.3s ease;
+}
+.marker-pin::after {
+    content: '';
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #0d0e12;
+    position: absolute;
+}
+.marker-pin.active {
+    transform: rotate(-45deg) scale(1.2);
+    box-shadow: -4px 4px 12px rgba(133, 77, 255, 0.6);
+    border-color: var(--accent);
+}
+.marker-label {
+    position: absolute;
+    color: #fff;
+    font-size: calc(10px * var(--font-scale));
+    font-weight: 700;
+    text-align: center;
+    width: 32px;
+    z-index: 10;
+    top: 50%;
+    left: 50%;
+    margin: -16px 0 0 -16px;
+    line-height: 30px;
+    pointer-events: none;
+}
+
+/* ── Detail Panel Mobile Handle ── */
+.detail-panel::before {
+    content: '';
+    display: block;
+    width: 40px;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 2px;
+    margin: 8px auto 0 auto;
+}
+
+/* ── CopilotKit AI Chat Overrides ── */
+/* Set CSS variables for dark theme on CopilotKit scope */
+[data-copilotkit] {
+    --copilot-kit-primary-color: #854dff !important;
+    --copilot-kit-contrast-color: #ffffff !important;
+    --copilot-kit-background-color: #0d0e12 !important;
+    --copilot-kit-secondary-color: rgba(22, 24, 33, 0.85) !important;
+    --copilot-kit-secondary-contrast-color: #f1f3f9 !important;
+    --copilot-kit-separator-color: rgba(255, 255, 255, 0.08) !important;
+    --copilot-kit-muted-color: #8e95a5 !important;
+}
+
+/* Override input pill background (white pill fix) */
+.copilotKitInput,
+[data-testid="copilot-chat-input"] .copilotKitInput,
+[data-copilotkit] .copilotKitInput {
+    background-color: transparent !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+}
+
+/* Remove floating appearance from input area buttons (send, plus, attach) */
+[data-copilotkit] .copilotKitSendButton,
+[data-copilotkit] button[class*="send"],
+[data-copilotkit] .copilotKitInput > button,
+[data-copilotkit] .copilotKitInputContainer > button,
+[data-copilotkit] [data-testid="copilot-chat-input"] button {
+    box-shadow: none !important;
+    border: none !important;
+    transform: none !important;
+    transition: opacity 0.2s ease !important;
+}
+
+/* Flatten plus/attach buttons inside input */
+[data-copilotkit] .copilotKitInput svg + button,
+[data-copilotkit] .copilotKitInputContainer svg + button,
+[data-copilotkit] .copilotKitInput [class*="plus"],
+[data-copilotkit] .copilotKitInputContainer [class*="plus"] {
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+}
+
+/* Override cpk bg-white classes inside CopilotKit */
+[data-copilotkit] [class*="bg-white"],
+[data-copilotkit] .cpk\:bg-white {
+    background-color: rgba(22, 24, 33, 0.9) !important;
+}
+
+/* Fix textarea width and prevent vertical text */
+[data-copilotkit] textarea {
+    width: 100% !important;
+    min-width: 200px !important;
+    resize: none !important;
+    white-space: normal !important;
+    word-break: normal !important;
+    overflow-wrap: break-word !important;
+    writing-mode: horizontal-tb !important;
+    text-orientation: mixed !important;
+    /* Prevent floating on mobile keyboard focus */
+    transform: translateZ(0) !important;
+    -webkit-transform: translateZ(0) !important;
+    position: relative !important;
+}
+
+/* Ensure input container takes full width */
+[data-copilotkit] .cpk\:w-full,
+[data-copilotkit] [class*="w-full"] {
+    width: 100% !important;
+}
+
+/* Override placeholder color for dark theme */
+[data-copilotkit] textarea::placeholder {
+    color: var(--text-muted) !important;
+    opacity: 1 !important;
+}
+
+/* Force bright text color on ALL elements inside assistant messages */
+[data-copilotkit] [data-streamdown],
+[data-copilotkit] [data-streamdown] *,
+.copilotKitMessage p,
+.copilotKitMessage li,
+.copilotKitMessage span,
+.copilotKitMessage td,
+.copilotKitMessage th,
+.copilotKitMessage h1,
+.copilotKitMessage h2,
+.copilotKitMessage h3,
+.copilotKitMessage h4,
+.copilotKitMessage h5,
+.copilotKitMessage h6,
+.copilotKitMessage div,
+.copilotKitMessage ul,
+.copilotKitMessage ol,
+.copilotKitMessage table {
+    color: var(--text-color) !important;
+}
+
+/* Also target prose elements inside messages */
+[class*="prose"] p,
+[class*="prose"] li,
+[class*="prose"] span,
+[class*="prose"] td,
+[class*="prose"] th,
+[class*="prose"] h1,
+[class*="prose"] h2,
+[class*="prose"] h3,
+[class*="prose"] h4,
+[class*="prose"] h5,
+[class*="prose"] h6,
+[class*="prose"] div,
+[class*="prose"] ul,
+[class*="prose"] ol,
+[class*="prose"] table,
+[class*="prose"] strong,
+[class*="prose"] em {
+    color: var(--text-color) !important;
+}
+
+/* Fix table background colors for dark theme */
+.copilotKitMessage [class*="bg-muted"],
+[class*="prose"] [class*="bg-muted"] {
+    background-color: rgba(255, 255, 255, 0.04) !important;
+}
+
+.copilotKitMessage [class*="divide-border"] > *,
+[class*="prose"] [class*="divide-border"] > * {
+    border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Fix code/pre blocks inside messages */
+.copilotKitMessage pre,
+.copilotKitMessage code,
+[class*="prose"] pre,
+[class*="prose"] code {
+    color: var(--text-color) !important;
+    background-color: rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Fix link colors inside messages */
+.copilotKitMessage a,
+[class*="prose"] a {
+    color: var(--accent) !important;
+}
+
+/* Override any muted-foreground text in messages */
+.copilotKitMessage [class*="text-muted-foreground"],
+[class*="prose"] [class*="text-muted-foreground"] {
+    color: var(--text-muted) !important;
+}
+
+/* Override CopilotKit's prose dark invert colors */
+[class*="prose-invert"] {
+    --tw-prose-body: var(--text-color) !important;
+    --tw-prose-headings: var(--text-color) !important;
+    --tw-prose-lead: var(--text-color) !important;
+    --tw-prose-links: var(--accent) !important;
+    --tw-prose-bold: var(--text-color) !important;
+    --tw-prose-counters: var(--text-muted) !important;
+    --tw-prose-bullets: var(--text-muted) !important;
+    --tw-prose-hr: rgba(255, 255, 255, 0.08) !important;
+    --tw-prose-quotes: var(--text-color) !important;
+    --tw-prose-quote-borders: rgba(255, 255, 255, 0.08) !important;
+    --tw-prose-captions: var(--text-muted) !important;
+    --tw-prose-kbd: var(--text-color) !important;
+    --tw-prose-kbd-shadows: none !important;
+    --tw-prose-code: var(--text-color) !important;
+    --tw-prose-pre-code: var(--text-color) !important;
+    --tw-prose-pre-bg: rgba(0, 0, 0, 0.3) !important;
+    --tw-prose-th-borders: rgba(255, 255, 255, 0.08) !important;
+    --tw-prose-td-borders: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Fix tool call status cards (white pill inside assistant messages) */
+[data-copilotkit] [class*="rounded-2xl"][class*="bg-white"],
+[data-copilotkit] [class*="rounded-2xl"][class*="bg-muted"],
+[data-copilotkit] [class*="rounded-full"][class*="bg-white"] {
+    background-color: rgba(22, 24, 33, 0.9) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Fix dark: pseudo classes that CopilotKit uses for light/dark toggle */
+[data-copilotkit] .cpk\:dark\:bg-\[\#303030\],
+[data-copilotkit] [class*="dark:bg-[#303030]"] {
+    background-color: rgba(22, 24, 33, 0.9) !important;
+}
+
+[data-copilotkit] .cpk\:dark\:text-\[rgb\(243\,243\,243\)\],
+[data-copilotkit] [class*="dark:text-[rgb(243,243,243)]"] {
+    color: var(--text-color) !important;
+}
+
+[data-copilotkit] .cpk\:dark\:hover\:bg-\[\#404040\],
+[data-copilotkit] [class*="dark:hover:bg-[#404040]"] {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* Ensure all text inside CopilotKit is bright on dark background */
+[data-copilotkit] [class*="text-foreground"],
+[data-copilotkit] [class*="text-black"] {
+    color: var(--text-color) !important;
+}
+
+/* ── Image Slideshow (detail-panel internal, needs absolute stacking) ── */
+.detail-slide {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-size: cover;
+    background-position: center;
+    opacity: 0;
+    transition: opacity 0.4s ease-in-out;
+    z-index: 1;
+}
+.detail-slide.active {
+    opacity: 1;
+    z-index: 2;
+}
+.detail-slide.fallback-img {
+    background-image: linear-gradient(135deg, #1e1e2e 0%, #11111b 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    color: var(--text-muted);
+    font-size: calc(14px * var(--font-scale));
+    z-index: 1;
+}
+.detail-slide.fallback-img.active {
+    z-index: 2;
+    opacity: 1;
+}
+.detail-slide.fallback-img i {
+    font-size: calc(32px * var(--font-scale));
+    margin-bottom: 8px;
+    color: var(--primary);
+}
+
+/* ── Lightbox Image Animation ── */
+.lightbox-img {
+    max-width: 100%;
+    max-height: 80vh;
+    max-height: 80dvh;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 0 30px rgba(0, 0, 0, 0.8);
+    border: 1px solid var(--border-color);
+    animation: zoom 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes zoom {
+    from { transform: scale(0.95); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}
+
+/* ── CopilotKit Additional Custom Overrides ── */
+
+/* Fix tool call status cards (dark background with readable text) */
+[data-testid="copilot-tool-render"] > div {
+    background-color: rgba(22, 24, 33, 0.9) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+[data-testid="copilot-tool-render-name"] {
+    color: var(--text-color) !important;
+}
+[data-testid="copilot-tool-render"] pre {
+    background-color: rgba(0, 0, 0, 0.3) !important;
+    color: var(--text-color) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Fix loading cursor indicator in dark theme */
+[data-testid="copilot-loading-cursor"],
+.cpk\:animate-pulse-cursor,
+[class*="animate-pulse-cursor"] {
+    background-color: var(--primary) !important;
+}
+
+/* ── Chat bubbles: high contrast on dark panel ── */
+.agent-bubble-assistant,
+[data-copilotkit] .agent-bubble-assistant,
+[data-copilotkit] .copilotKitAssistantMessage {
+    background: linear-gradient(145deg, #232636 0%, #1a1c28 100%) !important;
+    background-color: #1e2130 !important;
+    color: #f1f3f9 !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4) !important;
+    padding: 12px 14px !important;
+    border-radius: 16px 16px 16px 6px !important;
+}
+
+.agent-bubble-user,
+[data-copilotkit] .agent-bubble-user,
+[data-copilotkit] .copilotKitUserMessage {
+    background: linear-gradient(145deg, #7c3aed 0%, #6d28d9 55%, #5b21b6 100%) !important;
+    background-color: #6d28d9 !important;
+    color: #ffffff !important;
+    border: 1px solid rgba(167, 139, 250, 0.45) !important;
+    box-shadow: 0 4px 16px rgba(109, 40, 217, 0.35) !important;
+    padding: 10px 14px !important;
+    border-radius: 16px 16px 6px 16px !important;
+}
+
+/* Force user message inner text container to fill width — default cpk:max-w-[80%] + items-end causes left gap */
+[data-copilotkit] .copilotKitUserMessage [class*="prose"] {
+    max-width: 100% !important;
+    display: block !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+
+/* Nested content inside assistant bubble must stay light-on-dark */
+.agent-bubble-assistant,
+.agent-bubble-assistant *,
+[data-copilotkit] .copilotKitAssistantMessage,
+[data-copilotkit] .copilotKitAssistantMessage * {
+    color: #f1f3f9 !important;
+}
+
+/* Hide assistant/user message toolbars (unused in this app) */
+[data-copilotkit] [data-testid="copilot-assistant-toolbar"],
+[data-copilotkit] [data-testid="copilot-user-toolbar"] {
+    display: none !important;
+}
+
+.agent-bubble-user,
+.agent-bubble-user *,
+[data-copilotkit] .copilotKitUserMessage,
+[data-copilotkit] .copilotKitUserMessage * {
+    color: #ffffff !important;
+}
+
+/* Streamdown / prose often force white bg — kill that inside chat */
+.agent-chat-root [data-streamdown],
+.agent-chat-root [class*="prose"],
+[data-copilotkit] .copilotKitAssistantMessage [data-streamdown],
+[data-copilotkit] .copilotKitAssistantMessage [class*="prose"] {
+    background: transparent !important;
+    background-color: transparent !important;
+    color: #f1f3f9 !important;
+}
+
+/* Tighten prose p margins inside assistant bubbles */
+[data-copilotkit] .copilotKitAssistantMessage [class*="prose"] p {
+    margin-top: 0.25em !important;
+    margin-bottom: 0.25em !important;
+}
+
+/* Kill accidental white chips/cards inside bubbles */
+.agent-chat-root [class*="bg-white"],
+.agent-chat-root [class*="bg-background"],
+.agent-chat-root [class*="bg-card"],
+[data-copilotkit] .copilotKitAssistantMessage [class*="bg-white"],
+[data-copilotkit] .copilotKitAssistantMessage [class*="bg-background"] {
+    background-color: rgba(0, 0, 0, 0.25) !important;
+}
+
+[data-copilotkit] .copilotKitAssistantMessage {
+    /* keep class-based styles; padding already set above */
+}
+
+/* Hide empty assistant messages that contain no text, list, code block, table or tool call render */
+[data-copilotkit] .copilotKitAssistantMessage:not(:has(p)):not(:has(table)):not(:has(ul)):not(:has(ol)):not(:has(pre)):not(:has([data-testid="copilot-tool-render"])) {
+    display: none !important;
+}
+
+/* Fix table width and enable horizontal scrolling inside messages */
+.copilotKitMessage table,
+[class*="prose"] table {
+    display: block !important;
+    width: 100% !important;
+    overflow-x: auto !important;
+    white-space: nowrap !important;
+}
+
+/* Ensure table cells have appropriate padding and borders */
+.copilotKitMessage th,
+.copilotKitMessage td,
+[class*="prose"] th,
+[class*="prose"] td {
+    padding: 8px 12px !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    font-size: calc(12.5px * var(--font-scale)) !important;
+}
+
+/* Make custom scrollbar thin for tables */
+.copilotKitMessage table::-webkit-scrollbar,
+[class*="prose"] table::-webkit-scrollbar {
+    height: 6px !important;
+}
+.copilotKitMessage table::-webkit-scrollbar-thumb,
+[class*="prose"] table::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15) !important;
+    border-radius: 3px !important;
+}
+
+/* App panels (sidebar / detail / admin) — thin dark scrollbars that match the UI.
+   LLM / CopilotKit areas intentionally keep their own classes (e.g. scrollbar-thin). */
+.app-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.app-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+.app-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+.app-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+}
+.app-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.28);
+}
+.app-scrollbar::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: 'Geist Variable', sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+.dark {
+  --background: #0d0e12;
+  --foreground: oklch(0.985 0 0);
+  --card: rgba(22, 24, 33, 0.85);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: rgba(22, 24, 33, 0.95);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.589 0.264 286.376);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: rgba(255, 255, 255, 0.06);
+  --muted-foreground: #8e95a5;
+  --accent: oklch(0.85 0.20 200);
+  --accent-foreground: oklch(0.145 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.12);
+  --ring: oklch(0.589 0.264 286.376);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: rgba(22, 24, 33, 0.85);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.589 0.264 286.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: rgba(255, 255, 255, 0.06);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: oklch(0.589 0.264 286.376);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+    font-size: calc(16px * var(--font-scale));
+  }
+}

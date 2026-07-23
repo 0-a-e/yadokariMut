@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.git/
+.gitignore
+.env
+yadokari_mut*.db
+map.geojson
+map.kml
+poc_scraper.py
+test_*.json
+test_*.py
+scratch/
+refs/

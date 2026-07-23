@@ -1,0 +1,15 @@
+beautifulsoup4
+mcp>=1.27.1
+openai
+python-dotenv
+requests
+fastapi
+uvicorn[standard]
+apscheduler
+langgraph
+langchain-openai
+copilotkit
+ag-ui-langgraph
+langchain-deepseek
+langgraph-checkpoint-sqlite>=2.0.0
+aiosqlite

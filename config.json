@@ -1,0 +1,259 @@
+{
+  "sources": {
+    "bratto": {
+      "base_url": "https://www.000area-weekly.com",
+      "prefectures": {
+        "hokkaido": {
+          "name": "北海道",
+          "list_path": "/hokkaido/search_list/",
+          "room_path": "/hokkaido/room/"
+        },
+        "aomori": {
+          "name": "青森県",
+          "list_path": "/aomori/search_list/",
+          "room_path": "/aomori/room/"
+        },
+        "iwate": {
+          "name": "岩手県",
+          "list_path": "/iwate/search_list/",
+          "room_path": "/iwate/room/"
+        },
+        "miyagi": {
+          "name": "宮城県",
+          "list_path": "/miyagi/search_list/",
+          "room_path": "/miyagi/room/"
+        },
+        "akita": {
+          "name": "秋田県",
+          "list_path": "/akita/search_list/",
+          "room_path": "/akita/room/"
+        },
+        "yamagata": {
+          "name": "山形県",
+          "list_path": "/yamagata/search_list/",
+          "room_path": "/yamagata/room/"
+        },
+        "fukushima": {
+          "name": "福島県",
+          "list_path": "/fukushima/search_list/",
+          "room_path": "/fukushima/room/"
+        },
+        "ibaraki": {
+          "name": "茨城県",
+          "list_path": "/ibaraki/search_list/",
+          "room_path": "/ibaraki/room/"
+        },
+        "tochigi": {
+          "name": "栃木県",
+          "list_path": "/tochigi/search_list/",
+          "room_path": "/tochigi/room/"
+        },
+        "gunma": {
+          "name": "群馬県",
+          "list_path": "/gunma/search_list/",
+          "room_path": "/gunma/room/"
+        },
+        "saitama": {
+          "name": "埼玉県",
+          "list_path": "/saitama/search_list/",
+          "room_path": "/saitama/room/"
+        },
+        "chiba": {
+          "name": "千葉県",
+          "list_path": "/chiba/search_list/",
+          "room_path": "/chiba/room/"
+        },
+        "tokyo": {
+          "name": "東京都",
+          "list_path": "/tokyo/search_list/",
+          "room_path": "/tokyo/room/"
+        },
+        "kanagawa": {
+          "name": "神奈川県",
+          "list_path": "/yokohama/search_list/",
+          "room_path": "/yokohama/room/"
+        },
+        "niigata": {
+          "name": "新潟県",
+          "list_path": "/niigata/search_list/",
+          "room_path": "/niigata/room/"
+        },
+        "toyama": {
+          "name": "富山県",
+          "list_path": "/toyama/search_list/",
+          "room_path": "/toyama/room/"
+        },
+        "ishikawa": {
+          "name": "石川県",
+          "list_path": "/ishikawa/search_list/",
+          "room_path": "/ishikawa/room/"
+        },
+        "fukui": {
+          "name": "福井県",
+          "list_path": "/fukui/search_list/",
+          "room_path": "/fukui/room/"
+        },
+        "yamanashi": {
+          "name": "山梨県",
+          "list_path": "/yamanashi/search_list/",
+          "room_path": "/yamanashi/room/"
+        },
+        "nagano": {
+          "name": "長野県",
+          "list_path": "/nagano/search_list/",
+          "room_path": "/nagano/room/"
+        },
+        "gifu": {
+          "name": "岐阜県",
+          "list_path": "/gifu/search_list/",
+          "room_path": "/gifu/room/"
+        },
+        "shizuoka": {
+          "name": "静岡県",
+          "list_path": "/shizuoka/search_list/",
+          "room_path": "/shizuoka/room/"
+        },
+        "aichi": {
+          "name": "愛知県",
+          "list_path": "/nagoya/search_list/",
+          "room_path": "/nagoya/room/"
+        },
+        "mie": {
+          "name": "三重県",
+          "list_path": "/mie/search_list/",
+          "room_path": "/mie/room/"
+        },
+        "shiga": {
+          "name": "滋賀県",
+          "list_path": "/shiga/search_list/",
+          "room_path": "/shiga/room/"
+        },
+        "kyoto": {
+          "name": "京都府",
+          "list_path": "/kyouto/search_list/",
+          "room_path": "/kyouto/room/"
+        },
+        "osaka": {
+          "name": "大阪府",
+          "list_path": "/osaka/search_list/",
+          "room_path": "/osaka/room/"
+        },
+        "hyogo": {
+          "name": "兵庫県",
+          "list_path": "/kobe/search_list/",
+          "room_path": "/kobe/room/"
+        },
+        "nara": {
+          "name": "奈良県",
+          "list_path": "/nara/search_list/",
+          "room_path": "/nara/room/"
+        },
+        "wakayama": {
+          "name": "和歌山県",
+          "list_path": "/wakayama/search_list/",
+          "room_path": "/wakayama/room/"
+        },
+        "tottori": {
+          "name": "鳥取県",
+          "list_path": "/tottori/search_list/",
+          "room_path": "/tottori/room/"
+        },
+        "shimane": {
+          "name": "島根県",
+          "list_path": "/shimane/search_list/",
+          "room_path": "/shimane/room/"
+        },
+        "okayama": {
+          "name": "岡山県",
+          "list_path": "/okayama/search_list/",
+          "room_path": "/okayama/room/"
+        },
+        "hiroshima": {
+          "name": "広島県",
+          "list_path": "/hiroshima/search_list/",
+          "room_path": "/hiroshima/room/"
+        },
+        "yamaguchi": {
+          "name": "山口県",
+          "list_path": "/yamaguchi/search_list/",
+          "room_path": "/yamaguchi/room/"
+        },
+        "tokushima": {
+          "name": "徳島県",
+          "list_path": "/tokushima/search_list/",
+          "room_path": "/tokushima/room/"
+        },
+        "kagawa": {
+          "name": "香川県",
+          "list_path": "/kagawa/search_list/",
+          "room_path": "/kagawa/room/"
+        },
+        "ehime": {
+          "name": "愛媛県",
+          "list_path": "/ehime/search_list/",
+          "room_path": "/ehime/room/"
+        },
+        "kochi": {
+          "name": "高知県",
+          "list_path": "/kouchi/search_list/",
+          "room_path": "/kouchi/room/"
+        },
+        "fukuoka": {
+          "name": "福岡県",
+          "list_path": "/fukuoka/search_list/",
+          "room_path": "/fukuoka/room/"
+        },
+        "saga": {
+          "name": "佐賀県",
+          "list_path": "/saga/search_list/",
+          "room_path": "/saga/room/"
+        },
+        "nagasaki": {
+          "name": "長崎県",
+          "list_path": "/nagasaki/search_list/",
+          "room_path": "/nagasaki/room/"
+        },
+        "kumamoto": {
+          "name": "熊本県",
+          "list_path": "/kumamoto/search_list/",
+          "room_path": "/kumamoto/room/"
+        },
+        "oita": {
+          "name": "大分県",
+          "list_path": "/oita/search_list/",
+          "room_path": "/oita/room/"
+        },
+        "miyazaki": {
+          "name": "宮崎県",
+          "list_path": "/miyazaki/search_list/",
+          "room_path": "/miyazaki/room/"
+        },
+        "kagoshima": {
+          "name": "鹿児島県",
+          "list_path": "/kagoshima/search_list/",
+          "room_path": "/kagoshima/room/"
+        },
+        "okinawa": {
+          "name": "沖縄県",
+          "list_path": "/okinawa/search_list/",
+          "room_path": "/okinawa/room/"
+        }
+      }
+    },
+    "unionmonthly": {
+      "enabled": true,
+      "base_url": "https://www.unionmonthly.jp",
+      "delay_seconds": 2.0,
+      "page_size": 30,
+      "list_mode": "pref_get",
+      "prefectures": {
+        "tokyo": { "name": "東京都", "pref_id": "PF13" },
+        "kanagawa": { "name": "神奈川県", "pref_id": "PF14" },
+        "chiba": { "name": "千葉県", "pref_id": "PF12" },
+        "saitama": { "name": "埼玉県", "pref_id": "PF11" },
+        "ibaraki": { "name": "茨城県", "pref_id": "PF08" }
+      }
+    }
+  }
+}
+

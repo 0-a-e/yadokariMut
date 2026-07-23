@@ -1,0 +1,33 @@
+services:
+  yadokari-mut:
+    build:
+      context: .
+      # DOCKERFILE=Dockerfile または Dockerfile.prebuilt を指定可能
+      dockerfile: ${DOCKERFILE:-Dockerfile}
+    container_name: yadokari-mut
+    ports:
+      # nginx からだけ到達できればよいので loopback にバインド
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # 永続データ（物件DB・チェックポイント・設定・APIキー）
+      - ./yadokari_mut.db:/app/yadokari_mut.db
+      - ./yadokari_mut_v2.db:/app/yadokari_mut_v2.db
+      - ./data:/app/data
+      - ./config.json:/app/config.json
+      - ./.env:/app/.env
+    environment:
+      - TZ=Asia/Tokyo
+      - YADOKARIMUT_DB_PATH=/app/yadokari_mut.db
+      - YADOKARIMUT_V2_DB_PATH=/app/yadokari_mut_v2.db
+      - YADOKARIMUT_DATA_LAYER=v2
+      - YADOKARIMUT_CHECKPOINT_DB=/app/data/agent_checkpoints.db
+      - ENABLE_SCHEDULER=true
+      - SCHEDULER_CRON=0 2 * * *
+      - PYTHONUNBUFFERED=1
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/copilotkit/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s

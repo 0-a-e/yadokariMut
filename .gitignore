@@ -1,0 +1,56 @@
+# Secrets & local env
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/
+logs/
+*.db
+*.db.bak
+*.db-shm
+*.db-wal
+
+# Generated maps / dumps
+map.geojson
+map.kml
+properties.json
+sidebar-cache.html
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# Private / local-only tooling (not for this public tree)
+docs/
+refs/
+scratch/
+.agents/
+.claude/
+.grok/
+AGENTS.md
+opencode.json
+skills-lock.json
+deploy.sh
+deploy/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
