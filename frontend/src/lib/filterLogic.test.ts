@@ -267,3 +267,51 @@ describe('mergeMapFilters', () => {
     expect(toStay.maxPrice).toBe(STAY_PRICE_UNLIMITED);
   });
 });
+
+describe('listingVisibility (掲載状態フィルタ)', () => {
+  const visData: PropertyGeoJSON = {
+    type: 'FeatureCollection',
+    features: [
+      feat({ id: 1, is_active: true }),
+      feat({ id: 2, is_active: false }),
+      // 旧バックエンド互換: is_active 未定義は掲載扱い
+      feat({ id: 3 }),
+    ],
+  };
+
+  function visibleIds(filters: MapFilters): number[] {
+    return applyMapFilters(visData, filters, null).features.map(
+      (f) => f.properties.id,
+    );
+  }
+
+  it('default (active) hides unlisted properties', () => {
+    const ids = visibleIds({ ...catalogBase, listingVisibility: 'active' });
+    expect(ids).toContain(1);
+    expect(ids).toContain(3);
+    expect(ids).not.toContain(2);
+  });
+
+  it('inactive shows only unlisted properties', () => {
+    const ids = visibleIds({ ...catalogBase, listingVisibility: 'inactive' });
+    expect(ids).toEqual([2]);
+  });
+
+  it('all shows everything (unlisted sorted last)', () => {
+    const ids = visibleIds({ ...catalogBase, listingVisibility: 'all' });
+    expect(ids).toEqual([1, 3, 2]);
+  });
+
+  it('sort puts unlisted properties last regardless of sort key', () => {
+    const scoreData: PropertyGeoJSON = {
+      type: 'FeatureCollection',
+      features: [
+        feat({ id: 10, is_active: false, total_score: 99 }),
+        feat({ id: 11, is_active: true, total_score: 10 }),
+      ],
+    };
+    const ids = applyMapFilters(scoreData, { ...catalogBase, listingVisibility: 'all' }, null)
+      .features.map((f) => f.properties.id);
+    expect(ids).toEqual([11, 10]);
+  });
+});

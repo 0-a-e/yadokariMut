@@ -36,6 +36,7 @@ import {
   FaArrowUpRightFromSquare,
   FaGlobe,
   FaNoteSticky,
+  FaTriangleExclamation,
 } from 'react-icons/fa6';
 import { cn } from '@/lib/utils';
 
@@ -90,6 +91,11 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
   const [commentDirty, setCommentDirty] = useState(false);
   const commentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastFetchedIdRef = useRef<number | null>(null);
+  /** 詳細APIで確認した掲載状態（GeoJSONより新しい。null=未取得でGeoJSON値にフォールバック） */
+  const [unlistedInfo, setUnlistedInfo] = useState<{
+    isActive: boolean;
+    fetchedAt: string | null;
+  } | null>(null);
 
   useEffect(() => {
     setSlideIndex(0);
@@ -129,6 +135,10 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
         const status = (data.shortlist?.status as ShortlistStatus | undefined) ?? undefined;
         const comment = data.shortlist?.comment ?? null;
         const history = data.price_history ?? [];
+        setUnlistedInfo({
+          isActive: data.is_active ?? true,
+          fetchedAt: data.detail_scraped_at ?? data.last_seen_at ?? null,
+        });
         setCommentDraft(comment ?? '');
         onDetailPatch?.(id, {
           shortlist_comment: comment,
@@ -183,6 +193,12 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
     if (!cams?.length) return false;
     return cams.some((c) => c.is_active !== false);
   }, [feature]);
+
+  // 掲載終了判定: 詳細APIの結果を優先し、未取得時はGeoJSONの値にフォールバック
+  const isUnlisted =
+    unlistedInfo != null ? !unlistedInfo.isActive : feature?.properties.is_active === false;
+  const unlistedFetchedAt =
+    unlistedInfo?.fetchedAt ?? feature?.properties.last_seen_at ?? null;
 
   const priceHistory = feature?.properties.price_history;
   const hasPriceHistory = Array.isArray(priceHistory) && priceHistory.length >= 2;
@@ -358,6 +374,21 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
       {/* Body — image + content scroll together */}
       <div className="overflow-y-auto grow min-h-0 app-scrollbar">
         <div className="flex flex-col gap-4">
+          {isUnlisted && (
+            <div
+              data-testid="unlisted-banner"
+              className="flex items-start gap-2 bg-warning/[0.15] text-warning border-b border-warning/30 px-4 py-2.5 text-xs leading-relaxed"
+            >
+              <FaTriangleExclamation className="mt-0.5 shrink-0" />
+              <span>
+                この物件は現在サイトに掲載されていません。以下の情報は
+                {unlistedFetchedAt
+                  ? `最終取得（${unlistedFetchedAt.slice(0, 16).replace('T', ' ')}）`
+                  : '最終取得'}
+                時点の参考値です。
+              </span>
+            </div>
+          )}
           {/* Image carousel — scrolls with content; swipe-enabled via embla */}
           <div
             className={cn(

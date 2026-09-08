@@ -17,6 +17,7 @@ Rules
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any, Mapping, Optional, Sequence, Union
@@ -676,12 +677,50 @@ BRATTO_DURATION_BANDS: dict[str, tuple[int, int | None]] = {
     "long": (181, None),
 }
 
-# Union: 1–3 / 3–7 / 7–24 months (day approx, exclusive upper bound as max inclusive)
+# Union: 7–15日 / 15日–1ヶ月 / 1–3 / 3–7 / 7–24 months
+# (day approx, exclusive upper bound as max inclusive; 月=30日, 年=365日)
 UNION_DURATION_BANDS: dict[str, tuple[int, int | None]] = {
+    "s_short": (7, 14),
+    "semi_short": (15, 29),
     "short": (30, 89),
     "middle": (90, 209),
     "long": (210, 729),
 }
+
+
+_DURATION_TEXT_PATTERNS: tuple[tuple[str, int], ...] = (
+    # (pattern, days-per-unit): 以上 → min, 未満 → unit_days - 1 (inclusive max)
+    (r"(\d+)\s*日以上", 1),
+    (r"(\d+)\s*日未満", 1),
+    (r"(\d+)\s*[かヶヵカ]月以上", 30),
+    (r"(\d+)\s*[かヶヵカ]月未満", 30),
+    (r"(\d+)\s*年以上", 365),
+    (r"(\d+)\s*年未満", 365),
+)
+
+
+def parse_union_duration_text(text: str | None) -> tuple[int | None, int | None]:
+    """Parse a Union Monthly duration label into (min_days, max_days).
+
+    Examples: '7日以上-15日未満' → (7, 14), '15日以上-1ヶ月未満' → (15, 29),
+    '1ヶ月以上-3ヶ月未満' → (30, 89), '7ヶ月以上-2年未満' → (210, 729).
+    Returns (None, None) when no duration range is found.
+    """
+    if not text:
+        return None, None
+    t = str(text)
+    dmin: int | None = None
+    dmax: int | None = None
+    for pat, unit_days in _DURATION_TEXT_PATTERNS:
+        m = re.search(pat, t)
+        if not m:
+            continue
+        n = int(m.group(1))
+        if pat.endswith("以上"):
+            dmin = n * unit_days
+        else:
+            dmax = n * unit_days - 1
+    return dmin, dmax
 
 
 def duration_for_plan_key(plan_key: str, source: str = "bratto") -> tuple[int, int | None]:

@@ -4,8 +4,7 @@ import logging
 from typing import Optional, List, Dict, Any, Type, Literal
 from pydantic import BaseModel, create_model, Field
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import Client, StdioServerParameters
 
 from langchain_core.tools import StructuredTool
 from langchain_core.messages import AIMessage, BaseMessage
@@ -194,10 +193,17 @@ MCPツールでローカルDBを検索・詳細取得・比較し、フロント
 【価格・単位】
 - maxPrice は円単位（例: 15万円 → 150000）。300000 は制限なし。
 
+【掲載状態（is_active）】
+- is_active=false の物件はサイトの掲載が終了しています。ユーザーには必ず「掲載終了」である旨を伝えること
+- 掲載終了物件の価格・キャンペーンは最終取得時点の参考値。比較や提案に含める場合はその旨を添える
+- 保存済み(saved)の掲載終了物件は検索結果・地図に表示が維持される（ユーザーの判断履歴として意図した挙動）
+
 【フロントエンドツール】
 - applyFilters: 地図フィルタの部分更新。priceMode=stay|catalog、checkIn/checkOut（YYYY-MM-DD）、maxPrice（stay=期間総額上限/1000000=制限なし）。reset=true で初期化。fitMap=true でフィット。
 - updateShortlist: saved/hide/reject/none をDBとUIに反映
-- focusMap / selectProperty / fitMapToFiltered / setMapProvider
+- focusMap / selectProperty / fitMapToFiltered / setMapProvider（dark/pale/std/satellite）
+- レイヤ操作: addMapLayer / removeMapLayer / setMapLayerVisibility / setMapLayerOpacity / setMapLayerOrder。物件の災害リスク確認には flood_l2（洪水浸水想定）や dosekiryu（土石流警戒区域）等を addMapLayer で重ね、確認後は removeMapLayer で戻す
+- setMapLayerOrder の layerIds は現在有効な全レイヤIDを過不足なく指定する（先頭=最前面。context の地図レイヤ構成を参照）
 - showProperties / showComparison
 - openOfficialSite / openGoogleEarth
 
@@ -295,9 +301,41 @@ class ShowPropertiesArgs(BaseModel):
 
 
 class SetMapProviderArgs(BaseModel):
-    provider: Literal["dark", "pale", "satellite"] = Field(
+    provider: Literal["dark", "pale", "std", "satellite"] = Field(
         ...,
-        description="地図プロバイダの種類。'dark' (ダークテーマ)、'pale' (淡色日本語地図)、'satellite' (航空写真)のいずれか。"
+        description="地図プロバイダの種類。'dark' (ダークテーマ)、'pale' (淡色日本語地図)、'std' (標準地図)、'satellite' (航空写真)のいずれか。"
+    )
+
+
+class AddMapLayerArgs(BaseModel):
+    layerId: str = Field(
+        ...,
+        description=(
+            "追加するレイヤID。例: flood_l2（洪水浸水想定）、relief（色別標高図）、"
+            "slopemap（傾斜量図）、tsunami（津波浸水想定）、dosekiryu（土石流警戒区域）、"
+            "afm（活断層図）、oshima（大島てる事故物件）"
+        ),
+    )
+
+
+class RemoveMapLayerArgs(BaseModel):
+    layerId: str = Field(..., description="削除するレイヤID")
+
+
+class SetMapLayerVisibilityArgs(BaseModel):
+    layerId: str = Field(..., description="対象レイヤID")
+    visible: bool = Field(..., description="true=表示, false=非表示")
+
+
+class SetMapLayerOpacityArgs(BaseModel):
+    layerId: str = Field(..., description="対象レイヤID")
+    opacity: float = Field(..., description="不透明度 0-1（例: 0.5）")
+
+
+class SetMapLayerOrderArgs(BaseModel):
+    layerIds: List[str] = Field(
+        ...,
+        description="有効レイヤ全IDの並べ替え配列（先頭=最前面。現在有効な全レイヤを過不足なく指定すること）",
     )
 
 
@@ -414,9 +452,48 @@ FRONTEND_TOOLS: List[StructuredTool] = [
     ),
     StructuredTool(
         name="setMapProvider",
-        description="地図レイヤーを dark / pale / satellite に切り替える。",
+        description="地図レイヤーを dark / pale / std / satellite に切り替える。",
         func=_frontend_tool_stub,
         args_schema=SetMapProviderArgs,
+    ),
+    StructuredTool(
+        name="addMapLayer",
+        description=(
+            "地図にオーバーレイレイヤを最前面に追加する。"
+            "物件周辺の災害リスク確認には flood_l2（洪水浸水想定）や dosekiryu（土石流警戒区域）等を重ねる。"
+            "主なid: relief=色別標高図, slopemap=傾斜量図, tsunami=津波浸水想定, afm=活断層図, oshima=大島てる事故物件。"
+        ),
+        func=_frontend_tool_stub,
+        args_schema=AddMapLayerArgs,
+    ),
+    StructuredTool(
+        name="removeMapLayer",
+        description=(
+            "地図からレイヤを削除する。災害レイヤで確認した後の片付けにも使う。"
+        ),
+        func=_frontend_tool_stub,
+        args_schema=RemoveMapLayerArgs,
+    ),
+    StructuredTool(
+        name="setMapLayerVisibility",
+        description="追加済みレイヤの表示/非表示を切り替える（レイヤは削除されない）。",
+        func=_frontend_tool_stub,
+        args_schema=SetMapLayerVisibilityArgs,
+    ),
+    StructuredTool(
+        name="setMapLayerOpacity",
+        description="追加済みレイヤの不透明度を変更する（0=透明 〜 1=不透明）。",
+        func=_frontend_tool_stub,
+        args_schema=SetMapLayerOpacityArgs,
+    ),
+    StructuredTool(
+        name="setMapLayerOrder",
+        description=(
+            "有効レイヤの重ね順を変更する。layerIds は現在有効な全レイヤIDを"
+            "過不足なく並べ替えた配列（先頭=最前面）。"
+        ),
+        func=_frontend_tool_stub,
+        args_schema=SetMapLayerOrderArgs,
     ),
     StructuredTool(
         name="applyFilters",
@@ -458,12 +535,11 @@ FRONTEND_TOOLS: List[StructuredTool] = [
 # グローバル graph インスタンス + MCPセッション管理
 # ============================================================
 _graph_instance = None
-_mcp_session = None
-_mcp_context = None
+_mcp_client = None
 
 
 async def _build_graph():
-    global _graph_instance, _mcp_session, _mcp_context
+    global _graph_instance, _mcp_client
     if _graph_instance is not None:
         return _graph_instance
 
@@ -487,18 +563,11 @@ async def _build_graph():
         temperature=0.1,
     )
 
-    # 永続的なMCP接続を開く
-    stdio_ctx = stdio_client(server_params)
-    read_stream, write_stream = await stdio_ctx.__aenter__()
-    _mcp_context = stdio_ctx
+    # 永続的なMCP接続を開く(v2 Client はプロトコル交渉を内包する)
+    _mcp_client = Client(server_params)
+    await _mcp_client.__aenter__()
 
-    session_ctx = ClientSession(read_stream, write_stream)
-    session = await session_ctx.__aenter__()
-    _mcp_session = (session_ctx, session)
-
-    await session.initialize()
-
-    mcp_tools_resp = await session.list_tools()
+    mcp_tools_resp = await _mcp_client.list_tools()
     mcp_tools = mcp_tools_resp.tools
 
     # MCPツールをLangChainツールに変換
@@ -510,7 +579,7 @@ async def _build_graph():
 
             async def _call_mcp_tool(**kwargs):
                 try:
-                    res = await session.call_tool(tool_name, kwargs)
+                    res = await _mcp_client.call_tool(tool_name, kwargs)
                     text_blocks = []
                     for block in res.content:
                         if block.type == "text":
@@ -523,9 +592,9 @@ async def _build_graph():
             return _sync_dummy, _call_mcp_tool
 
         args_schema = None
-        if t.inputSchema:
+        if t.input_schema:
             try:
-                args_schema = json_schema_to_pydantic(t.inputSchema)
+                args_schema = json_schema_to_pydantic(t.input_schema)
             except Exception as e:
                 logger.warning(f"Failed to generate pydantic schema for tool {t.name}: {e}")
 
@@ -561,14 +630,10 @@ def get_graph():
 
 
 async def _cleanup_mcp():
-    global _mcp_session, _mcp_context
-    if _mcp_session:
-        session_ctx, _ = _mcp_session
-        await session_ctx.__aexit__(None, None, None)
-        _mcp_session = None
-    if _mcp_context:
-        await _mcp_context.__aexit__(None, None, None)
-        _mcp_context = None
+    global _mcp_client
+    if _mcp_client:
+        await _mcp_client.__aexit__(None, None, None)
+        _mcp_client = None
     await _cleanup_checkpointer()
 
 
@@ -599,70 +664,67 @@ async def run_agent_message(message: str, thread_id: str) -> Dict[str, Any]:
 
     steps = []
 
-    async with stdio_client(server_params) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
+    async with Client(server_params) as client:
+        mcp_tools_resp = await client.list_tools()
+        mcp_tools = mcp_tools_resp.tools
 
-            mcp_tools_resp = await session.list_tools()
-            mcp_tools = mcp_tools_resp.tools
+        langchain_tools = []
+        for t in mcp_tools:
+            def make_tool_call(tool_name):
+                def _sync_dummy(*args, **kwargs):
+                    raise NotImplementedError("This tool is async-only")
 
-            langchain_tools = []
-            for t in mcp_tools:
-                def make_tool_call(tool_name):
-                    def _sync_dummy(*args, **kwargs):
-                        raise NotImplementedError("This tool is async-only")
-
-                    async def _call_mcp_tool(**kwargs):
-                        steps.append({"tool": tool_name, "arguments": kwargs})
-                        try:
-                            res = await session.call_tool(tool_name, kwargs)
-                            text_blocks = []
-                            for block in res.content:
-                                if block.type == "text":
-                                    text_blocks.append(block.text)
-                            return "\n".join(text_blocks)
-                        except Exception as e:
-                            logger.error(f"Error calling MCP tool {tool_name}: {e}")
-                            return f"Error executing tool: {str(e)}"
-
-                    return _sync_dummy, _call_mcp_tool
-
-                args_schema = None
-                if t.inputSchema:
+                async def _call_mcp_tool(**kwargs):
+                    steps.append({"tool": tool_name, "arguments": kwargs})
                     try:
-                        args_schema = json_schema_to_pydantic(t.inputSchema)
+                        res = await client.call_tool(tool_name, kwargs)
+                        text_blocks = []
+                        for block in res.content:
+                            if block.type == "text":
+                                text_blocks.append(block.text)
+                        return "\n".join(text_blocks)
                     except Exception as e:
-                        logger.warning(f"Failed to generate pydantic schema for tool {t.name}: {e}")
+                        logger.error(f"Error calling MCP tool {tool_name}: {e}")
+                        return f"Error executing tool: {str(e)}"
 
-                sync_func, async_func = make_tool_call(t.name)
-                langchain_tools.append(
-                    StructuredTool(
-                        name=t.name,
-                        description=t.description,
-                        func=sync_func,
-                        coroutine=async_func,
-                        args_schema=args_schema,
-                    )
+                return _sync_dummy, _call_mcp_tool
+
+            args_schema = None
+            if t.input_schema:
+                try:
+                    args_schema = json_schema_to_pydantic(t.input_schema)
+                except Exception as e:
+                    logger.warning(f"Failed to generate pydantic schema for tool {t.name}: {e}")
+
+            sync_func, async_func = make_tool_call(t.name)
+            langchain_tools.append(
+                StructuredTool(
+                    name=t.name,
+                    description=t.description,
+                    func=sync_func,
+                    coroutine=async_func,
+                    args_schema=args_schema,
                 )
-
-            # run_agent_message でもフロントエンドツールを追加
-            all_tools = langchain_tools + FRONTEND_TOOLS
-            checkpointer = await get_checkpointer()
-
-            agent = create_agent(
-                model=llm,
-                tools=all_tools,
-                checkpointer=checkpointer,
-                system_prompt=SYSTEM_PROMPT,
             )
 
-            config = {"configurable": {"thread_id": thread_id}}
-            result = await agent.ainvoke(
-                {"messages": [("user", message)]},
-                config=config,
-            )
+        # run_agent_message でもフロントエンドツールを追加
+        all_tools = langchain_tools + FRONTEND_TOOLS
+        checkpointer = await get_checkpointer()
 
-            final_message = result["messages"][-1]
-            response_text = final_message.content
+        agent = create_agent(
+            model=llm,
+            tools=all_tools,
+            checkpointer=checkpointer,
+            system_prompt=SYSTEM_PROMPT,
+        )
 
-            return {"response": response_text, "steps": steps}
+        config = {"configurable": {"thread_id": thread_id}}
+        result = await agent.ainvoke(
+            {"messages": [("user", message)]},
+            config=config,
+        )
+
+        final_message = result["messages"][-1]
+        response_text = final_message.content
+
+        return {"response": response_text, "steps": steps}

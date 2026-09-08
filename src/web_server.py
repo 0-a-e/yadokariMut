@@ -38,7 +38,19 @@ async def lifespan(app: FastAPI):
         from store.repository import Repository
 
         if use_v2_data_layer():
-            Repository().init_db()
+            repo = Repository()
+            repo.init_db()
+            try:
+                aborted = repo.fail_stale_running_runs()
+                if aborted:
+                    logging.getLogger(__name__).info(
+                        "Aborted %d stale scrape run(s) left by a previous process.",
+                        aborted,
+                    )
+            except Exception as cleanup_err:
+                logging.getLogger(__name__).warning(
+                    "stale scrape run cleanup failed: %s", cleanup_err
+                )
             logging.getLogger(__name__).info("v2 schema ensured on startup.")
     except Exception as e:
         print(f"v2 schema init skipped/failed: {e}")
@@ -59,36 +71,52 @@ async def lifespan(app: FastAPI):
         print(f"Failed to build LangGraph agent: {e}")
         raise
 
-    # 既存のスケジューラー起動処理
+    # スケジューラー起動処理（県ローテーション・スクレイプ）
     enable_scheduler = os.environ.get("ENABLE_SCHEDULER", "false").lower() == "true"
     if enable_scheduler:
         from apscheduler.schedulers.background import BackgroundScheduler
         from apscheduler.triggers.cron import CronTrigger
 
-        cron_expr = os.environ.get("SCHEDULER_CRON", "0 2 * * *")
-        log_task(f"Initializing APScheduler. Cron: '{cron_expr}'")
-
         try:
             scheduler = BackgroundScheduler()
-            fields = cron_expr.split()
-            if len(fields) == 5:
+            registered_any = False
+            for scfg in _rotation_source_config():
+                sid = scfg["id"]
+                cron_expr = scfg["cron"]
+                fields = cron_expr.split()
+                if len(fields) != 5:
+                    log_task(
+                        f"Invalid cron expression for rotation[{sid}]: "
+                        f"'{cron_expr}'. Job not registered."
+                    )
+                    continue
                 trigger = CronTrigger(
                     minute=fields[0],
                     hour=fields[1],
                     day=fields[2],
                     month=fields[3],
-                    day_of_week=fields[4]
+                    day_of_week=fields[4],
                 )
+                lim = scfg["daily_limit"]
+                est = scfg["default_est"]
                 scheduler.add_job(
-                    run_scheduled_scraping_job,
+                    lambda sid=sid, lim=lim, est=est: run_rotation_job(
+                        sid, daily_limit=lim, default_est=est
+                    ),
                     trigger,
-                    id="daily_scrape",
-                    name="Daily Scrape, Score, Geocode Job"
+                    id=f"rotation_{sid}",
+                    name=f"Rotation Scrape: {sid}",
                 )
+                registered_any = True
+                log_task(
+                    f"Rotation job registered: {sid} cron='{cron_expr}' "
+                    f"daily_limit={lim}"
+                )
+            if registered_any:
                 scheduler.start()
-                log_task("Scheduler started successfully.")
+                log_task("Rotation scheduler started successfully.")
             else:
-                log_task(f"Invalid cron expression: '{cron_expr}'. Scheduler not started.")
+                log_task("No rotation sources configured. Scheduler not started.")
         except Exception as e:
             log_task(f"Failed to start scheduler: {str(e)}")
 
@@ -195,12 +223,39 @@ async def delete_chat_thread(thread_id: str):
     return result
 
 
+# ── Frontend default settings (map layer v2 設計 doc §2) ──
+@app.get("/api/fe-settings")
+def get_frontend_settings():
+    """Return saved frontend default settings (layers / global). Empty when unset."""
+    from fe_settings import get_fe_settings
+
+    return get_fe_settings()
+
+
+@app.post("/api/fe-settings")
+def save_frontend_settings(update: dict):
+    """Partial-merge save of frontend default settings.
+
+    - `{"layers": {"<id>": {"defaultOpacity": 0.6}}}` → そのキーのみ上書き
+    - null 送信でその保存済みキー/レイヤを削除(カタログ既定へ戻す)
+    - 返り値は保存後の全体設定
+    """
+    from fe_settings import save_fe_settings
+
+    try:
+        return save_fe_settings(update)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # Global status tracking for background operations
 TASK_STATUS = {
     "status": "idle",  # "idle" or "running"
     "current_task": None,
     "last_run": None,
     "error": None,
+    # Outcome of the last finished task: "ok" / "partial" / "error" (None until first run)
+    "last_result": None,
     "logs": [],
     "last_transfer": None,  # scrape session transfer snapshot
 }
@@ -212,6 +267,167 @@ def log_task(msg: str):
     TASK_STATUS["logs"].append(log_entry)
     if len(TASK_STATUS["logs"]) > 200:
         TASK_STATUS["logs"].pop(0)
+
+
+# ============================================================
+# 県ローテーション・スクレイプ（夜間一括ジョブの後継）
+# ============================================================
+def _rotation_source_config() -> List[dict]:
+    """Resolve rotation schedule config from env.
+
+    Returns [{id, cron, daily_limit, default_est}] in ROTATION_SOURCES order.
+    - ROTATION_SOURCES: comma separated source ids (default "bratto,unionmonthly")
+    - ROTATION_CRON_{SID}: per-source cron (defaults below / "0 8,20 * * *")
+    - ROTATION_DAILY_LIMIT_{SID}: per-source daily item limit (default 500)
+    - ROTATION_DEFAULT_EST: default per-prefecture item estimate (default 60)
+    """
+    raw = os.environ.get("ROTATION_SOURCES", "bratto,unionmonthly")
+    ids = [s.strip() for s in raw.split(",") if s.strip()]
+    try:
+        default_est = int(os.environ.get("ROTATION_DEFAULT_EST") or 60)
+    except ValueError:
+        default_est = 60
+    default_crons = {
+        "bratto": "0 2,14 * * *",
+        "unionmonthly": "0 5,17 * * *",
+    }
+    out: List[dict] = []
+    for sid in ids:
+        upper = sid.upper()
+        cron = os.environ.get(f"ROTATION_CRON_{upper}") or default_crons.get(
+            sid, "0 8,20 * * *"
+        )
+        try:
+            daily_limit = int(os.environ.get(f"ROTATION_DAILY_LIMIT_{upper}") or 500)
+        except ValueError:
+            daily_limit = 500
+        out.append(
+            {
+                "id": sid,
+                "cron": cron,
+                "daily_limit": daily_limit,
+                "default_est": default_est,
+            }
+        )
+    return out
+
+
+def _rotation_failure_policy() -> dict:
+    """Resolve failure-backoff policy from env.
+
+    - ROTATION_FAILURE_MAX: consecutive failures before cooldown (default 3)
+    - ROTATION_FAILURE_COOLDOWN_HOURS: cooldown window from the last attempt (default 48)
+    """
+    try:
+        max_failures = int(os.environ.get("ROTATION_FAILURE_MAX", "3"))
+    except ValueError:
+        max_failures = 3
+    try:
+        cooldown_hours = int(os.environ.get("ROTATION_FAILURE_COOLDOWN_HOURS", "48"))
+    except ValueError:
+        cooldown_hours = 48
+    return {
+        "max_consecutive_failures": max_failures,
+        "failure_cooldown_hours": cooldown_hours,
+    }
+
+
+def _rotation_pref_catalog(source_id: str) -> List[str]:
+    """Prefecture slugs eligible for rotation.
+
+    config.json の sources.<id>.prefectures を優先し、無ければアダプタの
+    discover_list_targets() にフォールバックする。
+    """
+    from store.source_catalog import load_app_config
+
+    cfg = (load_app_config().get("sources") or {}).get(source_id) or {}
+    pref_catalog = list((cfg.get("prefectures") or {}).keys())
+    if pref_catalog:
+        return pref_catalog
+    try:
+        import sources  # noqa: F401 — register adapters
+        from sources.registry import SourceRegistry
+
+        clean = {k: v for k, v in (cfg or {}).items() if k != "pref_filter"}
+        adapter = SourceRegistry.create(source_id, clean)
+        pref_catalog = [
+            t.prefecture_slug or t.key for t in adapter.discover_list_targets()
+        ]
+    except Exception as e:
+        log_task(f"rotation[{source_id}]: pref catalog discovery failed: {e}")
+        pref_catalog = []
+    return pref_catalog
+
+
+def run_rotation_job(source_id: str, *, daily_limit: int = 500, default_est: int = 60):
+    """県ローテーション・スクレイプジョブ（スケジューラ / 手動API共通）."""
+    if TASK_STATUS["status"] == "running":
+        log_task("skipped: another task running")
+        return
+
+    try:
+        from ingest.rotation import RotationPlanner
+        from store.repository import Repository
+    except Exception as e:
+        log_task(f"rotation[{source_id}]: rotation module unavailable: {e}")
+        return
+
+    TASK_STATUS["status"] = "running"
+    TASK_STATUS["current_task"] = f"rotation:{source_id}"
+    TASK_STATUS["error"] = None
+    try:
+        repo = Repository()
+        repo.init_db()
+
+        pref_catalog = _rotation_pref_catalog(source_id)
+        planner = RotationPlanner(repo)
+        batch = planner.plan(
+            source_id,
+            pref_catalog=pref_catalog,
+            daily_limit=daily_limit,
+            default_est=default_est,
+            **_rotation_failure_policy(),
+        )
+        log_task(
+            f"rotation[{source_id}]: batch={batch.prefs} est={batch.est_items} "
+            f"unlimited={batch.unlimited} reason={batch.reason or '-'}"
+        )
+        if not batch.prefs:
+            return
+        run_scrape_v2_task(
+            sources=[source_id],
+            all_pages=True,
+            pages=5,
+            max_details=None,
+            list_only=False,
+            mark_inactive=True,
+            prefs=batch.prefs,
+            geocode=True,
+            geocode_limit=100,
+            rotation=True,
+        )
+    except Exception as e:
+        error_msg = f"rotation job failed: {str(e)}"
+        log_task(error_msg)
+        TASK_STATUS["error"] = error_msg
+    finally:
+        TASK_STATUS["status"] = "idle"
+        TASK_STATUS["current_task"] = None
+        TASK_STATUS["last_run"] = datetime.now().isoformat()
+
+
+def _rotation_queue_key(slug: str, states_by_slug: dict) -> tuple:
+    """Sort key matching RotationPlanner's queue order.
+
+    rotation.py 仕様: last_full_ok_at NULLS FIRST → 昇順、
+    known_total 昇順（None は最大）、slug 昇順。
+    """
+    st = states_by_slug.get(slug) or {}
+    last_full = st.get("last_full_ok_at")
+    known_total = st.get("known_total")
+    last_full_key = (1, str(last_full)) if last_full else (0, "")
+    known_key = (1, int(known_total)) if known_total is not None else (2, 0)
+    return (last_full_key, known_key, slug)
 
 # Request schema for updating shortlist
 class ShortlistUpdateRequest(BaseModel):
@@ -334,6 +550,7 @@ def run_scrape_v2_task(
     delay: Optional[float] = None,
     geocode: bool = True,
     geocode_limit: int = 200,
+    rotation: bool = False,
 ):
     """Multi-source v2 ingest via SourceAdapter + IngestPipeline."""
     TASK_STATUS["status"] = "running"
@@ -364,6 +581,7 @@ def run_scrape_v2_task(
         log_task(
             f"scrape-v2 start: sources={source_ids} all_pages={all_pages} pages={pages} "
             f"http_mode={http_settings.mode} proxy_enabled={http_settings.proxy_enabled}"
+            + (" rotation=true" if rotation else "")
         )
 
         metrics = get_transfer_metrics()
@@ -372,8 +590,19 @@ def run_scrape_v2_task(
         config = load_app_config()
         repo = Repository()
         repo.init_db()
+        # 直列実行の保証(TASK_STATUSロック)より前に生き残っている running 行は
+        # 前プロセスの残骸。admin UI の is_running ゴースト表示を防ぐため打ち切る
+        try:
+            repo.fail_stale_running_runs()
+        except Exception as cleanup_err:
+            log_task(f"warn: stale scrape run cleanup failed: {cleanup_err}")
 
         max_pages = None if all_pages else pages
+        # Aggregate per-source outcomes: escalate to "error" only when a whole
+        # source run failed (every target errored — e.g. site unreachable /
+        # IP-blocked). Mere detail-level failures stay "partial" warnings.
+        overall = "ok"
+        fatal_notes: list[str] = []
         for sid in source_ids:
             src_cfg = dict((config.get("sources") or {}).get(sid) or {})
             if prefs:
@@ -388,6 +617,7 @@ def run_scrape_v2_task(
                 list_only=list_only,
                 max_details=max_details,
                 mark_inactive=mark_inactive,
+                extra_run_meta=({"rotation": True} if rotation else None),
             )
             xfer = result.transfer or {}
             log_task(
@@ -398,6 +628,24 @@ def run_scrape_v2_task(
             )
             for err in result.errors[:8]:
                 log_task(f"[{sid}] warn: {err}")
+            if result.status == "error":
+                overall = "error"
+                failed_targets = sum(
+                    1 for tr in result.by_target.values() if tr.status == "error"
+                )
+                fatal_notes.append(
+                    f"{sid}: {failed_targets}/{len(result.by_target)} 県すべて失敗 "
+                    f"(list_items={result.list_items})"
+                )
+            elif result.status == "partial" and overall == "ok":
+                overall = "partial"
+            # rotation_state 更新（手動実行でも反映。失敗しても継続）
+            try:
+                from ingest.rotation import RotationPlanner
+
+                RotationPlanner(repo).record_result(sid, result.by_target)
+            except Exception as rot_err:
+                log_task(f"[{sid}] warn: rotation_state update failed: {rot_err}")
 
         if geocode and not list_only:
             log_task(f"Geocoding missing coordinates (limit={geocode_limit})...")
@@ -418,11 +666,22 @@ def run_scrape_v2_task(
         )
         # stash last session on TASK_STATUS for admin UI
         TASK_STATUS["last_transfer"] = session_snap
-        log_task("scrape-v2 completed successfully.")
+        if overall == "error":
+            error_msg = "scrape-v2 finished with ERRORS: " + "; ".join(fatal_notes)
+            log_task(error_msg)
+            TASK_STATUS["error"] = error_msg
+            TASK_STATUS["last_result"] = "error"
+        elif overall == "partial":
+            log_task("scrape-v2 completed with warnings (partial).")
+            TASK_STATUS["last_result"] = "partial"
+        else:
+            log_task("scrape-v2 completed successfully.")
+            TASK_STATUS["last_result"] = "ok"
     except Exception as e:
         error_msg = f"scrape-v2 failed: {str(e)}"
         log_task(error_msg)
         TASK_STATUS["error"] = error_msg
+        TASK_STATUS["last_result"] = "error"
     finally:
         TASK_STATUS["status"] = "idle"
         TASK_STATUS["current_task"] = None
@@ -557,6 +816,8 @@ def get_geojson_data(params: dict) -> dict:
                 ],
                 "total_score": prop["total_score"],
                 "shortlist_status": prop["shortlist_status"] or "none",
+                "is_active": bool(prop.get("is_active", True)),
+                "last_seen_at": prop.get("last_seen_at"),
                 "access_summary": access_str,
                 "feature_summary": feature_summary,
                 "station_summary": station_summary,
@@ -701,9 +962,21 @@ def get_admin_status():
         http_mode = "off"
         proxy_enabled = False
 
+    # Recent run rows straight from the DB: unlike in-memory TASK_STATUS these
+    # survive restarts, so e.g. a failed nightly rotation run stays visible.
+    recent_runs: list = []
+    if data_layer == "v2":
+        try:
+            from store.repository import Repository
+
+            recent_runs = Repository().recent_scrape_runs(limit=8)
+        except Exception:
+            recent_runs = []
+
     return {
         "task_status": TASK_STATUS,
         "data_layer": data_layer,
+        "recent_runs": recent_runs,
         "http": {
             "mode": http_mode,
             "proxy_enabled": proxy_enabled,
@@ -804,6 +1077,164 @@ def trigger_scrape_v2(
     }
 
 
+@app.get("/api/admin/rotation")
+def get_rotation_status():
+    """県ローテーション・スケジュールの状態（admin UI 用・読み取り専用）."""
+    from store.pref_master import pref_display_name
+    from store.source_catalog import SOURCE_CATALOG
+
+    display_names = {
+        e.get("id"): (e.get("display_name") or e.get("id"))
+        for e in SOURCE_CATALOG
+    }
+
+    repo = None
+    try:
+        from store.repository import Repository
+
+        repo = Repository()
+    except Exception:
+        repo = None
+
+    planner_cls = None
+    try:
+        from ingest.rotation import RotationPlanner
+
+        planner_cls = RotationPlanner
+    except Exception:
+        planner_cls = None
+
+    sources_out: List[dict] = []
+    for scfg in _rotation_source_config():
+        sid = scfg["id"]
+        pref_catalog = _rotation_pref_catalog(sid)
+
+        used_today = 0
+        states: List[dict] = []
+        running: set = set()
+        if repo is not None:
+            try:
+                # Seed first so the very first call after deploy also shows known_total
+                repo.seed_rotation_state(sid, pref_catalog)
+            except Exception:
+                pass
+            try:
+                used_today = repo.rotation_usage_today(sid) or 0
+            except Exception:
+                used_today = 0
+            try:
+                states = repo.load_rotation_states(sid) or []
+            except Exception:
+                states = []
+            try:
+                running = repo.running_scrape_targets(sid) or set()
+            except Exception:
+                running = set()
+
+        states_by_slug = {
+            s.get("prefecture_slug"): s
+            for s in states
+            if isinstance(s, dict) and s.get("prefecture_slug")
+        }
+
+        # queue_position は planner.plan と同じソートキーで整列
+        order = sorted(
+            pref_catalog, key=lambda slug: _rotation_queue_key(slug, states_by_slug)
+        )
+
+        next_batch = {"prefs": [], "est_items": 0, "unlimited": False, "reason": ""}
+        failure_policy = _rotation_failure_policy()
+        if planner_cls is not None and repo is not None:
+            try:
+                planner = planner_cls(repo)
+                batch = planner.plan(
+                    sid,
+                    pref_catalog=pref_catalog,
+                    daily_limit=scfg["daily_limit"],
+                    default_est=scfg["default_est"],
+                    **failure_policy,
+                )
+                next_batch = {
+                    "prefs": list(batch.prefs),
+                    "est_items": batch.est_items,
+                    "unlimited": bool(batch.unlimited),
+                    "reason": batch.reason or "",
+                }
+            except Exception as e:
+                next_batch = {"prefs": [], "reason": str(e)}
+
+        prefs_out = []
+        for pos, slug in enumerate(order, start=1):
+            st = states_by_slug.get(slug) or {}
+            try:
+                failures = int(st.get("consecutive_failures") or 0)
+            except (TypeError, ValueError):
+                failures = 0
+            from ingest.rotation import is_suppressed
+
+            prefs_out.append(
+                {
+                    "slug": slug,
+                    "name": pref_display_name(slug),
+                    "known_total": st.get("known_total"),
+                    "last_full_ok_at": st.get("last_full_ok_at"),
+                    "last_run_at": st.get("last_run_at"),
+                    "consecutive_failures": failures,
+                    "suppressed": is_suppressed(st, now=datetime.now(), **failure_policy),
+                    "is_running": slug in running,
+                    "queue_position": pos,
+                }
+            )
+
+        sources_out.append(
+            {
+                "id": sid,
+                "display_name": display_names.get(sid, sid),
+                "cron": scfg["cron"],
+                "daily_limit": scfg["daily_limit"],
+                "used_today": used_today,
+                "default_est": scfg["default_est"],
+                "next_batch": next_batch,
+                "prefs": prefs_out,
+            }
+        )
+
+    return {"sources": sources_out}
+
+
+class RotationRunRequest(BaseModel):
+    """Body for manual rotation run."""
+
+    source: str
+
+
+@app.post("/api/admin/rotation/run")
+def trigger_rotation_run(background_tasks: BackgroundTasks, body: RotationRunRequest):
+    """手動で県ローテーション・スクレイプを1ソース分実行する."""
+    if TASK_STATUS["status"] == "running":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Another task is already running: {TASK_STATUS['current_task']}",
+        )
+
+    cfg = {c["id"]: c for c in _rotation_source_config()}
+    if body.source not in cfg:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown rotation source: {body.source}. "
+            f"Available: {sorted(cfg.keys())}",
+        )
+
+    scfg = cfg[body.source]
+    background_tasks.add_task(
+        run_rotation_job,
+        body.source,
+        daily_limit=scfg["daily_limit"],
+        default_est=scfg["default_est"],
+    )
+    return {"status": "started", "task": "rotation", "source": body.source}
+
+
 @app.post("/api/admin/scrape")
 def trigger_scrape(
     background_tasks: BackgroundTasks,
@@ -881,43 +1312,6 @@ def trigger_score(background_tasks: BackgroundTasks):
         
     background_tasks.add_task(run_score_task)
     return {"status": "started", "task": "score"}
-
-def run_scheduled_scraping_job():
-    log_task("Scheduled daily scrape triggered.")
-    try:
-        from store.api_queries import use_v2_data_layer
-
-        if use_v2_data_layer():
-            # v2: all available sources, limited pages for nightly job
-            run_scrape_v2_task(
-                sources=["all"],
-                pages=5,
-                all_pages=False,
-                max_details=None,
-                list_only=False,
-                mark_inactive=True,
-                geocode=True,
-                geocode_limit=300,
-            )
-            return
-    except Exception as e:
-        log_task(f"v2 scheduled scrape failed, falling back to v1: {e}")
-
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config.json")
-    if not os.path.exists(config_path):
-        log_task("Scheduled job failed: config.json not found.")
-        return
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
-    configured_prefectures = list(config["sources"]["bratto"]["prefectures"].keys())
-
-    run_scrape_task(
-        prefectures=configured_prefectures,
-        max_pages=5,
-        delay=1.5,
-        classify=True,
-    )
 
 # StaticFiles はエンドポイント定義の最後に配置（/api/copilotkit への到達を保証するため）
 from fastapi.staticfiles import StaticFiles

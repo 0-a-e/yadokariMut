@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional, Sequence
 
 from domain.models import PropertyDraft
@@ -451,6 +451,70 @@ class Repository:
         finally:
             conn.close()
 
+    def fail_stale_running_runs(self) -> int:
+        """Close scrape runs/targets left 'running' by a crash or restart.
+
+        スクレイプタスクはプロセス内で直列(タスク入口のロック)のため、起動時や
+        新タスク開始時に残っている running 行はプロセス死亡の残骸と確定できる。
+        放置すると running_scrape_targets の 12 時間ウィンドウ内は admin UI の
+        is_running 表示(ローディング/ハイライト)が消えないままになる。
+        Returns the number of aborted run rows.
+        """
+        now = datetime.now().isoformat()
+        summary = "aborted: run interrupted by process restart"
+        conn = self.connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE scrape_run_targets SET
+                    finished_at = ?, status = 'aborted',
+                    error_summary = COALESCE(error_summary, ?)
+                WHERE finished_at IS NULL AND status = 'running'
+                """,
+                (now, summary),
+            )
+            cur.execute(
+                """
+                UPDATE scrape_runs SET
+                    finished_at = ?, status = 'aborted',
+                    error_summary = COALESCE(error_summary, ?)
+                WHERE finished_at IS NULL AND status = 'running'
+                """,
+                (now, summary),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+        finally:
+            conn.close()
+
+    def running_scrape_targets(
+        self, source_site: str, *, within_hours: int = 12
+    ) -> set[str]:
+        """Target keys currently being scraped (run in flight, target unfinished).
+
+        Stale rows left by crashed runs are excluded via the parent-run status
+        and a start-time window.
+        """
+        cutoff = (datetime.now() - timedelta(hours=within_hours)).isoformat()
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT srt.target_key
+                FROM scrape_run_targets srt
+                INNER JOIN scrape_runs sr ON sr.id = srt.run_id
+                WHERE srt.source_site = ?
+                  AND srt.finished_at IS NULL
+                  AND sr.status = 'running'
+                  AND srt.started_at >= ?
+                """,
+                (source_site, cutoff),
+            )
+            return {r["target_key"] for r in rows}
+        finally:
+            conn.close()
+
     def latest_scrape_runs_by_target(
         self, source_site: str | None = None
     ) -> dict[str, dict[str, dict[str, Any]]]:
@@ -495,6 +559,29 @@ class Repository:
                     "last_run_at": row["finished_at"] or row["started_at"],
                 }
             return out
+        finally:
+            conn.close()
+
+    def recent_scrape_runs(self, limit: int = 8) -> list[dict[str, Any]]:
+        """Recent scrape_runs rows (newest first) for the admin UI.
+
+        Survives process restarts unlike in-memory TASK_STATUS, so the FE can
+        show the outcome of e.g. a nightly rotation run after a redeploy.
+        """
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, source_site, started_at, finished_at, status,
+                       list_pages, list_items, detail_ok, detail_fail,
+                       error_summary
+                FROM scrape_runs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
         finally:
             conn.close()
 
@@ -623,6 +710,7 @@ class Repository:
         detail_ok: int = 0,
         detail_fail: int = 0,
         error_summary: str | None = None,
+        list_completed: bool = False,
     ) -> None:
         conn = self.connect()
         try:
@@ -630,7 +718,8 @@ class Repository:
                 """
                 UPDATE scrape_run_targets SET
                     finished_at = ?, status = ?, list_pages = ?, list_items = ?,
-                    detail_ok = ?, detail_fail = ?, error_summary = ?
+                    detail_ok = ?, detail_fail = ?, error_summary = ?,
+                    list_completed = ?
                 WHERE id = ?
                 """,
                 (
@@ -641,9 +730,179 @@ class Repository:
                     detail_ok,
                     detail_fail,
                     error_summary,
+                    1 if list_completed else 0,
                     target_run_id,
                 ),
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Rotation state
+    # ------------------------------------------------------------------
+
+    def upsert_rotation_state(
+        self,
+        source_site: str,
+        prefecture_slug: str,
+        *,
+        known_total: int | None = None,
+        last_full_ok_at: str | None = None,
+        last_run_at: str | None = None,
+        consecutive_failures: int | None = None,
+    ) -> None:
+        """Insert or partially update rotation_state row. Non-None fields only on update."""
+        conn = self.connect()
+        try:
+            cur = conn.cursor()
+            now = datetime.now().isoformat()
+            cur.execute(
+                "SELECT 1 FROM rotation_state WHERE source_site = ? AND prefecture_slug = ?",
+                (source_site, prefecture_slug),
+            )
+            if cur.fetchone() is None:
+                cur.execute(
+                    """
+                    INSERT INTO rotation_state
+                        (source_site, prefecture_slug, known_total,
+                         last_full_ok_at, last_run_at, consecutive_failures, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_site,
+                        prefecture_slug,
+                        known_total,
+                        last_full_ok_at,
+                        last_run_at,
+                        consecutive_failures,
+                        now,
+                    ),
+                )
+            else:
+                sets = ["updated_at = ?"]
+                params: list[Any] = [now]
+                if known_total is not None:
+                    sets.append("known_total = ?")
+                    params.append(known_total)
+                if last_full_ok_at is not None:
+                    sets.append("last_full_ok_at = ?")
+                    params.append(last_full_ok_at)
+                if last_run_at is not None:
+                    sets.append("last_run_at = ?")
+                    params.append(last_run_at)
+                if consecutive_failures is not None:
+                    sets.append("consecutive_failures = ?")
+                    params.append(consecutive_failures)
+                params.extend([source_site, prefecture_slug])
+                cur.execute(
+                    f"""
+                    UPDATE rotation_state SET {', '.join(sets)}
+                    WHERE source_site = ? AND prefecture_slug = ?
+                    """,
+                    tuple(params),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def bump_rotation_failures(
+        self,
+        source_site: str,
+        prefecture_slug: str,
+        *,
+        last_run_at: str | None = None,
+    ) -> None:
+        """Record a failed rotation attempt: increment consecutive_failures atomically."""
+        now = datetime.now().isoformat()
+        last_run_at = last_run_at or now
+        conn = self.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO rotation_state
+                    (source_site, prefecture_slug, last_run_at, consecutive_failures, updated_at)
+                VALUES (?, ?, ?, 1, ?)
+                ON CONFLICT(source_site, prefecture_slug) DO UPDATE SET
+                    consecutive_failures = COALESCE(rotation_state.consecutive_failures, 0) + 1,
+                    last_run_at = excluded.last_run_at,
+                    updated_at = excluded.updated_at
+                """,
+                (source_site, prefecture_slug, last_run_at, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def load_rotation_states(self, source_site: str) -> list[dict]:
+        """Return rotation_state rows for a source, ordered by prefecture_slug."""
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT prefecture_slug, known_total, last_full_ok_at, last_run_at,
+                       consecutive_failures, updated_at
+                FROM rotation_state
+                WHERE source_site = ?
+                ORDER BY prefecture_slug ASC
+                """,
+                (source_site,),
+            )
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def rotation_usage_today(self, source_site: str, now: datetime | None = None) -> int:
+        """Sum of detail_ok for rotation-flagged runs started today (local time)."""
+        now = now or datetime.now()
+        start_of_day = datetime(now.year, now.month, now.day).isoformat()
+        conn = self.connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(detail_ok), 0) FROM scrape_runs
+                WHERE source_site = ? AND started_at >= ?
+                  AND meta_json LIKE '%"rotation": true%'
+                """,
+                (source_site, start_of_day),
+            ).fetchone()
+            return int(row[0] or 0)
+        finally:
+            conn.close()
+
+    def seed_rotation_state(self, source_site: str, pref_catalog: list[str]) -> int:
+        """Insert rotation_state rows for prefectures not yet tracked. Returns inserted count."""
+        conn = self.connect()
+        try:
+            cur = conn.cursor()
+            now = datetime.now().isoformat()
+            inserted = 0
+            for slug in pref_catalog:
+                cur.execute(
+                    "SELECT 1 FROM rotation_state WHERE source_site = ? AND prefecture_slug = ?",
+                    (source_site, slug),
+                )
+                if cur.fetchone() is not None:
+                    continue
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FROM properties
+                    WHERE source_site = ? AND prefecture_slug = ?
+                    """,
+                    (source_site, slug),
+                )
+                known_total = int(cur.fetchone()[0] or 0)
+                cur.execute(
+                    """
+                    INSERT INTO rotation_state
+                        (source_site, prefecture_slug, known_total,
+                         last_full_ok_at, last_run_at, updated_at)
+                    VALUES (?, ?, ?, NULL, NULL, ?)
+                    """,
+                    (source_site, slug, known_total, now),
+                )
+                inserted += 1
+            conn.commit()
+            return inserted
         finally:
             conn.close()

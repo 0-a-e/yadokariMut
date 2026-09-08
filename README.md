@@ -4,7 +4,7 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 
 **多ソース収集**、各種追加費用やキャンペーンを適用した **滞在期間ベースの実質総額**、比較ボード、LLM / MCP 連携を統合しています。
 
-> **status:** 開発先端ベースのスナップショットを公開した状態です。安定後はバージョンごとにスナップショットを反映します。 プルリク大歓迎です！</br>
+> **status:** 開発先端ベースのスナップショット（2026-09-08 時点）です。安定後はバージョンごとにスナップショットを反映します。 プルリク大歓迎です！</br>
 > **データ層の既定:** 現行仕様は **v2**（`yadokari_mut_v2.db` / `YADOKARIMUT_DATA_LAYER=v2`）です。v1（`yadokari_mut.db` + `rent_plans`）は互換のためのレガシー経路です。
 
 ---
@@ -15,15 +15,21 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 
 ![エクスプローラー画面](assets/screenshots/explorer-main.jpg)
 
+### 地図レイヤ
+
+![地図レイヤ](assets/screenshots/map-layers.jpg)
+
 ### 比較ボード
 
 ![比較ボード](assets/screenshots/comparison-board.jpg)
 
-### モバイル（物件詳細）・管理者ダッシュボード
+### 設定ボード
 
-| モバイル（物件詳細） | 管理者ダッシュボード |
-| :---: | :---: |
-| ![モバイル物件詳細](assets/screenshots/mobile-detail.jpg) | ![管理者ダッシュボード](assets/screenshots/admin-dashboard.jpg) |
+![設定ボード](assets/screenshots/admin-settings.jpg)
+
+### モバイル（物件詳細）
+
+![モバイル物件詳細](assets/screenshots/mobile-detail.jpg)
 
 ---
 
@@ -32,13 +38,15 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 ### 1. インタラクティブ地図とリアルタイム探索
 
 - **マップ連動ビュー**: Leaflet およびクラスタリング。地図の移動・ズームに合わせて表示物件が更新されます。
+- **地図レイヤ**: 国土地理院の災害リスク情報（洪水浸水想定区域・土砂災害警戒区域・活断層図など）や標高・陰影図・衛星写真を重ねて表示。並べ替え・透明度・グループ化に対応し、既定構成はサーバー側（`/api/fe-settings`）に保存されます。
 - **クライアントサイド高速フィルタ**: 都道府県、**データソース**、価格帯、間取り、築年数、最寄り駅徒歩分数、設備条件などを即座に絞り込み。大量データでも Web Worker により UI をブロックしません。
 
 ### 2. 多ソース対応のデータ収集
 
 - **SourceAdapter + Registry**: サイトごとに一覧・詳細の取得と正規化を実装（現状: **BraTTo** / **Union Monthly**）。
 - **v2 スキーマ**: 掲載 identity は `(source_site, external_id)`。料金は期間帯 + 提示単位（日額/月額）の `price_plans`。
-- **管理 UI / API**: ソース別・都道府県単位の再収集、実行履歴（`scrape_runs` / `scrape_run_targets`）。
+- **県ローテーション収集**: cron ごとに各都道府県を 1 バッチずつ順番に取得。日次上限・失敗バックオフ・飽和防止を備え、サイト負荷を抑えつつ全県を巡回します（`src/ingest/rotation.py`）。
+- **設定ボード / API**: ソース別・都道府県単位の再取得、県ローテーションの進捗・実行ログ（`scrape_runs` / `scrape_run_targets`）を画面から確認できます。
 
 ### 3. 滞在期間ベースの実質総額シミュレータ
 
@@ -49,6 +57,7 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 ### 4. ショートリストと比較ボード
 
 - **検討中物件の保管**: 状態（検討中・非表示・見送り）とメモ。
+- **掲載終了の可視化**: 非掲載になった物件はカードのバッジ・詳細のバナーで表示し、再掲載されれば自動で復帰します。
 - **横並び比較**: 料金内訳、間取り、面積、設備、アクセスを一覧表示。
 
 ### 5. AI アシスタント & MCP
@@ -59,7 +68,7 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 ### 6. URL 状態再現 & PWA
 
 - **ディープリンク**: 期間・フィルタ・物件 ID・比較対象などが TanStack Router の search params に保持され共有可能。
-- **モバイル / PWA**: 「地図」「リスト」「詳細・比較」タブとホーム画面追加に対応。
+- **モバイル / PWA**: 「ホーム」「地図」「AI」の下部タブと、リスト / レイヤの切り替えに対応。ホーム画面追加にも対応します。
 
 ---
 
@@ -88,7 +97,7 @@ docker compose logs -f
 | 公開ポート | `127.0.0.1:8000`（API + 静的 UI） |
 | データ層 | `YADOKARIMUT_DATA_LAYER=v2`（compose 既定） |
 | 永続化 | `./yadokari_mut_v2.db`, `./yadokari_mut.db`, `./data`, `./config.json`, `./.env` |
-| 定期収集 | `ENABLE_SCHEDULER=true` + `SCHEDULER_CRON`（既定は毎日 2:00 相当、**scrape-v2 優先**） |
+| 定期収集 | `ENABLE_SCHEDULER=true` + `ROTATION_*`（**県ローテーション**で cron ごとに各県を 1 バッチずつ取得） |
 
 初回のデータ投入例（コンテナ内）:
 
@@ -454,11 +463,13 @@ yadokariMut/
 │   │   └── http/               取得 HTTP・プロキシ骨格
 │   ├── ingest/
 │   │   ├── pipeline.py         list→detail→upsert オーケストレーション
+│   │   ├── rotation.py         県ローテーション収集 (日次上限・失敗バックオフ)
 │   │   └── raw_store.py
 │   ├── domain/
 │   │   ├── pricing.py          料金 SSOT
 │   │   └── models.py
 │   ├── services.py             検索・詳細・比較・shortlist（v1/v2 分岐）
+│   ├── fe_settings.py          フロント既定設定（レイヤ構成など）の保存 API
 │   ├── web_server.py           FastAPI（/api, admin scrape-v2, AG-UI）
 │   ├── agent_service.py
 │   ├── campaign_structurer.py / campaign_active.py
@@ -472,9 +483,10 @@ yadokariMut/
     │   ├── main.tsx            エントリ (Router + CopilotKit)
     │   ├── App.tsx             地図・サイドバー・詳細・比較の統合 UI
     │   ├── router.tsx / routes/
-    │   ├── components/
+    │   ├── components/         LayerPanel / ComparisonBoard / AdminModal 等
     │   ├── lib/                filterLogic, rentCalculator, explorerSearch
-    │   ├── hooks/
+    │   ├── lib/layers/         地図レイヤのカタログ・状態・エンジン
+    │   ├── hooks/              useMapActions / useCopilotContext
     │   ├── types.ts            source_site / source_display_name 等
     │   └── workers/filter.worker.ts
     └── package.json
@@ -538,8 +550,14 @@ DEEPSEEK_API_KEY=...
 
 | 変数 | 既定の目安 | 説明 |
 |------|------------|------|
-| `ENABLE_SCHEDULER` | Compose: `true` / ローカル: 未設定なら off | `true` で APScheduler による定期 scrape-v2 |
-| `SCHEDULER_CRON` | `0 2 * * *` | 定期実行の cron 式（例: 毎日 2:00） |
+| `ENABLE_SCHEDULER` | Compose: `true` / ローカル: 未設定なら off | `true` で APScheduler を起動 |
+| `ROTATION_SOURCES` | `bratto,unionmonthly` | 県ローテーション収集の対象ソース（カンマ区切り） |
+| `ROTATION_CRON_{SOURCE}` | `0 8,20 * * *` | ソース別の実行 cron（例: `ROTATION_CRON_BRATTO=0 2,14 * * *`） |
+| `ROTATION_DAILY_LIMIT_{SOURCE}` | `500` | ソース別の 1 日あたり取得上限件数 |
+| `ROTATION_DEFAULT_EST` | `60` | 県ごとの想定取得件数（バッチ分割の見積り） |
+| `ROTATION_FAILURE_MAX` | `3` | 連続失敗がこの回数に達したらクールダウン |
+| `ROTATION_FAILURE_COOLDOWN_HOURS` | `48` | クールダウン期間（時間） |
+| `SCHEDULER_CRON` | `0 2 * * *` | 旧・単一スクレイプの cron。`ROTATION_*` を使う場合は不要 |
 | `YADOKARIMUT_CHECKPOINT_DB` | `data/agent_checkpoints.db` 相当 | エージェント／チャットスレッド用 SQLite |
 | `SCRAPE_HTTP_MODE` | `off` | 収集 HTTP: `off` / `fallback` / `always_proxy` |
 | `SCRAPE_HTTP_PROXY` | （なし） | プロキシ URL（`fallback` / `always_proxy` 時） |
@@ -619,6 +637,8 @@ pnpm dev
 
 ## テストの実行
 
+> **前提**: バックエンドの一部テストはローカル DB とフロントのビルド成果物を参照します。先に `python3 cli.py db-init-v2`（および必要に応じて `scrape-v2` でのデータ投入）と `cd frontend && pnpm build` を済ませてください。
+
 ### バックエンド
 
 ```bash
@@ -633,8 +653,15 @@ python3 -m unittest test_domain_pricing.py
 python3 -m unittest test_store_repository.py
 python3 -m unittest test_bratto_adapter.py
 python3 -m unittest test_unionmonthly_parsers.py
+python3 -m unittest test_unionmonthly_migration.py
 python3 -m unittest test_ingest_pipeline_prefs.py
 python3 -m unittest test_admin_sources.py
+python3 -m unittest test_http_fetch_client.py
+python3 -m unittest test_rotation_api.py
+python3 -m unittest test_rotation_planner.py
+python3 -m unittest test_search_visibility.py
+python3 -m unittest test_fe_settings.py
+python3 -m unittest test_agent_tools.py
 ```
 
 ### フロントエンド

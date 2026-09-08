@@ -25,17 +25,35 @@ import { DetailPanel } from './components/DetailPanel';
 import { ComparisonBoard } from './components/ComparisonBoard';
 import { AdminModal } from './components/AdminModal';
 import { LightboxModal } from './components/LightboxModal';
+import { AccessSessionDialog } from './components/AccessSessionDialog';
 import { AgentChat } from './components/AgentChat';
 import { useCopilotMapContext } from './hooks/useCopilotContext';
 import { useMapActions } from './hooks/useMapActions';
+import type { LayerConfigState } from './lib/layers/types';
+import { catalogById } from './lib/layers/catalog';
+import { configureAdapter } from './lib/layers/adapters';
+import {
+  loadLayerConfig,
+  makeLayerActions,
+  saveLayerConfig,
+  type LayerActions,
+} from './lib/layers/state';
+import {
+  EMPTY_FE_SETTINGS,
+  resolveInitialOpacity,
+  resolvePinClustering,
+  type FeSettings,
+} from './lib/feSettings';
+import { fetchFeSettings, postFeSettings } from './lib/feSettingsClient';
 import { useExplorerSearch } from './hooks/useExplorerSearch';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { Toaster, toast } from '@/components/ui/toast';
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
-import { FaListUl, FaMapLocationDot, FaCircle } from 'react-icons/fa6';
+import { FaMapLocationDot, FaCircle, FaHouse } from 'react-icons/fa6';
 import { ACTIVE_THREAD_KEY, setActiveThreadId, upsertSessionMeta } from './lib/chatSessions';
 import { createId } from './lib/utils';
 
@@ -131,7 +149,79 @@ export const App: React.FC = () => {
   const [rawGeojsonData, setRawGeojsonData] = useState<PropertyGeoJSON | null>(null);
   const [filteredFeatures, setFilteredFeatures] = useState<PropertyFeature[]>([]);
   const [selectedFeature, setSelectedFeature] = useState<PropertyFeature | null>(null);
-  const [activeLayer, setActiveLayer] = useState<'dark' | 'pale' | 'satellite'>('pale');
+  const [layerConfig, setLayerConfig] = useState<LayerConfigState>(() => loadLayerConfig());
+  /** バックエンド保存のデフォルト設定(レイヤ毎/全体)。失敗時は空=カタログ既定で動作 */
+  const [feSettings, setFeSettings] = useState<FeSettings>(EMPTY_FE_SETTINGS);
+  const feSettingsRef = useRef(feSettings);
+  useEffect(() => {
+    feSettingsRef.current = feSettings;
+  }, [feSettings]);
+  useEffect(() => {
+    let alive = true;
+    fetchFeSettings().then((s) => {
+      if (alive) setFeSettings(s);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  /** 部分マージ保存(自動保存+Toastは呼び出し側UIで行う)。③以降のUIが使用 */
+  const updateFeSettings = useCallback(async (update: FeSettings): Promise<FeSettings | null> => {
+    try {
+      const next = await postFeSettings(update);
+      setFeSettings(next);
+      return next;
+    } catch {
+      return null;
+    }
+  }, []);
+  /** oshimaアダプタへクラスタリング設定を反映(変更時はアクティブレイヤへ即時通知される) */
+  useEffect(() => {
+    configureAdapter('oshima', { clustering: feSettings.layers.oshima?.clustering ?? false });
+  }, [feSettings.layers.oshima?.clustering]);
+  const layerActions = useMemo(
+    () =>
+      makeLayerActions(
+        (updater) => setLayerConfig((c) => updater(c)),
+        (id) => resolveInitialOpacity(feSettingsRef.current, catalogById.get(id)),
+      ),
+    [],
+  );
+  /**
+   * 削除系をtoast+復元付きにラップ(設計doc §4)。
+   * 実行前のlayerConfig snapshotを確保し、toastの[復元]で直接戻す。
+   */
+  const undoableLayerActions: LayerActions = useMemo(() => {
+    const withUndo = (label: string, run: () => void) => {
+      const snapshot = JSON.parse(JSON.stringify(layerConfig)) as LayerConfigState;
+      run();
+      const toastId = `undo-${createId()}`;
+      toast.add({
+        id: toastId,
+        title: `「${label}」を削除しました`,
+        timeout: 6000,
+        actionProps: {
+          children: '復元',
+          onClick: () => {
+            setLayerConfig(() => snapshot);
+            toast.close(toastId);
+          },
+        },
+      });
+    };
+    return {
+      ...layerActions,
+      removeLayer: (id) =>
+        withUndo(catalogById.get(id)?.name ?? id, () => layerActions.removeLayer(id)),
+      removeGroup: (groupId) => {
+        const name = layerConfig.groups.find((g) => g.id === groupId)?.name ?? groupId;
+        withUndo(name, () => layerActions.removeGroup(groupId));
+      },
+    };
+  }, [layerActions, layerConfig]);
+  useEffect(() => {
+    saveLayerConfig(layerConfig);
+  }, [layerConfig]);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [lightboxImages, setLightboxImages] = useState<string[]>([]);
@@ -462,6 +552,7 @@ export const App: React.FC = () => {
     mapBounds,
     excludedUnestimable,
     savedFeatures,
+    layerConfig,
   );
 
   useMapActions({
@@ -473,7 +564,8 @@ export const App: React.FC = () => {
     onSelectFeature: (feature) => {
       openFeature(feature);
     },
-    onLayerChange: setActiveLayer,
+    layerConfig,
+    layerActions: layerActions,
     onPatchFilters: patchFilters,
     onShortlistLocal: applyShortlistLocal,
     resolveFeatureById,
@@ -589,13 +681,16 @@ export const App: React.FC = () => {
   };
 
   const mapVisible = !isMobile || mobileTab === 'map';
+  const pinClustering = resolvePinClustering(feSettings);
 
   const sidebarNode = (
     <Sidebar
       filteredFeatures={filteredFeatures}
       selectedId={selectedFeature?.properties.id ?? null}
-      activeLayer={activeLayer}
-      onLayerChange={setActiveLayer}
+      layerConfig={layerConfig}
+      layerActions={undoableLayerActions}
+      feSettings={feSettings}
+      onFeSettingsChange={updateFeSettings}
       onAdminToggle={() => setIsAdminOpen(true)}
       filters={filters}
       onFiltersChange={patchFilters}
@@ -614,7 +709,8 @@ export const App: React.FC = () => {
       <MapPane
         filteredFeatures={filteredFeatures}
         selectedId={selectedFeature?.properties.id ?? null}
-        activeLayer={activeLayer}
+        layerConfig={layerConfig}
+        pinClustering={pinClustering}
         onMarkerClick={handleMarkerClick}
         onMapMove={handleMapMove}
         onMapInit={handleMapInit}
@@ -687,7 +783,7 @@ export const App: React.FC = () => {
               <div className="grid grid-cols-3 h-14">
                 {(
                   [
-                    { id: 'list' as const, label: 'リスト', icon: <FaListUl /> },
+                    { id: 'list' as const, label: 'ホーム', icon: <FaHouse /> },
                     { id: 'map' as const, label: '地図', icon: <FaMapLocationDot /> },
                     { id: 'chat' as const, label: 'AI', icon: <FaCircle /> },
                   ] as const
@@ -718,7 +814,13 @@ export const App: React.FC = () => {
           isOpen={isAdminOpen}
           onClose={() => setIsAdminOpen(false)}
           onGeoJsonLoaded={setRawGeojsonData}
+          feSettings={feSettings}
+          onFeSettingsUpdate={updateFeSettings}
         />
+
+        <AccessSessionDialog />
+
+        <Toaster />
 
         <LightboxModal
           isOpen={isLightboxOpen}

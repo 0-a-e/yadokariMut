@@ -18,11 +18,11 @@ from domain.models import (
     PropertyImage,
     PropertyLink,
 )
-from domain.pricing import UNION_DURATION_BANDS
+from domain.pricing import UNION_DURATION_BANDS, parse_union_duration_text
 from sources.base import ListCard
 
 BASE = "https://www.unionmonthly.jp"
-PARSER_VERSION = "unionmonthly-detail-1.0"
+PARSER_VERSION = "unionmonthly-detail-1.1"
 
 TAB_TO_KEY = {
     "ショート": "short",
@@ -30,7 +30,11 @@ TAB_TO_KEY = {
     "ロング": "long",
     "スーパーショート": "s_short",
     "sショート": "s_short",
+    "セミショート": "semi_short",
 }
+
+# 全物件共通で掲載されるバナー（物件固有のキャンペーンではないため登録対象外）
+SITE_WIDE_CAMPAIGN_TITLES = {"嬉しい3大特典キャンペーン"}
 
 
 def parse_detail_html(
@@ -230,17 +234,19 @@ def _parse_accesses(soup: BeautifulSoup, html: str) -> list[PropertyAccess]:
     for li in soup.select("ul.gArticle_infoList li"):
         if li.select_one("i.icon-marker"):
             continue
-        t = li.get_text(" ", strip=True)
-        if "徒歩" in t or "駅" in t:
-            candidates.append(t)
+        # <br> 区切りで複駅記載の場合があるため行ごとに候補化
+        for t in (part.strip() for part in li.get_text("\n").split("\n")):
+            if t and ("徒歩" in t or "駅" in t):
+                candidates.append(t)
     meta = soup.select_one('meta[name="description"]')
     if meta and meta.get("content"):
         m = re.search(r"最寄り駅[：:]\s*([^。]+)", meta["content"])
         if m:
             candidates.append(m.group(1).strip())
-    # table 交通 rows
+    # table 交通/最寄駅 rows
     for th in soup.find_all("th"):
-        if "交通" in th.get_text():
+        th_txt = th.get_text(strip=True)
+        if "交通" in th_txt or "最寄" in th_txt:
             td = th.find_parent("tr").find("td") if th.find_parent("tr") else None
             if td:
                 for part in re.split(r"[\n/|]", td.get_text("\n")):
@@ -329,7 +335,6 @@ def _parse_price_plans(soup: BeautifulSoup) -> list[PricePlan]:
     for i, panel in enumerate(panels):
         tab_name = tabs[i] if i < len(tabs) else f"plan_{i}"
         plan_key = TAB_TO_KEY.get(tab_name, re.sub(r"\W+", "_", tab_name).lower() or f"plan_{i}")
-        dmin, dmax = UNION_DURATION_BANDS.get(plan_key, (1, None))
 
         rent_orig = rent_cur = mgmt = clean_orig = clean_cur = None
         duration_text = None
@@ -420,6 +425,22 @@ def _parse_price_plans(soup: BeautifulSoup) -> list[PricePlan]:
         if rent_cur is None and rent_orig is None:
             continue
 
+        # 期間帯域: duration_text からの解析値を優先し、取れない側のみ静的バンドで補完
+        band = UNION_DURATION_BANDS.get(plan_key, (1, None))
+        parsed_min, parsed_max = parse_union_duration_text(duration_text)
+        dmin = parsed_min if parsed_min is not None else band[0]
+        dmax = parsed_max if parsed_max is not None else band[1]
+
+        # 単位: パネル内に「円/日」表記があれば日額（空白を除去して比較）
+        panel_text = re.sub(r"\s+", "", panel.get_text())
+        if "円/日" in panel_text:
+            unit = "per_day"
+        elif plan_key in ("s_short", "semi_short"):
+            # 判定不能テキストへのフォールバック（これらの帯域は日額課金）
+            unit = "per_day"
+        else:
+            unit = "per_month"
+
         plans.append(
             PricePlan(
                 plan_key=plan_key,
@@ -427,7 +448,7 @@ def _parse_price_plans(soup: BeautifulSoup) -> list[PricePlan]:
                 duration_min_days=dmin,
                 duration_max_days=dmax,
                 available=True,
-                presentation_unit="per_month",
+                presentation_unit=unit,
                 rent_original_yen=rent_orig,
                 rent_current_yen=rent_cur,
                 management_yen=mgmt,
@@ -486,6 +507,8 @@ def _parse_campaigns(soup: BeautifulSoup) -> list[Campaign]:
     for sub in soup.select(".campaign_Subtitle, .campaign h3"):
         title = sub.get_text(strip=True)
         if not title or title in ("対象条件", "対象期間"):
+            continue
+        if title in SITE_WIDE_CAMPAIGN_TITLES:
             continue
         parent = sub.find_parent(["section", "div"]) or sub.parent
         content = parent.get_text("\n", strip=True)[:2000] if parent else title

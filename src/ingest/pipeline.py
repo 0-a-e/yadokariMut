@@ -41,6 +41,8 @@ class IngestResult:
     errors: list[str] = field(default_factory=list)
     transfer: dict | None = None
     by_target: dict[str, TargetIngestResult] = field(default_factory=dict)
+    # Run-level status mirrored from finish_scrape_run: ok / partial / error
+    status: str = "ok"
 
 
 class IngestPipeline:
@@ -63,6 +65,7 @@ class IngestPipeline:
         max_details: int | None = None,
         skip_existing_detail_days: int | None = None,
         mark_inactive: bool = False,
+        extra_run_meta: dict | None = None,
     ) -> IngestResult:
         result = IngestResult(source_site=self.adapter.source_id)
         from sources.http.metrics import get_transfer_metrics
@@ -74,6 +77,7 @@ class IngestPipeline:
         run_id = self.repo.start_scrape_run(
             self.adapter.source_id,
             meta={
+                **(extra_run_meta or {}),
                 "max_pages": max_pages,
                 "list_only": list_only,
                 "max_details": max_details,
@@ -104,9 +108,10 @@ class IngestPipeline:
             )
             result.transfer = src_stats
 
+            result.status = self._summarize_run_status(result)
             self.repo.finish_scrape_run(
                 run_id,
-                status="ok" if not result.errors else "partial",
+                status=result.status,
                 list_pages=result.list_pages,
                 list_items=result.list_items,
                 detail_ok=result.detail_ok,
@@ -116,6 +121,7 @@ class IngestPipeline:
         except Exception as e:
             logger.exception("Ingest failed")
             result.errors.append(str(e))
+            result.status = "error"
             self.repo.finish_scrape_run(
                 run_id,
                 status="error",
@@ -128,6 +134,21 @@ class IngestPipeline:
             raise
 
         return result
+
+    @staticmethod
+    def _summarize_run_status(result: IngestResult) -> str:
+        """Run-level status.
+
+        error: every target failed (e.g. site unreachable / IP-blocked —
+               nothing was fetched at all).
+        partial: some target- or item-level errors, but at least one target
+               succeeded.
+        ok: no errors.
+        """
+        statuses = [tr.status for tr in result.by_target.values()]
+        if statuses and all(s == "error" for s in statuses):
+            return "error"
+        return "ok" if not result.errors else "partial"
 
     def _run_target(
         self,
@@ -154,10 +175,10 @@ class IngestPipeline:
         )
 
         try:
-            cards = self._collect_list_cards_for_target(
+            cards, completed = self._collect_list_cards_for_target(
                 target, result, tr, max_pages=max_pages
             )
-            tr.list_completed = True
+            tr.list_completed = completed
             tr.list_items = len(cards)
             tr.seen_external_ids = {c.external_id for c in cards}
             result.list_items += tr.list_items
@@ -201,6 +222,7 @@ class IngestPipeline:
                 detail_ok=tr.detail_ok,
                 detail_fail=tr.detail_fail,
                 error_summary="; ".join(tr.errors[:3]) if tr.errors else None,
+                list_completed=tr.list_completed,
             )
         except Exception as e:
             logger.exception("Target ingest failed: %s", target_key)
@@ -215,6 +237,7 @@ class IngestPipeline:
                 detail_ok=tr.detail_ok,
                 detail_fail=tr.detail_fail,
                 error_summary=str(e),
+                list_completed=tr.list_completed,
             )
             # Continue other targets rather than aborting the whole source run
             return
@@ -254,14 +277,17 @@ class IngestPipeline:
         tr: TargetIngestResult,
         *,
         max_pages: int | None,
-    ) -> list[ListCard]:
+    ) -> tuple[list[ListCard], bool]:
         by_id: dict[str, ListCard] = {}
         page_size = self.adapter.page_size()
         page_no = 1
         total: int | None = None
+        completed = True
 
         while True:
             if max_pages is not None and page_no > max_pages:
+                # Hit caller-imposed page cap: crawl is partial, not site-complete.
+                completed = False
                 break
             try:
                 fetched = self.adapter.fetch_list_page(target, page_no)
@@ -300,7 +326,7 @@ class IngestPipeline:
                 break
             page_no += 1
 
-        return list(by_id.values())
+        return list(by_id.values()), completed
 
     def _scrape_details(
         self,

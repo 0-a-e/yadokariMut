@@ -30,6 +30,7 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
   const scoreRound = Math.round(score);
   const est = props.stay_estimate;
   const stayMode = priceMode === 'stay' && est?.ok && est.stayTotalYen != null;
+  const isUnlisted = props.is_active === false;
 
   return (
     <Card
@@ -39,6 +40,7 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
         cursor-pointer transition-all duration-300
         hover:border-primary hover:bg-primary/[0.04] hover:-translate-y-0.5
         ${isActive ? '!border-primary !bg-primary/[0.04] -translate-y-0.5' : ''}
+        ${isUnlisted ? 'opacity-60 saturate-50' : ''}
       `}
     >
       <CardContent className="flex gap-3 p-3">
@@ -121,6 +123,14 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
                 className="text-xs font-semibold py-0.5 px-1.5 uppercase bg-success/[0.15] text-success border-success/30 shrink-0"
               >
                 Saved
+              </Badge>
+            )}
+            {isUnlisted && (
+              <Badge
+                variant="outline"
+                className="text-[10px] font-semibold py-0.5 px-1.5 bg-warning/[0.15] text-warning border-warning/30 shrink-0"
+              >
+                掲載終了
               </Badge>
             )}
           </div>

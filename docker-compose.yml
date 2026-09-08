@@ -22,7 +22,15 @@ services:
       - YADOKARIMUT_DATA_LAYER=v2
       - YADOKARIMUT_CHECKPOINT_DB=/app/data/agent_checkpoints.db
       - ENABLE_SCHEDULER=true
-      - SCHEDULER_CRON=0 2 * * *
+      # 県ローテーション収集: cron ごとに各県を 1 バッチずつ順に取得する
+      - ROTATION_SOURCES=bratto,unionmonthly
+      - ROTATION_CRON_BRATTO=0 2,14 * * *
+      - ROTATION_CRON_UNIONMONTHLY=0 5,17 * * *
+      - ROTATION_DAILY_LIMIT_BRATTO=500
+      - ROTATION_DAILY_LIMIT_UNIONMONTHLY=500
+      - ROTATION_DEFAULT_EST=60
+      - ROTATION_FAILURE_MAX=3
+      - ROTATION_FAILURE_COOLDOWN_HOURS=48
       - PYTHONUNBUFFERED=1
     restart: always
     healthcheck:

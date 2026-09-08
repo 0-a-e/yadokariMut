@@ -129,6 +129,11 @@ export function matchesMapFilters(
   if (filters.status === 'hide' && status !== 'hide') return false;
   if (filters.status === 'reject' && status !== 'reject') return false;
 
+  // 掲載状態（全て/掲載中/非掲載）。is_active 未定義は掲載扱い（旧データ互換）
+  const isActive = props.is_active !== false;
+  if (filters.listingVisibility === 'active' && !isActive) return false;
+  if (filters.listingVisibility === 'inactive' && isActive) return false;
+
   if (filters.searchQuery) {
     const q = filters.searchQuery.toLowerCase();
     const haystack = [
@@ -219,7 +224,13 @@ function sortFeatures(
       }
     }
   });
-  return sorted;
+  // 掲載終了(is_active === false)はどのソートキーでも末尾に回す
+  const activeList: PropertyFeature[] = [];
+  const inactiveList: PropertyFeature[] = [];
+  for (const feat of sorted) {
+    (feat.properties.is_active === false ? inactiveList : activeList).push(feat);
+  }
+  return [...activeList, ...inactiveList];
 }
 
 /**

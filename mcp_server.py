@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src
 
 from typing import Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from services import (
     db_compare_properties,
@@ -21,7 +21,7 @@ from services import (
 )
 
 
-mcp = FastMCP(
+mcp = MCPServer(
     "yadokari-mut",
     instructions=(
         "Search, compare, shortlist, and export monthly apartment properties "
@@ -44,7 +44,12 @@ def search_properties(
     exclude_hidden: bool = True,
     limit: int = 50,
 ) -> list[dict]:
-    """Search properties with structured filters."""
+    """Search properties with structured filters.
+
+    結果には掲載終了(is_active=false)の shortlist 判定済み物件も含まれる。
+    is_active=false の物件は必ずユーザーに「掲載終了」である旨を伝えること。
+    価格等は最終取得時点の参考値。
+    """
     return db_search_properties(
         {
             "prefecture_name": prefecture_name,
@@ -63,7 +68,11 @@ def search_properties(
 
 @mcp.tool()
 def get_property_detail(property_id: str) -> Optional[dict]:
-    """Fetch complete details for a property by SQLite id or source room_id."""
+    """Fetch complete details for a property by SQLite id or source room_id.
+
+    レスポンスの is_active=false はサイト掲載終了を示す。その場合の価格・
+    キャンペーン等は最終取得時点の参考値であり、ユーザーに必ず伝えること。
+    """
     return db_get_property_detail(property_id)
 
 
@@ -92,7 +101,10 @@ def export_geojson(
     exclude_hidden: bool = True,
     file_path: Optional[str] = None,
 ) -> dict:
-    """Export filtered properties as a GeoJSON file for map viewing."""
+    """Export filtered properties as a GeoJSON file for map viewing.
+
+    各 feature の properties に is_active を含む（false=サイト掲載終了）。
+    """
     params = {
         "prefecture_name": prefecture_name,
         "max_monthly_total_yen": max_monthly_total_yen,

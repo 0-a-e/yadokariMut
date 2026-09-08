@@ -1,5 +1,5 @@
 beautifulsoup4
-mcp>=1.27.1
+mcp>=2.1.1,<3
 openai
 python-dotenv
 requests

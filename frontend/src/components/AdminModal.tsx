@@ -1,5 +1,10 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { AdminSourceInfo, AdminStats, PropertyGeoJSON } from '../types';
+import {
+  AdminSourceInfo,
+  AdminStats,
+  PropertyGeoJSON,
+  RotationSourceStatus,
+} from '../types';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -11,12 +16,19 @@ import {
   AccordionTrigger,
   AccordionContent,
 } from '@/components/ui/accordion';
-import { FaGear, FaXmark, FaCloudArrowUp } from 'react-icons/fa6';
+import { FaGear, FaXmark, FaCloudArrowUp, FaCloudArrowDown, FaMapLocationDot } from 'react-icons/fa6';
+import { Loader2 } from 'lucide-react';
+import { MapDisplaySettingsTab } from './MapDisplaySettingsTab';
+import type { FeSettings } from '../lib/feSettings';
 
 interface AdminModalProps {
   isOpen: boolean;
   onClose: () => void;
   onGeoJsonLoaded?: (data: PropertyGeoJSON) => void;
+  /** フロントエンド設定(地図表示タブで表示・更新) */
+  feSettings?: FeSettings;
+  /** App の updateFeSettings(部分マージ保存。失敗時 null) */
+  onFeSettingsUpdate?: (update: FeSettings) => Promise<FeSettings | null>;
 }
 
 function formatAdminTs(iso: string | null | undefined): string {
@@ -35,9 +47,47 @@ function formatAdminTs(iso: string | null | undefined): string {
   }
 }
 
-export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose, onGeoJsonLoaded }) => {
+/** next_batch.reason の日本語表示マップ（未登録コードはそのまま表示） */
+const ROTATION_REASON_LABELS: Record<string, string> = {
+  daily_budget_exhausted: '本日の予算を使い切り',
+};
+
+/** run/task ステータス → バッジ配色(エラー=赤・部分失敗/中断=黄・OK=緑) */
+function runStatusBadgeClass(status: string | null | undefined): string {
+  switch (status) {
+    case 'error':
+      return 'bg-danger/[0.12] text-danger border-danger/30';
+    case 'partial':
+    case 'aborted':
+      return 'bg-warning/[0.12] text-warning border-warning/30';
+    case 'running':
+      return 'bg-primary/10 text-primary border-primary/30';
+    default:
+      return 'bg-success/10 text-success border-success/30';
+  }
+}
+
+/** 次回バッチ対象県の表示ラベル（県名があれば名前、無ければ slug） */
+function nextBatchPrefLabels(src: RotationSourceStatus): string {
+  const bySlug = new Map((src.prefs || []).map((p) => [p.slug, p]));
+  return (src.next_batch?.prefs || [])
+    .map((slug) => bySlug.get(slug)?.name || slug)
+    .join(', ');
+}
+
+/** タブ定義(iPad設定風の左タブ列。モバイル幅では横並び上部タブ) */
+type AdminTabId = 'scrape' | 'map';
+
+const ADMIN_TABS: ReadonlyArray<{ id: AdminTabId; label: string; icon: React.ReactNode }> = [
+  { id: 'scrape', label: 'スクレイプ管理', icon: <FaCloudArrowDown /> },
+  { id: 'map', label: '地図表示', icon: <FaMapLocationDot /> },
+];
+
+export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose, onGeoJsonLoaded, feSettings, onFeSettingsUpdate }) => {
+  const [activeTab, setActiveTab] = useState<AdminTabId>('scrape');
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [sources, setSources] = useState<AdminSourceInfo[]>([]);
+  const [rotationSources, setRotationSources] = useState<RotationSourceStatus[]>([]);
   const [dataLayer, setDataLayer] = useState<'v1' | 'v2' | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** Selected prefecture slugs per source id */
@@ -72,16 +122,29 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose, onGeoJs
     }
   }, []);
 
+  const fetchRotation = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/rotation');
+      if (!res.ok) throw new Error('Could not fetch rotation status');
+      const data = await res.json();
+      setRotationSources(data.sources || []);
+    } catch (err) {
+      console.error(err);
+    }
+  }, []);
+
   useEffect(() => {
     if (!isOpen) return;
     fetchStats();
     fetchSources();
+    fetchRotation();
     const interval = setInterval(() => {
       fetchStats();
       fetchSources();
+      fetchRotation();
     }, 2000);
     return () => clearInterval(interval);
-  }, [isOpen, fetchStats, fetchSources]);
+  }, [isOpen, fetchStats, fetchSources, fetchRotation]);
 
   useEffect(() => {
     if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
@@ -168,7 +231,29 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose, onGeoJs
       'スコア再計算タスクを開始しました。',
     );
 
+  const triggerRotationRun = (src: RotationSourceStatus) => {
+    const labels = nextBatchPrefLabels(src) || '—';
+    triggerTask(
+      '/api/admin/rotation/run',
+      `【${src.display_name}】県ローテーションの 1 バッチを実行しますか？\n` +
+        `次回バッチ: ${labels}（予想 ${src.next_batch?.est_items ?? 0} 件）`,
+      'ローテーションタスクを開始しました。',
+      {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: src.id }),
+      },
+    );
+  };
+
   const isRunning = stats?.task_status?.status === 'running';
+  const taskResult = stats?.task_status?.last_result ?? null;
+  // 待機中は直前タスクの結果をバッジに反映(エラー/一部失敗を見逃さない)
+  const taskError = !isRunning ? stats?.task_status.error ?? null : null;
+  const idleBadgeStatus = taskError
+    ? 'error'
+    : taskResult === 'partial'
+      ? 'partial'
+      : 'ok';
   const availableSources = sources.filter((s) => s.available);
 
   const readGeoJsonFile = (file: File) => {
@@ -189,18 +274,53 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose, onGeoJs
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         showCloseButton={false}
-        className="max-w-[640px] max-h-[90dvh] overflow-y-auto bg-panel backdrop-blur-glass p-0 gap-0 app-scrollbar"
+        className="w-[calc(100%-2rem)] h-[calc(100dvh-2rem)] sm:w-[calc(100%-4rem)] sm:h-[calc(100dvh-4rem)] max-w-none sm:max-w-none flex flex-col overflow-hidden bg-panel backdrop-blur-glass p-0 gap-0 [&>*]:min-w-0"
       >
-        <DialogHeader className="flex flex-row justify-between items-center py-[18px] px-5 border-b border-border gap-0">
+        <DialogHeader className="flex flex-row justify-between items-center py-[18px] px-5 border-b border-border gap-0 shrink-0">
           <DialogTitle className="text-base font-semibold text-text flex items-center gap-2">
-            <FaGear /> 管理者ダッシュボード
+            <FaGear /> 設定
           </DialogTitle>
           <Button variant="ghost" size="icon-sm" onClick={onClose}>
             <FaXmark className="text-lg text-text-muted" />
           </Button>
         </DialogHeader>
 
-        <div className="p-5 flex flex-col gap-5">
+        {/* ── 垂直タブ列 + コンテンツ(iPad設定風) ──
+            モーダルは画面基準の固定サイズ(4辺等幅の余白)で、スクロールは
+            コンテンツペイン側のみ。モバイル(<640px)ではタブが横並び上部。
+            タブ列の背景は bg-panel が半透明のため不透明色を敷く */}
+        <div className="flex flex-col sm:flex-row flex-1 min-h-0 min-w-0">
+          <div
+            role="tablist"
+            aria-label="設定カテゴリ"
+            className="flex sm:flex-col gap-1 w-full sm:w-[192px] shrink-0 p-2 border-b sm:border-b-0 sm:border-r border-border bg-[#161821] z-10"
+          >
+            {ADMIN_TABS.map((tab) => {
+              const active = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={
+                    'flex-1 sm:flex-none flex items-center justify-center sm:justify-start gap-2 rounded-md px-3 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ' +
+                    (active
+                      ? 'bg-primary/15 text-text'
+                      : 'text-text-muted hover:bg-white/[0.04] hover:text-text')
+                  }
+                >
+                  <span className="text-base shrink-0">{tab.icon}</span>
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="p-5 flex flex-col gap-5 min-w-0 flex-1 overflow-y-auto app-scrollbar">
+          {activeTab === 'scrape' ? (
+          <>
           {error && (
             <Alert variant="destructive" className="text-xs">
               <AlertDescription>{error}</AlertDescription>
@@ -408,7 +528,9 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose, onGeoJs
                                         {t.last_run_status && (
                                           <Badge
                                             variant="outline"
-                                            className="text-[9px] h-4 px-1 font-mono"
+                                            className={`text-[9px] h-4 px-1 font-mono ${runStatusBadgeClass(
+                                              t.last_run_status,
+                                            )}`}
                                           >
                                             run:{t.last_run_status}
                                           </Badge>
@@ -519,6 +641,134 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose, onGeoJs
             )}
           </div>
 
+          {/* Prefecture rotation (cron batch scrape) */}
+          <div>
+            <h3 className="text-sm mb-3 border-l-[3px] border-primary pl-2 text-text">
+              県ローテーション
+            </h3>
+            <p className="text-xs text-text-muted mb-3">
+              cron 時刻ごとに各県を 1 バッチずつ順番に取得します。次のバッチを手動で先行実行できます。
+            </p>
+            {rotationSources.length === 0 ? (
+              <div className="border border-border rounded-lg p-3 text-xs text-text-muted">
+                ローテーション情報を読み込み中…
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {rotationSources.map((src) => {
+                  const sortedPrefs = [...src.prefs].sort(
+                    (a, b) => a.queue_position - b.queue_position,
+                  );
+                  const nb = src.next_batch;
+                  return (
+                    <div key={src.id} className="border border-border rounded-lg p-3">
+                      <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                        <strong className="text-sm">{src.display_name}</strong>
+                        <Badge variant="outline" className="text-[10px] font-mono">
+                          {src.id}
+                        </Badge>
+                        <Badge variant="outline" className="text-[10px] font-mono">
+                          cron {src.cron}
+                        </Badge>
+                        <span className="ml-auto text-xs text-text-muted whitespace-nowrap">
+                          本日 {src.used_today} / {src.daily_limit} 件
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-2 text-xs">
+                        <span className="text-text-muted">次回バッチ:</span>
+                        <span className="font-medium text-text">
+                          {nextBatchPrefLabels(src) || '—'}
+                        </span>
+                        <span className="text-text-muted">
+                          予想 {nb?.est_items ?? 0} 件
+                        </span>
+                        {nb?.unlimited && (
+                          <Badge variant="secondary" className="text-[10px]">
+                            上限無視(単独県)
+                          </Badge>
+                        )}
+                        {nb?.reason && (
+                          <span className="text-warning">
+                            {ROTATION_REASON_LABELS[nb.reason] || nb.reason}
+                          </span>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="default"
+                          className="ml-auto whitespace-nowrap h-7 text-xs hover:shadow-[0_0_12px_var(--primary-glow)]"
+                          disabled={isRunning}
+                          onClick={() => triggerRotationRun(src)}
+                        >
+                          1バッチ実行
+                        </Button>
+                      </div>
+
+                      <div className="max-h-60 overflow-auto border border-border rounded-md app-scrollbar text-xs">
+                        <div className="w-max min-w-full">
+                        <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_4.5rem_5.5rem_6rem_6rem] gap-1 divide-x divide-border/60 bg-white/[0.04] px-2 py-1.5 text-text-muted font-semibold">
+                          <span>順位</span>
+                          <span>県名</span>
+                          <span className="text-right">既知件数</span>
+                          <span className="text-right">連続失敗</span>
+                          <span>前回完全取得</span>
+                          <span>前回実行</span>
+                        </div>
+                        {sortedPrefs.map((p) => (
+                          <div
+                            key={p.slug}
+                            className={
+                              'grid grid-cols-[2.5rem_minmax(0,1fr)_4.5rem_5.5rem_6rem_6rem] gap-1 divide-x divide-border/60 px-2 py-1.5 border-t border-border' +
+                              (p.is_running === true ? ' bg-primary/[0.06]' : '')
+                            }
+                          >
+                            <span className="font-mono text-text-muted">
+                              {p.queue_position}
+                            </span>
+                            <span className="flex items-center justify-between gap-1 min-w-0">
+                              <span className="truncate min-w-0">
+                                <span className="font-medium text-text">{p.name}</span>{' '}
+                                <span className="font-mono text-[10px] text-text-muted">
+                                  {p.slug}
+                                </span>
+                              </span>
+                              {p.is_running === true && (
+                                <Loader2
+                                  className="size-3 animate-spin shrink-0 text-primary"
+                                  aria-label="取得中"
+                                />
+                              )}
+                            </span>
+                            <span className="text-right">{p.known_total ?? '-'}</span>
+                            <span className="flex items-center justify-end gap-1">
+                              <span
+                                className={
+                                  p.consecutive_failures ? '' : 'text-text-muted'
+                                }
+                              >
+                                {p.consecutive_failures ?? 0}
+                              </span>
+                              {p.suppressed === true && (
+                                <Badge className="border-warning/30 bg-warning/[0.15] px-1.5 text-[10px] text-warning">
+                                  抑止中
+                                </Badge>
+                              )}
+                            </span>
+                            <span className={p.last_full_ok_at ? '' : 'text-text-muted'}>
+                              {p.last_full_ok_at ? formatAdminTs(p.last_full_ok_at) : '未取得'}
+                            </span>
+                            <span>{formatAdminTs(p.last_run_at)}</span>
+                          </div>
+                        ))}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <div>
             <h3 className="text-sm mb-3 border-l-[3px] border-primary pl-2 text-text">
               その他のバックグラウンド操作
@@ -564,16 +814,25 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose, onGeoJs
               className={`mb-2 text-xs ${
                 isRunning
                   ? 'bg-warning/[0.15] text-warning border-warning/30'
-                  : 'bg-success/10 text-success border-success/30'
+                  : runStatusBadgeClass(idleBadgeStatus)
               }`}
             >
               ステータス:{' '}
               {stats
                 ? isRunning
                   ? `実行中 (${stats.task_status.current_task})`
-                  : '待機中 (Idle)'
+                  : taskError
+                    ? 'エラーあり'
+                    : taskResult === 'partial'
+                      ? '一部失敗 (partial)'
+                      : '待機中 (Idle)'
                 : '読み込み中...'}
             </Badge>
+            {!isRunning && taskError && (
+              <p className="mb-2 text-xs leading-snug text-danger/90 break-all">
+                {taskError}
+              </p>
+            )}
             <pre
               className="bg-black/40 text-[#a5b4fc] font-mono p-3 rounded-md text-xs max-h-40 overflow-y-auto whitespace-pre-wrap border border-border"
               ref={consoleRef}
@@ -583,6 +842,54 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose, onGeoJs
                 : '実行ログはありません。'}
             </pre>
           </div>
+
+          {/* 直近のスクレイプ実行(DB由来のためプロセス再起動後も残る) */}
+          {(stats?.recent_runs?.length ?? 0) > 0 && (
+            <div>
+              <h3 className="text-sm mb-3 border-l-[3px] border-primary pl-2 text-text flex items-baseline gap-2 flex-wrap">
+                直近のスクレイプ実行
+                <span className="text-[11px] font-normal text-text-muted">
+                  DB記録・再起動後も保持
+                </span>
+              </h3>
+              <div className="max-h-44 overflow-y-auto border border-border rounded-md divide-y divide-border app-scrollbar">
+                {stats!.recent_runs!.map((r) => (
+                  <div key={r.id} className="px-2 py-1.5 text-xs">
+                    <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                      <Badge
+                        variant="outline"
+                        className={`text-[9px] h-4 px-1 font-mono ${runStatusBadgeClass(r.status)}`}
+                      >
+                        {r.status}
+                      </Badge>
+                      <span className="font-medium text-text">{r.source_site}</span>
+                      <span className="font-mono text-[10px] text-text-muted">
+                        #{r.id}
+                      </span>
+                      <span className="font-mono text-[10px] text-text-muted whitespace-nowrap">
+                        {formatAdminTs(r.started_at)}〜{formatAdminTs(r.finished_at)}
+                      </span>
+                      <span className="font-mono text-[10px] text-text-muted whitespace-nowrap">
+                        {r.list_items ?? 0}件・詳細 ok:{r.detail_ok ?? 0} fail:
+                        {r.detail_fail ?? 0}
+                      </span>
+                    </div>
+                    {r.error_summary && (
+                      <p
+                        className={`mt-0.5 text-[10px] leading-snug break-all ${
+                          r.status === 'error' ? 'text-danger/80' : 'text-text-muted'
+                        }`}
+                      >
+                        {r.error_summary.length > 300
+                          ? `${r.error_summary.slice(0, 300)}…`
+                          : r.error_summary}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {onGeoJsonLoaded && (
             <div>
@@ -627,6 +934,12 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose, onGeoJs
               </div>
             </div>
           )}
+          </>
+          ) : feSettings && onFeSettingsUpdate ? (
+            /* ── 地図表示タブ ── */
+            <MapDisplaySettingsTab feSettings={feSettings} onUpdate={onFeSettingsUpdate} />
+          ) : null}
+          </div>
         </div>
       </DialogContent>
     </Dialog>

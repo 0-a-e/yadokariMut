@@ -3,11 +3,15 @@ import L from 'leaflet';
 import 'leaflet.markercluster';
 import { PropertyFeature, BoundsData } from '../types';
 import { getScoreColor } from './PropertyCard';
+import { LayerEngine } from '../lib/layers/engine';
+import type { LayerConfigState } from '../lib/layers/types';
 
 interface MapPaneProps {
   filteredFeatures: PropertyFeature[];
   selectedId: number | null;
-  activeLayer: 'dark' | 'pale' | 'satellite';
+  layerConfig: LayerConfigState;
+  /** 物件ピンのクラスタリング(未指定=true=クラスタあり) */
+  pinClustering: boolean;
   onMarkerClick: (feature: PropertyFeature) => void;
   onMapMove?: (center: [number, number], zoom: number, bounds: BoundsData) => void;
   onMapInit?: (map: L.Map, cluster: any) => void;
@@ -16,48 +20,38 @@ interface MapPaneProps {
 }
 
 export const MapPane: React.FC<MapPaneProps> = ({
-  filteredFeatures, selectedId, activeLayer, onMarkerClick, onMapMove, onMapInit,
+  filteredFeatures, selectedId, layerConfig, pinClustering, onMarkerClick, onMapMove, onMapInit,
   isVisible = true,
 }) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const clusterGroupRef = useRef<any>(null);
-  const layersRef = useRef<{ [key: string]: L.TileLayer }>({});
+  const layerEngineRef = useRef<LayerEngine | null>(null);
   const markersRef = useRef<{ [key: number]: L.Marker }>({});
   const isFirstLoadRef = useRef(true);
   const isPanningToSelectedRef = useRef(false);
   const prevFeatureSignatureRef = useRef<string>('');
-
+  /** 現行グループが markerClusterGroup かどうか(pinClustering トグルで作り直す) */
+  const groupIsClusterRef = useRef<boolean>(pinClustering);
+  /** 初期化effect内で最新propsを読むためのref */
+  const pinClusteringRef = useRef(pinClustering);
+  const onMapInitRef = useRef(onMapInit);
   useEffect(() => {
-    if (!mapRef.current || mapInstanceRef.current) return;
+    pinClusteringRef.current = pinClustering;
+  }, [pinClustering]);
+  useEffect(() => {
+    onMapInitRef.current = onMapInit;
+  }, [onMapInit]);
 
-    const map = L.map(mapRef.current, { zoomControl: false }).setView([35.6812, 139.7671], 13);
-    mapInstanceRef.current = map;
-    L.control.zoom({ position: 'bottomright' }).addTo(map);
-
-    // Resizable panels / tab visibility changes need invalidateSize
-    const ro = new ResizeObserver(() => {
-      map.invalidateSize({ animate: false });
-    });
-    ro.observe(mapRef.current);
-    // store for cleanup on unmount of this init effect
-    (map as any)._resizeObserver = ro;
-
-    const darkLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      subdomains: 'abcd', maxZoom: 20,
-    });
-    const paleLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', {
-      attribution: '&copy; <a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院</a>', maxZoom: 18,
-    });
-    const satelliteLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
-      attribution: '&copy; <a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院</a>', maxZoom: 18,
-    });
-
-    layersRef.current = { dark: darkLayer, pale: paleLayer, satellite: satelliteLayer };
-    paleLayer.addTo(map);
-
-    const clusterGroup = (L as any).markerClusterGroup({
+  /**
+   * ピングループを生成する。markercluster に実行時トグルAPIは無いため、
+   * pinClustering 変化時はグループを作り直してマーカーを再投入する。
+   * 無効時は L.featureGroup()(getBounds を持つため AIツール側の
+   * mapPaneRef.cluster.getBounds() 呼び出しと互換)を使う
+   */
+  const buildPinGroup = (clustering: boolean): any => {
+    if (!clustering) return L.featureGroup();
+    return (L as any).markerClusterGroup({
       showCoverageOnHover: false,
       maxClusterRadius: 45,
       iconCreateFunction: (cluster: any) => {
@@ -69,11 +63,32 @@ export const MapPane: React.FC<MapPaneProps> = ({
         return new L.DivIcon({ html: `<div><span>${childCount}</span></div>`, className: 'marker-cluster' + c, iconSize: new L.Point(40, 40) });
       },
     });
-    map.addLayer(clusterGroup);
-    clusterGroupRef.current = clusterGroup;
+  };
+
+  useEffect(() => {
+    if (!mapRef.current || mapInstanceRef.current) return;
+
+    const map = L.map(mapRef.current, { zoomControl: false, maxZoom: 20 }).setView([35.6812, 139.7671], 13);
+    mapInstanceRef.current = map;
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+    // Resizable panels / tab visibility changes need invalidateSize
+    const ro = new ResizeObserver(() => {
+      map.invalidateSize({ animate: false });
+    });
+    ro.observe(mapRef.current);
+    // store for cleanup on unmount of this init effect
+    (map as any)._resizeObserver = ro;
+
+    layerEngineRef.current = new LayerEngine(map);
+
+    const pinGroup = buildPinGroup(pinClusteringRef.current);
+    map.addLayer(pinGroup);
+    clusterGroupRef.current = pinGroup;
+    groupIsClusterRef.current = pinClusteringRef.current;
 
     if (onMapInit) {
-      onMapInit(map, clusterGroup);
+      onMapInit(map, pinGroup);
     }
 
     return () => {
@@ -82,6 +97,8 @@ export const MapPane: React.FC<MapPaneProps> = ({
       } catch {
         /* ignore */
       }
+      layerEngineRef.current?.destroy();
+      layerEngineRef.current = null;
       map.remove();
       mapInstanceRef.current = null;
     };
@@ -115,13 +132,33 @@ export const MapPane: React.FC<MapPaneProps> = ({
   }, [onMapMove]);
 
   useEffect(() => {
+    layerEngineRef.current?.sync(layerConfig);
+  }, [layerConfig]);
+
+  // pinClustering トグル: markercluster に実行時トグルAPIは無いため
+  // グループを作り直し、markersRef の現行マーカーを新しいグループへ再投入する
+  useEffect(() => {
     const map = mapInstanceRef.current;
-    if (!map) return;
-    Object.entries(layersRef.current).forEach(([name, layer]) => {
-      if (name === activeLayer) { if (!map.hasLayer(layer)) layer.addTo(map); }
-      else { if (map.hasLayer(layer)) map.removeLayer(layer); }
-    });
-  }, [activeLayer]);
+    const prevGroup = clusterGroupRef.current;
+    if (!map || !prevGroup) return;
+    if (pinClustering === groupIsClusterRef.current) return;
+
+    const nextGroup = buildPinGroup(pinClustering);
+    map.removeLayer(prevGroup);
+    map.addLayer(nextGroup);
+    clusterGroupRef.current = nextGroup;
+    groupIsClusterRef.current = pinClustering;
+
+    const markers = Object.values(markersRef.current);
+    if (pinClustering) {
+      (nextGroup as any).addLayers(markers);
+    } else {
+      markers.forEach((m) => nextGroup.addLayer(m));
+    }
+
+    // App 側 mapPaneRef 経由の AIツールに現行グループを渡し続ける
+    onMapInitRef.current?.(map, nextGroup);
+  }, [pinClustering]);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -202,10 +239,17 @@ export const MapPane: React.FC<MapPaneProps> = ({
       markers.push(marker);
     });
 
-    cluster.addLayers(markers);
+    // markerClusterGroup なら bulk addLayers、featureGroup なら個別 addLayer
+    if (groupIsClusterRef.current && typeof (cluster as any).addLayers === 'function') {
+      (cluster as any).addLayers(markers);
+    } else {
+      markers.forEach((m) => cluster.addLayer(m));
+    }
     if (markers.length > 0 && isFirstLoadRef.current) {
-      map.fitBounds(cluster.getBounds(), { padding: [50, 50] });
       isFirstLoadRef.current = false;
+      // クラスタ有無によらず全マーカーが収まる範囲へフィット
+      const bounds = L.latLngBounds(markers.map((m) => m.getLatLng()));
+      map.fitBounds(bounds, { padding: [50, 50] });
     }
   }, [filteredFeatures, onMarkerClick]);
 
@@ -237,7 +281,15 @@ export const MapPane: React.FC<MapPaneProps> = ({
           }, 300);
         };
 
-        if (cluster && typeof cluster.hasLayer === 'function' && cluster.hasLayer(marker) && (marker as any).__parent) {
+        // zoomToShowLayer はクラスタ時のみ。無効時(featureGroup)は直接 panTo
+        if (
+          groupIsClusterRef.current &&
+          cluster &&
+          typeof (cluster as any).zoomToShowLayer === 'function' &&
+          typeof cluster.hasLayer === 'function' &&
+          cluster.hasLayer(marker) &&
+          (marker as any).__parent
+        ) {
           try {
             cluster.zoomToShowLayer(marker, () => {
               map.panTo(latlng);

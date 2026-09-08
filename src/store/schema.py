@@ -229,7 +229,27 @@ DDL_STATEMENTS = [
         detail_ok INTEGER DEFAULT 0,
         detail_fail INTEGER DEFAULT 0,
         error_summary TEXT,
+        list_completed INTEGER DEFAULT 0,
         FOREIGN KEY(run_id) REFERENCES scrape_runs(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS rotation_state (
+        source_site TEXT NOT NULL,
+        prefecture_slug TEXT NOT NULL,
+        known_total INTEGER,
+        last_full_ok_at TEXT,
+        last_run_at TEXT,
+        consecutive_failures INTEGER DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_site, prefecture_slug)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_v2_properties_site_id ON properties(source_site, external_id);",
@@ -243,6 +263,7 @@ DDL_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_v2_snapshots_prop ON property_snapshots(property_id);",
     "CREATE INDEX IF NOT EXISTS idx_v2_scrape_runs_source ON scrape_runs(source_site, started_at);",
     "CREATE INDEX IF NOT EXISTS idx_srt_source_target ON scrape_run_targets(source_site, target_key, finished_at);",
+    "CREATE INDEX IF NOT EXISTS idx_rotation_state_site ON rotation_state(source_site);",
 ]
 
 
@@ -252,6 +273,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     for stmt in DDL_STATEMENTS:
         cur.execute(stmt)
+    _migrate_scrape_run_targets(cur)
+    _migrate_rotation_state(cur)
     cur.execute(
         """
         INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
@@ -260,6 +283,28 @@ def init_schema(conn: sqlite3.Connection) -> None:
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
+
+
+def _migrate_scrape_run_targets(cur: sqlite3.Cursor) -> None:
+    """Add list_completed to pre-existing scrape_run_targets (idempotent)."""
+    cols = {row[1] for row in cur.execute("PRAGMA table_info(scrape_run_targets)")}
+    if not cols:
+        return
+    if "list_completed" not in cols:
+        cur.execute(
+            "ALTER TABLE scrape_run_targets ADD COLUMN list_completed INTEGER DEFAULT 0"
+        )
+
+
+def _migrate_rotation_state(cur: sqlite3.Cursor) -> None:
+    """Add consecutive_failures to pre-existing rotation_state (idempotent)."""
+    cols = {row[1] for row in cur.execute("PRAGMA table_info(rotation_state)")}
+    if not cols:
+        return
+    if "consecutive_failures" not in cols:
+        cur.execute(
+            "ALTER TABLE rotation_state ADD COLUMN consecutive_failures INTEGER DEFAULT 0"
+        )
 
 
 def get_schema_version(conn: sqlite3.Connection) -> int | None:

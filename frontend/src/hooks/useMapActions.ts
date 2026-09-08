@@ -9,6 +9,11 @@ import {
   ShortlistStatus,
 } from "../types";
 import { applyMapFilters, mergeMapFilters } from "../lib/filterLogic";
+import type { LayerConfigState } from "../lib/layers/types";
+import { LAYER_TAG_LABELS } from "../lib/layers/types";
+import { catalogById, LAYER_CATALOG } from "../lib/layers/catalog";
+import type { LayerActions } from "../lib/layers/state";
+import { flattenOrderIds } from "../lib/layers/state";
 import L from "leaflet";
 
 interface UseMapActionsProps {
@@ -18,7 +23,8 @@ interface UseMapActionsProps {
   filtersRef: React.MutableRefObject<MapFilters>;
   mapBounds: BoundsData | null;
   onSelectFeature: (feature: PropertyFeature) => void;
-  onLayerChange: (layer: "dark" | "pale" | "satellite") => void;
+  layerConfig: LayerConfigState;
+  layerActions: LayerActions;
   onPatchFilters: (patch: Partial<MapFilters> & { reset?: boolean }) => void;
   onShortlistLocal: (
     propertyId: number,
@@ -38,7 +44,8 @@ export function useMapActions({
   filtersRef,
   mapBounds,
   onSelectFeature,
-  onLayerChange,
+  layerConfig,
+  layerActions,
   onPatchFilters,
   onShortlistLocal,
   resolveFeatureById,
@@ -53,10 +60,15 @@ export function useMapActions({
     onSelectFeatureRef.current = onSelectFeature;
   }, [onSelectFeature]);
 
-  const onLayerChangeRef = useRef(onLayerChange);
+  const layerConfigRef = useRef(layerConfig);
   useEffect(() => {
-    onLayerChangeRef.current = onLayerChange;
-  }, [onLayerChange]);
+    layerConfigRef.current = layerConfig;
+  }, [layerConfig]);
+
+  const layerActionsRef = useRef(layerActions);
+  useEffect(() => {
+    layerActionsRef.current = layerActions;
+  }, [layerActions]);
 
   const onPatchFiltersRef = useRef(onPatchFilters);
   useEffect(() => {
@@ -145,15 +157,134 @@ export function useMapActions({
   useFrontendTool({
     name: "setMapProvider",
     description:
-      "地図のレイヤープロバイダを切り替える。'dark' (ダークモード)、'pale' (標準/淡色)、'satellite' (航空写真)のいずれかを指定する。",
+      "地図のレイヤープロバイダを切り替える。'dark' (ダークモード)、'pale' (淡色日本語)、'std' (標準地図)、'satellite' (衛星写真)のいずれかを指定する。",
     parameters: z.object({
       provider: z
-        .enum(["dark", "pale", "satellite"])
-        .describe("切り替え先の地図プロバイダ名（'dark' | 'pale' | 'satellite'）"),
+        .enum(["dark", "pale", "std", "satellite"])
+        .describe("切り替え先の地図プロバイダ名（'dark' | 'pale' | 'std' | 'satellite'）"),
     }),
     handler: async ({ provider }) => {
-      onLayerChangeRef.current(provider);
+      layerActionsRef.current.selectBase(provider);
       return `Map provider switched to ${provider}`;
+    },
+  });
+
+  /** カタログ全体の「id: 名前 [タグ]」一覧（LLMへのヒント用） */
+  const layerCatalogSummary = () =>
+    LAYER_CATALOG.map(
+      (e) =>
+        `- ${e.id}: ${e.name} [${e.tags.map((t) => LAYER_TAG_LABELS[t]).join("/")}]`,
+    ).join("\n");
+
+  const layerName = (id: string) => catalogById.get(id)?.name ?? id;
+
+  useFrontendTool({
+    name: "addMapLayer",
+    description:
+      "地図にレイヤを追加する（最前面に重ねる）。物件の災害リスク確認には flood_l2（洪水浸水想定）や dosekiryu（土石流警戒区域）等を重ねる。" +
+      "主なid例: relief=色別標高図, slopemap=傾斜量図, hillshademap=陰影起伏図, flood_l2=洪水浸水想定(想定最大規模), " +
+      "flood_l1=洪水浸水想定(計画規模), tsunami=津波浸水想定, dosekiryu=土石流警戒区域, jisuberi=地すべり警戒区域, " +
+      "kyukeisha=急傾斜地崩壊警戒, afm=活断層図, oshima=大島てる事故物件, airphoto=空中写真, sekishoku=赤色立体地図。",
+    parameters: z.object({
+      layerId: z
+        .string()
+        .describe("追加するレイヤID（例: flood_l2, relief, oshima）"),
+    }),
+    handler: async ({ layerId }) => {
+      const entry = catalogById.get(layerId);
+      if (!entry) {
+        return `レイヤ「${layerId}」はカタログに存在しません。利用可能レイヤ一覧(id: 名前 [タグ]):\n${layerCatalogSummary()}`;
+      }
+      if (flattenOrderIds(layerConfigRef.current.stack).includes(layerId)) {
+        return `レイヤ ${entry.name} (${layerId}) はすでに表示中です。`;
+      }
+      layerActionsRef.current.addLayer(layerId);
+      return `${entry.name} を最前面に追加しました。`;
+    },
+  });
+
+  useFrontendTool({
+    name: "removeMapLayer",
+    description:
+      "地図からレイヤを削除する。災害レイヤで確認した後の片付けにも使う。",
+    parameters: z.object({
+      layerId: z.string().describe("削除するレイヤID"),
+    }),
+    handler: async ({ layerId }) => {
+      const current = flattenOrderIds(layerConfigRef.current.stack);
+      if (!current.includes(layerId)) {
+        const ids = current.join(", ");
+        return `レイヤ ${layerId} は現在有効ではありません。現在のレイヤ: ${ids || "なし"}`;
+      }
+      layerActionsRef.current.removeLayer(layerId);
+      return `レイヤ ${layerName(layerId)} を削除しました。`;
+    },
+  });
+
+  useFrontendTool({
+    name: "setMapLayerVisibility",
+    description:
+      "追加済みレイヤの表示/非表示を切り替える（レイヤは削除されない）。",
+    parameters: z.object({
+      layerId: z.string().describe("対象レイヤID"),
+      visible: z.boolean().describe("true=表示, false=非表示"),
+    }),
+    handler: async ({ layerId, visible }) => {
+      if (!flattenOrderIds(layerConfigRef.current.stack).includes(layerId)) {
+        return `レイヤ ${layerId} は現在有効ではありません。先に addMapLayer を呼び出してください。`;
+      }
+      layerActionsRef.current.setLayerVisible(layerId, visible);
+      return `レイヤ ${layerName(layerId)} を${visible ? "表示" : "非表示"}にしました。`;
+    },
+  });
+
+  useFrontendTool({
+    name: "setMapLayerOpacity",
+    description:
+      "追加済みレイヤの不透明度を変更する（0=完全な透明 〜 1=完全な不透明）。下の地図を見せたい時に下げる。",
+    parameters: z.object({
+      layerId: z.string().describe("対象レイヤID"),
+      opacity: z
+        .number()
+        .min(0)
+        .max(1)
+        .describe("不透明度 0-1（例: 0.5）"),
+    }),
+    handler: async ({ layerId, opacity }) => {
+      if (!flattenOrderIds(layerConfigRef.current.stack).includes(layerId)) {
+        return `レイヤ ${layerId} は現在有効ではありません。先に addMapLayer を呼び出してください。`;
+      }
+      layerActionsRef.current.setLayerOpacity(layerId, opacity);
+      return `レイヤ ${layerName(layerId)} の不透明度を ${opacity} に変更しました。`;
+    },
+  });
+
+  useFrontendTool({
+    name: "setMapLayerOrder",
+    description:
+      "有効レイヤの重ね順を変更する。layerIds は現在有効な全レイヤIDを過不足なく並べ替えた配列（先頭=最前面）。" +
+      "過不足があると無視されるため、全レイヤを必ず列挙すること。",
+    parameters: z.object({
+      layerIds: z
+        .array(z.string())
+        .describe("有効レイヤ全IDの並べ替え配列（先頭=最前面。例: ['flood_l2', 'pale']）"),
+    }),
+    handler: async ({ layerIds }) => {
+      const current = flattenOrderIds(layerConfigRef.current.stack);
+      const currentSet = new Set(current);
+      const nextSet = new Set(layerIds);
+      const isPermutation =
+        layerIds.length === current.length &&
+        layerIds.every((id) => currentSet.has(id)) &&
+        nextSet.size === layerIds.length;
+      if (!isPermutation) {
+        return (
+          `並べ替えは反映されませんでした。layerIds は現在有効な全レイヤ（${current.length}枚）を` +
+          `過不足・重複なく指定する必要があります。現在の順序（先頭=最前面）: [${current.join(", ")}]`
+        );
+      }
+      layerActionsRef.current.setLayerOrder(layerIds);
+      return `レイヤの重ね順を変更しました（先頭=最前面）: [${layerIds.join(", ")}]`;
     },
   });
 

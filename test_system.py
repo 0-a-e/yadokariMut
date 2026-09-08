@@ -99,15 +99,12 @@ class TestMonthlyMansionSystem(unittest.TestCase):
         self.assertEqual(parse_dates_from_text(""), (None, None))
 
     def test_local_html_parsing(self):
-        # Optional local HTML fixtures (not shipped; place under fixtures/ if needed)
-        repo_root = os.path.dirname(os.path.abspath(__file__))
-        list_html_path = os.path.join(repo_root, "fixtures", "tokyo.search_list.pn-3.html")
-        detail_html_path = os.path.join(
-            repo_root, "fixtures", "BraTTo千駄ヶ谷ドール(渋谷区).html"
-        )
-
+        # Test using local files
+        list_html_path = "/home/orange/Projects/yadokariMut/refs/tokyo.search_list.pn-3.html"
+        detail_html_path = "/home/orange/Projects/yadokariMut/refs/bukken-info/BraTTo千駄ヶ谷ドール(渋谷区).html"
+        
         if not os.path.exists(list_html_path) or not os.path.exists(detail_html_path):
-            self.skipTest("Optional fixtures not found (fixtures/*.html).")
+            self.skipTest("Local refs files not found in workspace.")
             
         with open(list_html_path, "r", encoding="utf-8") as f:
             list_html = f.read()

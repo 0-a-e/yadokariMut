@@ -46,6 +46,8 @@ opencode.json
 skills-lock.json
 deploy.sh
 deploy/
+sync_public.sh
+.v2c/
 
 # OS / editor
 .DS_Store

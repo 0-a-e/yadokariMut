@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src
 
 import sources  # noqa: F401
 from domain.pricing import MONTH_DAYS, calculate_stay_total, resolve_plans_effective
+from domain.pricing import plan_rent_per_day
 from ingest.pipeline import IngestPipeline
 from sources.registry import SourceRegistry
 from sources.unionmonthly.detail_parser import parse_detail_html
@@ -19,7 +20,9 @@ from sources.unionmonthly.list_parser import extract_total_count, parse_list_htm
 from store.repository import Repository
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "refs" / "sites" / "union-monthly"
-DETAIL_FIXTURE = next(FIXTURE_DIR.glob("*.html"), None)
+# glob 順に依存しないよう明示指定（新フィクスチャ追加時も既存テストが不変）
+DETAIL_FIXTURE = FIXTURE_DIR / "ユニオンマンスリー渋谷カディナ１ 903 1LDK・セミダブル【清掃費無料】 - 格安家具家電付きマンスリーマンション.html"
+DETAIL_FIXTURE_5TABS = FIXTURE_DIR / "unionmonthly_detail_5tabs_fixture.html"
 
 SYNTHETIC_LIST = """
 <html><body>
@@ -76,6 +79,11 @@ class TestDetailParserFixture(unittest.TestCase):
         self.assertIsNotNone(draft.lat)
         self.assertIsNotNone(draft.lng)
         self.assertTrue(any(a.walk_minutes == 8 for a in draft.accesses))
+        # 最寄駅th行の <br> 区切り3路線が全て取れること
+        stations = [a.station_name for a in draft.accesses]
+        self.assertIn("渋谷駅", stations)
+        self.assertIn("神泉駅", stations)
+        self.assertIn("明治神宮前〈原宿〉駅", stations)
         self.assertGreaterEqual(len(draft.features), 5)
         self.assertEqual(len(draft.price_plans), 3)
 
@@ -113,6 +121,59 @@ class TestDetailParserFixture(unittest.TestCase):
         mgmt_d = 28500 // MONTH_DAYS
         self.assertEqual(result.breakdown.rent_daily, rent_d)
         self.assertEqual(result.breakdown.management_daily, mgmt_d)
+
+
+@unittest.skipUnless(DETAIL_FIXTURE_5TABS.exists(), "union 5-tabs fixture missing")
+class TestDetailParser5Tabs(unittest.TestCase):
+    """スーパーショート/セミショート（円/日）を含む5タブページの検証。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = DETAIL_FIXTURE_5TABS.read_text(encoding="utf-8", errors="replace")
+        cls.draft = parse_detail_html(cls.html, detail_url="https://www.unionmonthly.jp/kanagawa/room/9999/")
+
+    def test_plan_keys_units_bands(self):
+        plans = {p.plan_key: p for p in self.draft.price_plans}
+        self.assertEqual(
+            set(plans), {"s_short", "semi_short", "short", "middle", "long"}
+        )
+        expected = {
+            "s_short": ("per_day", 7, 14),
+            "semi_short": ("per_day", 15, 29),
+            "short": ("per_month", 30, 89),
+            "middle": ("per_month", 90, 209),
+            "long": ("per_month", 210, 729),
+        }
+        for key, (unit, dmin, dmax) in expected.items():
+            self.assertEqual(plans[key].presentation_unit, unit, key)
+            self.assertEqual(plans[key].duration_min_days, dmin, key)
+            self.assertEqual(plans[key].duration_max_days, dmax, key)
+
+    def test_plan_amounts(self):
+        plans = {p.plan_key: p for p in self.draft.price_plans}
+        # 生HTML（2026-07-23取得・清掃費半額）の表示値
+        self.assertEqual(plans["s_short"].rent_original_yen, 6710)
+        self.assertEqual(plans["s_short"].rent_current_yen, 4180)
+        self.assertEqual(plans["s_short"].management_yen, 704)
+        self.assertEqual(plans["s_short"].cleaning_yen, 12100)
+        self.assertEqual(plans["semi_short"].rent_original_yen, 5390)
+        self.assertEqual(plans["semi_short"].rent_current_yen, 3520)
+        self.assertEqual(plans["long"].rent_original_yen, 87000)
+        self.assertEqual(plans["long"].rent_current_yen, 57000)
+        self.assertEqual(plans["long"].management_yen, 19200)
+        self.assertEqual(plans["long"].cleaning_yen, 18150)
+
+    def test_campaigns_exclude_site_wide_banner(self):
+        titles = [c.title for c in self.draft.campaigns]
+        self.assertNotIn("嬉しい3大特典キャンペーン", titles)
+        # キャンペーン料金が存在するためマーカーは1件立つ
+        self.assertEqual(len(self.draft.campaigns), 1)
+        self.assertEqual(self.draft.campaigns[0].title, "キャンペーン料金")
+
+    def test_per_day_plan_resolves_daily_rent(self):
+        resolved = resolve_plans_effective(self.draft.price_plans)
+        s_short = next(p for p in resolved if p.plan_key == "s_short")
+        self.assertEqual(plan_rent_per_day(s_short), 4180)
 
 
 class TestRegistryAndPipelineFixture(unittest.TestCase):

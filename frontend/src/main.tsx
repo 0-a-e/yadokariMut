@@ -4,10 +4,15 @@ import { RouterProvider } from '@tanstack/react-router'
 import { CopilotKitProvider } from "@copilotkit/react-core/v2"
 import { HttpAgent } from "@ag-ui/client"
 import { router } from './router'
+import { installAccessAuthGuard } from './lib/accessAuth'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet.markercluster/dist/MarkerCluster.css'
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
 import './index.css'
+
+// Cloudflare Access のセッション切れ検出を最初に仕込む（描画前・冪等）。
+// コンポーネントや CopilotKit HttpAgent を含む全 fetch を保護する。
+installAccessAuthGuard()
 
 const yadokariAgent = new HttpAgent({
   url: "/api/copilotkit",

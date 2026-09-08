@@ -144,7 +144,9 @@ def search_properties(params: dict[str, Any] | None = None) -> list[dict[str, An
     repo = _repo()
     conn = repo.connect()
     try:
-        clauses = ["p.is_active = 1"]
+        # Shortlisted properties stay visible even when the source site drops
+        # them (is_active = 0) — the FE/MCP/AI mark them as inactive instead.
+        clauses = ["(p.is_active = 1 OR s.status IN ('saved', 'hide', 'reject'))"]
         qparams: list[Any] = []
         if prefecture_name:
             clauses.append("p.prefecture_name = ?")
@@ -172,7 +174,7 @@ def search_properties(params: dict[str, Any] | None = None) -> list[dict[str, An
             FROM properties p
             LEFT JOIN shortlists s ON s.property_id = p.id
             WHERE {' AND '.join(clauses)}
-            ORDER BY p.catalog_rent_per_day_yen IS NULL, p.catalog_rent_per_day_yen ASC
+            ORDER BY p.is_active DESC, p.catalog_rent_per_day_yen IS NULL, p.catalog_rent_per_day_yen ASC
             LIMIT ?
         """
         # over-fetch for post filters
@@ -283,6 +285,8 @@ def search_properties(params: dict[str, Any] | None = None) -> list[dict[str, An
                     "min_plan_name": min_name,
                     "thumbnail_url": row.get("thumbnail_url"),
                     "shortlist_status": row.get("shortlist_status"),
+                    "is_active": bool(row.get("is_active", True)),
+                    "last_seen_at": row.get("last_seen_at"),
                     "access_summary": access_summary,
                     "images": [dict(i) for i in img_rows],
                     "rent_plans": rent_plans,

@@ -20,12 +20,27 @@ class TestAgentTools(unittest.TestCase):
             "showProperties",
             "openOfficialSite",
             "openGoogleEarth",
+            "addMapLayer",
+            "removeMapLayer",
+            "setMapLayerVisibility",
+            "setMapLayerOpacity",
+            "setMapLayerOrder",
         ):
             self.assertIn(required, names)
 
         self.assertIn("applyFilters", SYSTEM_PROMPT)
         self.assertIn("updateShortlist", SYSTEM_PROMPT)
         self.assertIn("showComparison", SYSTEM_PROMPT)
+        # レイヤ操作ツール群が SYSTEM_PROMPT に記載されていること
+        for layer_tool in (
+            "addMapLayer",
+            "removeMapLayer",
+            "setMapLayerVisibility",
+            "setMapLayerOpacity",
+            "setMapLayerOrder",
+        ):
+            self.assertIn(layer_tool, SYSTEM_PROMPT)
+        self.assertIn("flood_l2", SYSTEM_PROMPT)
 
     def test_checkpointer_type(self):
         import asyncio

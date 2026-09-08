@@ -135,7 +135,7 @@ def db_search_properties(params):
                s.status as shortlist_status
          FROM properties p
          LEFT JOIN shortlists s ON s.property_id = p.id
-         WHERE p.is_active = 1
+         WHERE (p.is_active = 1 OR s.status IN ('saved', 'hide', 'reject'))
     """
     
     conditions = []
