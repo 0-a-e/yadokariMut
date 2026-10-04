@@ -20,7 +20,12 @@ export function useCopilotMapContext(
   /** All saved shortlist features (not limited to current filter; may include unlisted ones) */
   savedFeatures: PropertyFeature[] = [],
   /** 現在の地図レイヤ構成（ベース/オーバーレイ/グループ） */
-  layerConfig: LayerConfigState = { v: 2, stack: [], groups: [] },
+  layerConfig: LayerConfigState = {
+    v: 2,
+    stack: [],
+    groups: [],
+    properties: { id: "properties", visible: true, opacity: 1 },
+  },
 ) {
   useAgentContext({
     description:
@@ -141,9 +146,15 @@ export function useCopilotMapContext(
   useAgentContext({
     description:
       "現在の地図レイヤ構成。変更は addMapLayer / removeMapLayer / setMapLayerVisibility / " +
-      "setMapLayerOpacity / setMapLayerOrder / setMapProvider を使う。",
+      "setMapLayerOpacity / setMapLayerOrder / setMapProvider を使う。" +
+      "propertiesLayer は物件ピン(検索結果)レイヤ。最前面固定でスタック外のため " +
+      "setMapLayerOrder の対象外(非表示でも物件データ自体は有効)。",
     value: {
       baseMap: baseLayer?.id ?? "なし",
+      propertiesLayer: {
+        visible: layerConfig.properties.visible !== false,
+        opacity: layerConfig.properties.opacity,
+      },
       activeOverlays: overlays,
       overlayCount: overlays.length,
       groups: groupSummaries,

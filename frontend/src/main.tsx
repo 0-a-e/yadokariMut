@@ -20,7 +20,7 @@ const yadokariAgent = new HttpAgent({
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <CopilotKitProvider agents__unsafe_dev_only={{ "yadokari_agent": yadokariAgent }}>
+    <CopilotKitProvider selfManagedAgents={{ "yadokari_agent": yadokariAgent }}>
       <RouterProvider router={router} />
     </CopilotKitProvider>
   </React.StrictMode>,

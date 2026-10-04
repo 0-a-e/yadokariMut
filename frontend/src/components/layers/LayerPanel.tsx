@@ -1,26 +1,22 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
-  MeasuringStrategy,
-  closestCorners,
-  useDroppable,
   useSensor,
   useSensors,
+  type Collision,
   type CollisionDetection,
   type DragEndEvent,
-  type DragOverEvent,
+  type DragMoveEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
 import {
   SortableContext,
-  arrayMove,
   sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import { dragStartZone } from '../../lib/layers/dnd.ts';
 import { FaPlus, FaChevronDown } from 'react-icons/fa6';
 import { Button } from '@/components/ui/button.tsx';
@@ -28,13 +24,15 @@ import { MultiCombobox } from '@/components/ui/combobox.tsx';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible.tsx';
 import { cn } from '@/lib/utils.ts';
 import { AdaptivePointerSensor } from '../../lib/layers/dnd.ts';
-import type { LayerActions } from '../../lib/layers/state.ts';
+import type { DropPosition, LayerActions } from '../../lib/layers/state.ts';
 import { flattenStack } from '../../lib/layers/state.ts';
 import { catalogById, disabledEntries } from '../../lib/layers/catalog.ts';
 import type { FeSettings } from '../../lib/feSettings.ts';
+import type { BaseLayerId } from '../../lib/layers/types.ts';
 import {
   LAYER_TAGS,
   LAYER_TAG_LABELS,
+  PROPERTIES_LAYER_ID,
   type LayerCatalogEntry,
   type LayerConfigState,
   type LayerGroup,
@@ -42,21 +40,20 @@ import {
   type LayerTag,
 } from '../../lib/layers/types.ts';
 import {
+  BaseLayerRow,
   DisabledLayerRow,
   DisabledLayerRowOverlay,
   EnabledLayerRow,
   EnabledLayerRowContent,
   EnabledLayerRowOverlay,
   GroupHeaderContent,
+  PropertiesLayerRow,
   markDragEnd,
 } from './LayerRow.tsx';
 
 /** DnDコンテナID(有効リスト / 無効リスト) */
 const ENABLED_CONTAINER = 'layer-list-enabled';
 const DISABLED_CONTAINER = 'layer-list-disabled';
-
-/** グループブロックのドロップ領域ID接頭辞(id = `drop:<groupId>`) */
-const GROUP_DROP_PREFIX = 'drop:';
 
 /** ドロップ可能要素の data 型(カスタム衝突検出のフィルタに使用) */
 type DragData = { type: 'layer'; groupId?: string } | { type: 'group'; groupId?: string };
@@ -90,11 +87,18 @@ interface LayerPanelProps extends LayerPanelFeSettingsProps {
   layerActions: LayerActions;
 }
 
+/** 挿入位置インジケータ(ドロップ予定位置を示す横線) */
+const InsertIndicator: React.FC = () => (
+  <span aria-hidden className="block h-0.5 shrink-0 rounded-full bg-accent" />
+);
+
 /**
  * グループブロック(v2ネストスタック)。
  * - useSortable(id=groupId): グループ自体のトップレベル並べ替え(listenersはヘッダー)
  * - useDroppable(id=`drop:<groupId>`): レイヤの受け入れ領域(ブロック全体)
  * の二役。メンバーはネストした SortableContext で並べ替え。
+ * 挿入はドロップ時一括確定のため、メンバーの位置はドラッグ中も動かさず、
+ * dropIndex 位置にインジケータ線を表示する。
  */
 const GroupBlock: React.FC<{
   group: LayerGroup;
@@ -106,6 +110,10 @@ const GroupBlock: React.FC<{
   groups: LayerGroup[];
   feSettings: FeSettings;
   onFeSettingsChange: (update: FeSettings) => Promise<FeSettings | null>;
+  /** グループメンバー列への挿入インジケータ位置(null=非表示) */
+  dropIndex?: number | null;
+  /** ドロップ先がこのグループ領域(ヘッダー/余白)のときの強調 */
+  isGroupTarget?: boolean;
 }> = ({
   group,
   members,
@@ -116,32 +124,22 @@ const GroupBlock: React.FC<{
   groups,
   feSettings,
   onFeSettingsChange,
+  dropIndex = null,
+  isGroupTarget = false,
 }) => {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+  const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: group.id,
     data: { type: 'group' } satisfies DragData,
-    animateLayoutChanges: () => false,
   });
-  const { setNodeRef: setDropRef, isOver } = useDroppable({
-    id: `${GROUP_DROP_PREFIX}${group.id}`,
-    data: { type: 'group', groupId: group.id } satisfies DragData,
-  });
-  const setRefs = useCallback(
-    (node: HTMLElement | null) => {
-      setNodeRef(node);
-      setDropRef(node);
-    },
-    [setNodeRef, setDropRef],
-  );
 
   return (
     <div
-      ref={setRefs}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      ref={setNodeRef}
+      data-layer-row={group.id}
       className={cn(
         'flex flex-col gap-1 rounded-lg transition-shadow',
         isDragging && 'opacity-40',
-        isOver && 'ring-2 ring-primary/60',
+        isGroupTarget && 'ring-2 ring-primary/60',
       )}
     >
       <GroupHeaderContent
@@ -157,24 +155,28 @@ const GroupBlock: React.FC<{
         <SortableContext items={members.map((m) => m.id)} strategy={verticalListSortingStrategy}>
           <div className="flex min-h-8 flex-col gap-1 pl-3">
             {members.length === 0 ? (
-              <p className="m-0 rounded-lg border border-dashed border-border/70 px-2 py-1.5 text-[10px] text-text-muted">
-                ドラッグでレイヤを追加
-              </p>
+              <div className="m-0 flex flex-col gap-0.5 rounded-lg border border-dashed border-border/70 px-2 py-1.5">
+                {dropIndex === 0 && <InsertIndicator />}
+                <p className="m-0 text-[10px] text-text-muted">ドラッグでレイヤを追加</p>
+              </div>
             ) : (
-              members.map((m) => (
-                <EnabledLayerRow
-                  key={m.id}
-                  layer={{ ...m, groupId: group.id }}
-                  entry={catalogById.get(m.id)}
-                  name={catalogById.get(m.id)?.name ?? m.id}
-                  groups={groups}
-                  groupColor={color}
-                  layerActions={layerActions}
-                  feSettings={feSettings}
-                  onFeSettingsChange={onFeSettingsChange}
-                />
+              members.map((m, j) => (
+                <React.Fragment key={m.id}>
+                  {dropIndex === j && <InsertIndicator />}
+                  <EnabledLayerRow
+                    layer={{ ...m, groupId: group.id }}
+                    entry={catalogById.get(m.id)}
+                    name={catalogById.get(m.id)?.name ?? m.id}
+                    groups={groups}
+                    groupColor={color}
+                    layerActions={layerActions}
+                    feSettings={feSettings}
+                    onFeSettingsChange={onFeSettingsChange}
+                  />
+                </React.Fragment>
               ))
             )}
+            {members.length > 0 && dropIndex === members.length && <InsertIndicator />}
           </div>
         </SortableContext>
       )}
@@ -226,6 +228,24 @@ interface ActiveDrag {
 }
 
 /**
+ * DnD確定時のドロップ先。ドラッグ中はライブ反映せず、この解決結果を
+ * インジケータ表示に使う。ドロップ時(dragEnd)に一括適用する。
+ */
+type DropTarget =
+  | { kind: 'top'; index: number }
+  | { kind: 'group'; groupId: string; index: number }
+  | { kind: 'disabled' }
+  | { kind: 'base-swap' };
+
+/** DropTarget → placeLayer の位置指定(top/groupのみ) */
+const toPlacePosition = (target: DropTarget): DropPosition | null =>
+  target.kind === 'top'
+    ? { kind: 'top', index: target.index }
+    : target.kind === 'group'
+      ? { kind: 'group', groupId: target.groupId, index: target.index }
+      : null;
+
+/**
  * 地図レイヤパネル(GIMP方式: 有効リストの上位=前面)。
  * v2ネストスタックモデルの描画とDnD:
  * - トップレベル: SortableContext(layerId + groupId) → reorderStack
@@ -243,6 +263,8 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
   /** 無効レイヤのタググループ折りたたみ(key=タグid or 'other')。既定は折りたたみ */
   const [openTagGroups, setOpenTagGroups] = useState<Record<string, boolean>>({});
   const [activeDrag, setActiveDrag] = useState<ActiveDrag | null>(null);
+  /** ドロップ予定先(dragMove毎に解決。ドラッグ中のライブ反映は行わない) */
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   /** 折りたたみはUIローカル状態(LayerActionsに setter が無いため永続化しない) */
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {};
@@ -252,17 +274,19 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
 
   // ドラッグ発火: ドラッガー(data-dnd-handle)は即時、行本体は長押し、操作系は発火なし。
   // センサはインスタンスごとに1つの発制約しか持てないため、既定を長押しにして
-  // ドラッガー発火のみ bypassActivationConstraint で制約なし(即時)にする
+  // ドラッガー発火のみ bypassActivationConstraint で制約なし(即時)にする。
+  // tolerance を緩め(20px)にし、素早いドラッグ意図でも発火がキャンセルされにくくする
   const sensors = useSensors(
     useSensor(AdaptivePointerSensor, {
-      activationConstraint: { delay: 250, tolerance: 8 },
+      activationConstraint: { delay: 250, tolerance: 20 },
       bypassActivationConstraint: ({ event }) => dragStartZone(event) === 'handle',
     }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const { setNodeRef: enabledListRef } = useDroppable({ id: ENABLED_CONTAINER });
-  const { setNodeRef: disabledListRef } = useDroppable({ id: DISABLED_CONTAINER });
+  const panelRootRef = useRef<HTMLDivElement>(null);
+  const enabledListElRef = useRef<HTMLDivElement>(null);
+  const disabledListElRef = useRef<HTMLDivElement>(null);
 
   /** v2ネストスタックの平坦ビュー(グループはその位置に展開) */
   const enabledView = useMemo(() => flattenStack(layerConfig.stack), [layerConfig.stack]);
@@ -272,6 +296,20 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
   const topLevelIds = useMemo(
     () => layerConfig.stack.map((item) => (item.kind === 'layer' ? item.id : item.groupId)),
     [layerConfig.stack],
+  );
+
+  /** ベース行はドラッグ不可のため SortableContext の items から除外 */
+  const sortableTopLevelIds = useMemo(
+    () => topLevelIds.filter((id) => catalogById.get(id)?.role !== 'base'),
+    [topLevelIds],
+  );
+
+  /** ドロップ先がベース行の位置より後ろ(top末尾)のときのインジケータ位置 */
+  const topIndicatorIndex = dropTarget?.kind === 'top' ? dropTarget.index : null;
+  const groupDropIndex = useCallback(
+    (gid: string): number | null =>
+      dropTarget?.kind === 'group' && dropTarget.groupId === gid ? dropTarget.index : null,
+    [dropTarget],
   );
 
   const membersByGroup = useMemo(() => {
@@ -339,43 +377,45 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
     setCollapsedGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
   }, []);
 
-  /** id が属するリスト(有効/無効)を解決。表示中の無効リスト(フィルタ後)で判定 */
-  const findList = useCallback(
-    (id: string): 'enabled' | 'disabled' | undefined => {
-      if (id === ENABLED_CONTAINER) return 'enabled';
-      if (id === DISABLED_CONTAINER) return 'disabled';
-      if (id.startsWith(GROUP_DROP_PREFIX)) return 'enabled';
-      if (disabledIdSet.has(id)) return 'disabled';
-      if (enabledIdSet.has(id)) return 'enabled';
-      if (groupIds.has(id)) return 'enabled';
-      return undefined;
-    },
-    [disabledIdSet, enabledIdSet, groupIds],
-  );
-
   /**
-   * カスタム衝突検出(dnd-kitネストDnDの落とし穴対策)。
-   * - グループドラッグ: 他グループブロック(sortableノード)のみ候補(グループ間並べ替え)
-   * - レイヤドラッグ: レイヤ行 + グループのドロップ領域(`drop:*`) + 両コンテナを候補
-   *   (グループブロックの sortableノード自体は候補から除外し、drop領域と重複させない)
+   * カスタム衝突検出。dnd-kit の droppable レジストリ(useDroppable 単独のコンテナが
+   * 測定対象から欠落する問題がある)に頼らず、パネル内の実DOM rect とポインタ座標で
+   * 直接解決する。候補の優先順: ポインタ直下の行 > リストコンテナ。
+   * 行同士は重ならないため結果は一意に定まり、衝突の不定性を排する。
    */
   const collisionDetection: CollisionDetection = useCallback((args) => {
-    const activeType = (args.active.data.current as DragData | undefined)?.type;
-    const containers = args.droppableContainers.filter((container) => {
-      const id = String(container.id);
-      if (id === String(args.active.id)) return false;
-      const data = container.data.current as DragData | undefined;
-      if (activeType === 'group') {
-        return data?.type === 'group' && !id.startsWith(GROUP_DROP_PREFIX);
-      }
-      if (id === ENABLED_CONTAINER || id === DISABLED_CONTAINER) return true;
-      if (data?.type === 'layer') return true;
-      return data?.type === 'group' && id.startsWith(GROUP_DROP_PREFIX);
-    });
-    if (containers.length === 0) return [];
-    return closestCorners({ ...args, droppableContainers: containers });
+    const root = panelRootRef.current;
+    const enabledList = enabledListElRef.current;
+    const disabledList = disabledListElRef.current;
+    const pointer = args.pointerCoordinates;
+    if (!root || !pointer) return [];
+
+    const contains = (r: DOMRect, p: { x: number; y: number }) =>
+      p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+
+    // ポインタ直下の行(useSortable の全行に data-layer-row を付与)
+    const hits: Collision[] = [];
+    const rows = root.querySelectorAll<HTMLElement>('[data-layer-row]');
+    for (const el of rows) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) continue;
+      if (!contains(rect, pointer)) continue;
+      hits.push({ id: el.dataset.layerRow!, data: { rect } });
+    }
+    if (hits.length > 0) return hits;
+
+    // 行の隙間/余白は所属リストコンテナで判定
+    if (enabledList && contains(enabledList.getBoundingClientRect(), pointer)) {
+      return [{ id: ENABLED_CONTAINER }];
+    }
+    if (disabledList && contains(disabledList.getBoundingClientRect(), pointer)) {
+      return [{ id: DISABLED_CONTAINER }];
+    }
+    // パネル外(ドロップ意図なし)は候補なし → over=null → 何も起きない
+    return [];
   }, []);
 
+  /** ドラッグ開始直後のクリック抑制とオーバーレイ用の情報記録 */
   const handleDragStart = (event: DragStartEvent) => {
     const id = String(event.active.id);
     const data = event.active.data.current as DragData | undefined;
@@ -389,105 +429,138 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
   };
 
   /**
-   * 有効リスト内のホバー位置を反映(active は既に有効リスト内にある前提)。
-   * - `drop:<gid>` へのホバー → moveToGroup(末尾追加)
-   * - 他グループのメンバー行上 → moveToGroup(その位置へ挿入)
-   * - グループ外のトップレベル行上 → removeFromGroup + reorderStack
-   * - 同一所属内の行上 → reorderStack / reorderGroupMembers
-   * baseレイヤは moveToGroup が不変を返すため黙って無効化される。
+   * ドロップ先の解決(dragMove毎に呼ぶ。ドラッグ中のレイヤ構成には触れない)。
+   * collisions は collisionDetection の優先順リスト(行 > drop領域 > コンテナ)。
+   * 行へのホバーはポインタYと行中心の前後で挿入位置(直前/直後)を確定する。
+   * ベースドラッグは有効リスト側で差し替え、無効リスト側では受理しない。
    */
-  const applyEnabledHover = (activeId: string, overId: string) => {
-    const activeGid = enabledView.find((l) => l.id === activeId)?.groupId;
-    if (overId.startsWith(GROUP_DROP_PREFIX)) {
-      const gid = overId.slice(GROUP_DROP_PREFIX.length);
-      if (gid !== activeGid) layerActions.moveToGroup(activeId, gid);
-      return;
-    }
-    const overGid = enabledView.find((l) => l.id === overId)?.groupId;
-    if (overGid !== activeGid) {
-      if (overGid != null) {
-        const members = membersByGroup.get(overGid) ?? [];
-        const index = members.findIndex((m) => m.id === overId);
-        layerActions.moveToGroup(activeId, overGid, index >= 0 ? index : undefined);
-      } else if (activeGid != null) {
-        // グループ外へ払い出し(ブロック直後にトップレベルで置かれる。以降のhoverで位置確定)
-        layerActions.removeFromGroup(activeId);
+  const resolveDropTarget = useCallback(
+    (event: DragMoveEvent | DragEndEvent): DropTarget | null => {
+      const collisions = event.collisions ?? [];
+      if (collisions.length === 0) return null;
+      const activeId = String(event.active.id);
+      const activeType = (event.active.data.current as DragData | undefined)?.type;
+      const activeIsBase = catalogById.get(activeId)?.role === 'base';
+
+      // ポインタの現在Y(押下位置+移動量)。行の上下判定に使用
+      const activator = event.activatorEvent as PointerEvent | null;
+      const pointerY =
+        activator && typeof activator.clientY === 'number'
+          ? activator.clientY + (event.delta?.y ?? 0)
+          : null;
+
+      const baseStackIndex = layerConfig.stack.findIndex(
+        (item) => item.kind === 'layer' && catalogById.get(item.id)?.role === 'base',
+      );
+
+      for (const collision of collisions) {
+        const id = String(collision.id);
+        // collisionDetection が行の実DOM rect を data.rect に入れて渡す
+        const rowRect = (collision.data as { rect?: DOMRect } | undefined)?.rect;
+        const isAfter =
+          rowRect && pointerY != null ? pointerY > rowRect.top + rowRect.height / 2 : false;
+
+        if (activeIsBase) {
+          // ベースドラッグ: 有効リスト側なら差し替え。無効リスト側は受理しない(base不在を防ぐ)
+          if (id === DISABLED_CONTAINER || disabledIdSet.has(id)) return null;
+          return { kind: 'base-swap' };
+        }
+
+        // 物件ピン行(最前面固定の特殊行): 直後(スタック先頭)のみ指定可。
+        // 物件行の上半分/下半分は区別しない(最前面固定のため上へは挿入できない)
+        if (id === PROPERTIES_LAYER_ID) {
+          return { kind: 'top', index: 0 };
+        }
+
+        if (id === DISABLED_CONTAINER || disabledIdSet.has(id)) return { kind: 'disabled' };
+        if (id === ENABLED_CONTAINER) {
+          // 空き領域は末尾(ベース行の直前)へ
+          return {
+            kind: 'top',
+            index: baseStackIndex >= 0 ? baseStackIndex : layerConfig.stack.length,
+          };
+        }
+
+        // グループブロック自体の上
+        if (groupIds.has(id)) {
+          if (activeType === 'group') {
+            // グループドラッグ: トップレベルの挿入位置(直前/直後)
+            const overTopIndex = topLevelIds.indexOf(id);
+            if (overTopIndex >= 0) {
+              return { kind: 'top', index: overTopIndex + (isAfter ? 1 : 0) };
+            }
+          } else {
+            // レイヤドラッグ: そのグループへの末尾追加
+            return { kind: 'group', groupId: id, index: (membersByGroup.get(id) ?? []).length };
+          }
+          continue;
+        }
+
+        // 有効行の上: 行の上下で挿入位置(直前/直後)を決める
+        const overGid = enabledView.find((l) => l.id === id)?.groupId;
+        if (overGid != null) {
+          const members = membersByGroup.get(overGid) ?? [];
+          const memberIndex = members.findIndex((m) => m.id === id);
+          if (memberIndex >= 0) {
+            return { kind: 'group', groupId: overGid, index: memberIndex + (isAfter ? 1 : 0) };
+          }
+        }
+        const topIndex = layerConfig.stack.findIndex((s) => s.kind === 'layer' && s.id === id);
+        if (topIndex >= 0) {
+          return { kind: 'top', index: topIndex + (isAfter ? 1 : 0) };
+        }
       }
-      return;
-    }
-    if (activeGid != null) {
-      const memberIds = (membersByGroup.get(activeGid) ?? []).map((m) => m.id);
-      const oldIndex = memberIds.indexOf(activeId);
-      const newIndex = memberIds.indexOf(overId);
-      if (oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) {
-        layerActions.reorderGroupMembers(activeGid, arrayMove(memberIds, oldIndex, newIndex));
-      }
-      return;
-    }
-    const oldIndex = topLevelIds.indexOf(activeId);
-    const newIndex = topLevelIds.indexOf(overId);
-    if (oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) {
-      layerActions.reorderStack(arrayMove(topLevelIds, oldIndex, newIndex));
-    }
-  };
+      return null;
+    },
+    [disabledIdSet, enabledView, membersByGroup, layerConfig.stack, topLevelIds, groupIds],
+  );
+
+  /** トップレベル要素(レイヤ/グループ)を移動前座標系の挿入位置へ並べ替えた順列 */
+  const moveTopLevelTo = useCallback((ids: string[], id: string, toIndex: number): string[] => {
+    const from = ids.indexOf(id);
+    if (from < 0) return ids;
+    const rest = ids.filter((x) => x !== id);
+    const insertAt = Math.max(0, Math.min(from < toIndex ? toIndex - 1 : toIndex, rest.length));
+    return [...rest.slice(0, insertAt), id, ...rest.slice(insertAt)];
+  }, []);
 
   /**
-   * ドラッグ中のライブ反映(公式マルチコンテナパターン+ネスト拡張)。
-   * - 有効→無効へ払い出し: removeLayer
-   * - 無効→有効へ挿入: addLayer(先頭=最前面に仮置き。以降のhoverで位置が確定)
-   * - グループドラッグ: reorderStack(グループ間の並べ替え)
-   * - 有効リスト内: applyEnabledHover(グループ参加/脱离/並べ替え)
+   * ドロップ確定。ドラッグ中に溜めた解決結果を一括適用する。
+   * ライブ反映がないため、ここがレイヤ構成を変更する唯一の箇所。
    */
-  const handleDragOver = (event: DragOverEvent) => {
-    const activeId = String(event.active.id);
-    const overId = event.over ? String(event.over.id) : null;
-    if (!overId || activeId === overId) return;
+  const applyDrop = useCallback(
+    (event: DragEndEvent, target: DropTarget | null) => {
+      if (!target) return;
+      const activeId = String(event.active.id);
+      const activeType = (event.active.data.current as DragData | undefined)?.type;
 
-    const activeType = (event.active.data.current as DragData | undefined)?.type;
-    if (activeType === 'group') {
-      const oldIndex = topLevelIds.indexOf(activeId);
-      const newIndex = topLevelIds.indexOf(overId);
-      if (oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) {
-        layerActions.reorderStack(arrayMove(topLevelIds, oldIndex, newIndex));
+      if (activeType === 'group') {
+        if (target.kind === 'top') {
+          layerActions.reorderStack(moveTopLevelTo(topLevelIds, activeId, target.index));
+        }
+        return;
       }
-      return;
-    }
+      switch (target.kind) {
+        case 'top':
+        case 'group': {
+          const position = toPlacePosition(target);
+          if (position) layerActions.placeLayer(activeId, position);
+          break;
+        }
+        case 'disabled':
+          if (enabledIdSet.has(activeId)) layerActions.removeLayer(activeId);
+          break;
+        case 'base-swap':
+          layerActions.selectBase(activeId as BaseLayerId);
+          break;
+      }
+    },
+    [enabledIdSet, layerActions, moveTopLevelTo, topLevelIds],
+  );
 
-    const activeList = findList(activeId);
-    const overList = findList(overId);
-    if (!activeList || !overList) return;
-
-    if (activeList === 'enabled' && overList === 'disabled') {
-      layerActions.removeLayer(activeId);
-      return;
-    }
-    if (activeList === 'disabled' && overList === 'enabled') {
-      layerActions.addLayer(activeId);
-      return;
-    }
-    if (activeList === 'enabled' && overList === 'enabled') {
-      applyEnabledHover(activeId, overId);
-    }
-  };
-
-  /**
-   * ドロップ確定。ライブ反映済みなので有効リスト内の最終位置確定とクリーンアップのみ。
-   * (dragOver直前の removeFromGroup など中間状態の残留を、ドロップ時のhover位置で確定する)
-   */
-  const handleDragEnd = (event: DragEndEvent) => {
-    const activeId = String(event.active.id);
-    const overId = event.over ? String(event.over.id) : null;
-    setActiveDrag(null);
-    if (!overId || activeId === overId) return;
-
-    const activeType = (event.active.data.current as DragData | undefined)?.type;
-    if (activeType === 'group') return; // dragOverで確定済み
-
-    const activeList = findList(activeId);
-    const overList = findList(overId);
-    if (activeList === 'enabled' && overList === 'enabled') {
-      applyEnabledHover(activeId, overId);
-    }
+  /** ドラッグ中のライブ反映(dragMove)。レイヤ構成は触れず、ドロップ先の解決のみ行う */
+  const handleDragMove = (event: DragMoveEvent) => {
+    setDropTarget(resolveDropTarget(event));
   };
 
   /** DragOverlay の描画内容(ドラッグ中の行/グループの静的コピー) */
@@ -541,19 +614,24 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
       <DndContext
         sensors={sensors}
         collisionDetection={collisionDetection}
-        measuring={{ droppable: { strategy: MeasuringStrategy.WhileDragging } }}
         onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
+        onDragMove={handleDragMove}
         onDragEnd={(event) => {
           markDragEnd();
-          handleDragEnd(event);
+          applyDrop(event, resolveDropTarget(event));
+          setActiveDrag(null);
+          setDropTarget(null);
         }}
         onDragCancel={() => {
           markDragEnd();
           setActiveDrag(null);
+          setDropTarget(null);
         }}
       >
-        <div className="app-scrollbar flex min-h-0 grow flex-col gap-4 overflow-y-auto p-4">
+        <div
+          ref={panelRootRef}
+          className="app-scrollbar flex min-h-0 grow flex-col gap-4 overflow-y-auto p-4"
+        >
           {/* ── 有効レイヤ(上位=前面。グループはネストブロック表示) ── */}
           <section className="flex flex-col gap-1.5">
             <div className="flex justify-between text-xs font-semibold uppercase tracking-[1px] text-text-muted">
@@ -562,14 +640,20 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
                 {enabledView.length}枚
               </span>
             </div>
-            <SortableContext items={topLevelIds} strategy={verticalListSortingStrategy}>
+            <SortableContext items={sortableTopLevelIds} strategy={verticalListSortingStrategy}>
               <div
-                ref={enabledListRef}
+                ref={enabledListElRef}
                 className={cn(
                   'flex min-h-14 flex-col gap-1 rounded-lg transition-colors',
                   activeDrag != null && activeDrag.from === 'disabled' && 'bg-primary/5',
                 )}
               >
+                {/* 物件ピン行(最前面固定の特殊行)。スタック外で常駐のためドラッグ不可。
+                    data-layer-row は collisionDetection の over 判定に必要
+                    (resolveDropTarget 側で index 0 への挿入に解決される) */}
+                <div data-layer-row={PROPERTIES_LAYER_ID}>
+                  <PropertiesLayerRow layer={layerConfig.properties} layerActions={layerActions} />
+                </div>
                 {layerConfig.stack.length === 0 ? (
                   <p className="m-0 rounded-lg border border-dashed border-border px-3 py-3 text-center text-[11px] text-text-muted">
                     有効なレイヤはありません。
@@ -577,40 +661,63 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
                     下の無効レイヤから追加してください
                   </p>
                 ) : (
-                  layerConfig.stack.map((item) => {
+                  layerConfig.stack.map((item, i) => {
+                    const itemId = item.kind === 'layer' ? item.id : item.groupId;
+                    const entry = item.kind === 'layer' ? catalogById.get(item.id) : undefined;
+                    let content: React.ReactNode = null;
                     if (item.kind === 'layer') {
-                      const entry = catalogById.get(item.id);
-                      return (
-                        <EnabledLayerRow
-                          key={item.id}
-                          layer={item}
-                          entry={entry}
-                          name={entry?.name ?? item.id}
-                          groups={layerConfig.groups}
+                      content =
+                        entry?.role === 'base' ? (
+                          <BaseLayerRow
+                            layer={item}
+                            entry={entry}
+                            name={entry?.name ?? item.id}
+                            groups={[]}
+                            layerActions={layerActions}
+                            feSettings={feSettings}
+                            onFeSettingsChange={onFeSettingsChange}
+                            isSwapTarget={dropTarget?.kind === 'base-swap'}
+                          />
+                        ) : (
+                          <EnabledLayerRow
+                            layer={item}
+                            entry={entry}
+                            name={entry?.name ?? item.id}
+                            groups={layerConfig.groups}
+                            layerActions={layerActions}
+                            feSettings={feSettings}
+                            onFeSettingsChange={onFeSettingsChange}
+                          />
+                        );
+                    } else {
+                      const group = groupsById.get(item.groupId);
+                      content = group ? (
+                        <GroupBlock
+                          group={group}
+                          members={item.members}
+                          color={groupColor(group.id)}
+                          collapsed={collapsedGroups[group.id] ?? false}
+                          onToggleCollapsed={() => toggleCollapsed(group.id)}
                           layerActions={layerActions}
+                          groups={layerConfig.groups}
                           feSettings={feSettings}
                           onFeSettingsChange={onFeSettingsChange}
+                          dropIndex={groupDropIndex(item.groupId)}
+                          isGroupTarget={
+                            dropTarget?.kind === 'group' && dropTarget.groupId === item.groupId
+                          }
                         />
-                      );
+                      ) : null;
                     }
-                    const group = groupsById.get(item.groupId);
-                    if (!group) return null;
                     return (
-                      <GroupBlock
-                        key={item.groupId}
-                        group={group}
-                        members={item.members}
-                        color={groupColor(group.id)}
-                        collapsed={collapsedGroups[group.id] ?? false}
-                        onToggleCollapsed={() => toggleCollapsed(group.id)}
-                        layerActions={layerActions}
-                        groups={layerConfig.groups}
-                        feSettings={feSettings}
-                        onFeSettingsChange={onFeSettingsChange}
-                      />
+                      <React.Fragment key={itemId}>
+                        {topIndicatorIndex === i && <InsertIndicator />}
+                        {content}
+                      </React.Fragment>
                     );
                   })
                 )}
+                {topIndicatorIndex === layerConfig.stack.length && <InsertIndicator />}
               </div>
             </SortableContext>
             <Button
@@ -624,7 +731,8 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
             </Button>
             <p className="m-0 text-[10px] text-text-muted/80">
               上=前面。ハンドルは即時ドラッグ、行の他の部分は長押しでドラッグ
-              (順序変更・グループへの移動・無効リストへの移動)
+              (順序変更・グループへの移動・無効リストへの移動)。
+              物件ピンは最前面固定、基本地図は最下層固定
             </p>
           </section>
 
@@ -646,10 +754,10 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
             />
             <SortableContext items={disabledIds} strategy={verticalListSortingStrategy}>
               <div
-                ref={disabledListRef}
+                ref={disabledListElRef}
                 className={cn(
                   'flex min-h-14 flex-col gap-1 rounded-lg transition-colors',
-                  activeDrag != null && activeDrag.from === 'enabled' && 'bg-primary/5',
+                  dropTarget?.kind === 'disabled' && 'bg-primary/5',
                 )}
               >
                 {filteredDisabled.length === 0 ? (

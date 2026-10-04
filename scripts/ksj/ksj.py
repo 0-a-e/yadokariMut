@@ -516,6 +516,67 @@ def _convert_with_osgeo(gml: Path, out_base: Path) -> list[Path]:
     return outs
 
 
+# --------------------------------------------------------------------------
+# タイル属性の絞り込み
+# --------------------------------------------------------------------------
+# 同梱 GeoJSON は年度版のスキーマ改定で属性が数十〜百超に増える(例: S12 は
+# 年度別属性のため 63、L01-26 は 148)。表示に不要な属性まで入ると MVT の
+# 辞書が膨らむため、code ごとに残す属性を明示する。未登録 code は全属性保持。
+KEEP_ATTRIBUTES: dict[str, frozenset[str]] = {
+    # S12 駅別乗降客数(v3系スキーマ)。S12_001=駅名 / S12_002=運営会社 /
+    # S12_003=路線名 / S12_004=鉄道区分 / S12_005=事業者種別。
+    # 乗降客数は年度別属性で 年度Y(西暦)は S12_(9+4*(Y-2011))、2024年度=S12_061。
+    # ※旧S12-2形式(S12_002=駅名/S12_004=乗降客数)とは互換がない
+    "S12": frozenset({"S12_001", "S12_002", "S12_003", "S12_004", "S12_005", "S12_061"}),
+    # L01 地価公示(L01-26 以降の新スキーマ)。L01_007=調査年 / L01_008=価格(円/m²) /
+    # L01_024=地点名 / L01_025=所在地 / L01_001=市区町村コード
+    "L01": frozenset({"L01_001", "L01_007", "L01_008", "L01_024", "L01_025"}),
+}
+
+# 0 を欠測(null)扱いする属性。S12 の乗降客数はデータ無し駅が 0 で埋められており
+# (けいはんな線など実態に乗降のある駅も含む)、0 人表示と最下 bin の色分けを
+# 避けるため変換時に落とす(null の属性は MVT でも欠落になる)
+ZERO_IS_MISSING: dict[str, frozenset[str]] = {
+    "S12": frozenset({"S12_061"}),
+}
+
+
+def _curate_geojson_attributes(code: str, geojsons: list[Path]) -> None:
+    """KEEP_ATTRIBUTES に従って GeoJSON の properties を絞る(各ファイル上書き).
+
+    大規模データセット(L01 等)は FeatureCollection 全体を一括ロードするため
+    メモリを要する。冪等で、絞り込み済みファイルの再適用も安全。
+    """
+    keep = KEEP_ATTRIBUTES.get(code)
+    if keep is None:
+        return
+    zero_null = ZERO_IS_MISSING.get(code, frozenset())
+    for gj in geojsons:
+        data = json.loads(gj.read_text(encoding="utf-8"))
+        kept = 0
+        dropped_keys: set[str] = set()
+        zeroed = 0
+        for ft in data.get("features", []):
+            props = ft.get("properties")
+            if not isinstance(props, dict):
+                continue
+            kept = max(kept, len(props))
+            for key in [k for k in props if k not in keep]:
+                dropped_keys.add(key)
+                del props[key]
+            for key in props.keys() & zero_null:
+                if props[key] == 0:
+                    props[key] = None
+                    zeroed += 1
+        gj.write_text(
+            json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+        )
+        print(
+            f"  属性絞り込み: {gj.name} 最大{kept}属性 -> {len(keep)}属性"
+            f"（除去キー: {len(dropped_keys)}, 0->null: {zeroed}件）"
+        )
+
+
 def _geometry_kind(geojsons: list[Path]) -> str:
     """GeoJSON 群のジオメトリ種から tippecanoe の --layer 名 (point/line/polygon) を決める.
 
@@ -596,6 +657,7 @@ def cmd_convert(args: argparse.Namespace) -> None:
     geojsons = sorted(set(geojsons))
     if not geojsons:
         raise SystemExit("GeoJSON が生成されませんでした")
+    _curate_geojson_attributes(code, geojsons)
     tip = _find_tippecanoe()
     if tip is None:
         print(

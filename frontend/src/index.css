@@ -172,6 +172,32 @@ body {
     border-top-color: var(--border-color) !important;
 }
 
+/* ── Leaflet Custom Popup ── */
+/* 物件ピン(oshima)・ベクタフィーチャ(featurePopup)共通の白デフォルトを
+   アプリのダークガラスパネルへ寄せる。チップは回転正方形のため枠線なし
+   (背景のみ合わせる) */
+.leaflet-popup-content-wrapper {
+    background: var(--panel-bg) !important;
+    color: var(--text-color) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5) !important;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    /* .leaflet-container が font:12px Helvetica/Arial を持つためアプリフォントへ戻す */
+    font-family: inherit;
+}
+.leaflet-popup-tip {
+    background: var(--panel-bg) !important;
+}
+.leaflet-container a.leaflet-popup-close-button {
+    color: var(--text-muted);
+}
+.leaflet-container a.leaflet-popup-close-button:hover,
+.leaflet-container a.leaflet-popup-close-button:focus {
+    color: var(--text-color);
+}
+
 /* ── Map Container ── */
 #map {
     width: 100%;
@@ -269,14 +295,29 @@ body {
 }
 
 /* ── Detail Panel Mobile Handle ── */
+/* モバイル下シートのドラッグハンドル。flex フローから外す(absolute)ため
+   帯スペースを占有せず、画像はパネル最上部から始まる。ピルは画像等の上に
+   オーバーレイで浮くため、視認性を上げた白 + 影。pointer-events:none で
+   画像クリック(ライトボックス起動)を妨げない */
 .detail-panel::before {
     content: '';
-    display: block;
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
     width: 40px;
     height: 4px;
-    background: rgba(255, 255, 255, 0.2);
     border-radius: 2px;
-    margin: 8px auto 0 auto;
+    background: rgba(255, 255, 255, 0.85);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    z-index: 10;
+    pointer-events: none;
+}
+/* ハンドルはシートであるモバイルのみ。デスクトップの浮遊カードでは非表示 */
+@media (min-width: 768px) {
+    .detail-panel::before {
+        display: none;
+    }
 }
 
 /* ── CopilotKit AI Chat Overrides ── */

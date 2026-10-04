@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import {
+  FaArrowRightArrowLeft,
+  FaCheck,
   FaChevronDown,
   FaCircleXmark,
   FaEye,
@@ -14,10 +15,13 @@ import {
 import { Button } from '@/components/ui/button.tsx';
 import { Badge } from '@/components/ui/badge.tsx';
 import { Slider } from '@/components/ui/slider.tsx';
+import { Menu, MenuTrigger, MenuContent, MenuItem } from '@/components/ui/menu.tsx';
 import { cn } from '@/lib/utils.ts';
 import { DND_HANDLE_ATTR } from '../../lib/layers/dnd.ts';
 import type { LayerActions } from '../../lib/layers/state.ts';
 import type { FeSettings } from '../../lib/feSettings.ts';
+import { baseEntries } from '../../lib/layers/catalog.ts';
+import type { BaseLayerId } from '../../lib/layers/types.ts';
 import {
   LAYER_TAG_LABELS,
   type LayerCatalogEntry,
@@ -223,17 +227,16 @@ export const EnabledLayerRowContent: React.FC<EnabledLayerRowProps> = ({
 };
 
 /** 有効レイヤ行(並べ替え可能)。行全体でドラッグ可(ハンドル=即時/本体=長押し)。
- *  DragOverlay対策で animateLayoutChanges=false */
+ *  挿入はインジケータ+ドロップ時一括確定のため、元行の transform 演出は使わない */
 export const EnabledLayerRow: React.FC<EnabledLayerRowProps> = (props) => {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+  const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: props.layer.id,
     data: { type: 'layer', groupId: props.layer.groupId },
-    animateLayoutChanges: () => false,
   });
   return (
     <div
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      data-layer-row={props.layer.id}
       className={cn(isDragging && 'opacity-40')}
       {...attributes}
       {...listeners}
@@ -310,15 +313,14 @@ export const DisabledLayerRowContent: React.FC<DisabledLayerRowProps> = ({
 );
 
 export const DisabledLayerRow: React.FC<DisabledLayerRowProps> = (props) => {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+  const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: props.entry.id,
     data: { type: 'layer' },
-    animateLayoutChanges: () => false,
   });
   return (
     <div
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      data-layer-row={props.entry.id}
       className={cn(isDragging && 'opacity-40')}
       {...attributes}
       {...listeners}
@@ -343,6 +345,213 @@ export const DisabledLayerRowOverlay: React.FC<{
     <DisabledLayerRowContent entry={entry} layerActions={undefined} />
   </div>
 );
+
+/** ベース行の差し替えドロップダウン(基本地図リスト、バッジなし)。現行ベースはチェック表示 */
+const BaseSwapMenu: React.FC<{ currentId: string; layerActions: LayerActions }> = ({
+  currentId,
+  layerActions,
+}) => (
+  <Menu>
+    <MenuTrigger
+      render={
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label="基本地図を差し替え"
+          title="基本地図を差し替え"
+          className="shrink-0 text-text-muted/70 hover:text-primary"
+        >
+          <FaArrowRightArrowLeft />
+        </Button>
+      }
+    />
+    <MenuContent align="end">
+      {baseEntries.map((e) => (
+        <MenuItem
+          key={e.id}
+          onClick={() => layerActions.selectBase(e.id as BaseLayerId)}
+          className={cn('gap-1.5', e.id === currentId && 'text-accent')}
+        >
+          {e.id === currentId ? (
+            <FaCheck className="size-2.5 shrink-0 text-accent" />
+          ) : (
+            <span className="size-2.5 shrink-0" />
+          )}
+          <span className="min-w-0 truncate">{e.name}</span>
+        </MenuItem>
+      ))}
+    </MenuContent>
+  </Menu>
+);
+
+/**
+ * ベース行。最下層固定のためドラッグ不可(ハンドルなし・破線枠)。
+ * 差し替えは差し替えMenu / 無効リストからのDnD / 上部タブ。
+ * 表示切替・不透明度・設定は一般行と共通。グループ割当は不可。
+ */
+export const BaseLayerRow: React.FC<EnabledLayerRowProps & { isSwapTarget?: boolean }> = ({
+  layer,
+  name,
+  entry,
+  layerActions,
+  feSettings,
+  onFeSettingsChange,
+  isSwapTarget,
+}) => {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const opacityPct = Math.round(layer.opacity * 100);
+
+  return (
+    <div
+      className={cn(
+        'flex items-stretch gap-1.5 rounded-lg border border-dashed border-border/80 bg-white/[0.03] px-1.5 py-1.5 select-none',
+        'transition-shadow',
+        isSwapTarget && 'ring-2 ring-accent',
+      )}
+    >
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        {/* 1行目: 操作系 */}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Badge
+            variant="outline"
+            className="h-4 shrink-0 border-accent/40 bg-accent/10 px-1 text-[9px] text-accent"
+            title="ベースマップ(最下層固定)"
+          >
+            基本地図
+          </Badge>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={layer.visible ? `${name}を非表示` : `${name}を表示`}
+            title={layer.visible ? '非表示にする' : '表示する'}
+            className={cn(
+              'shrink-0',
+              layer.visible ? 'text-text' : 'text-text-muted/60 hover:text-text-muted',
+            )}
+            onClick={() => layerActions.setLayerVisible(layer.id, !layer.visible)}
+          >
+            {layer.visible ? <FaEye /> : <FaEyeSlash />}
+          </Button>
+          <LayerLegendPopover
+            name={name}
+            entry={entry}
+            nameClassName="min-w-0 flex-1 truncate text-xs text-text-muted"
+          />
+          <BaseSwapMenu currentId={layer.id} layerActions={layerActions} />
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={`${name}の設定`}
+            title="レイヤ設定"
+            className="shrink-0 text-text-muted/70 hover:text-primary"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <FaGear />
+          </Button>
+        </div>
+        {/* 2行目: 不透明度スライダー+%表示 */}
+        <div className="flex items-center gap-1">
+          <Slider
+            className="mx-3 min-w-0 grow"
+            aria-label={`${name}の不透明度`}
+            value={[opacityPct]}
+            onValueChange={(vals) => {
+              const v = Array.isArray(vals) ? vals[0] : vals;
+              if (typeof v === 'number') layerActions.setLayerOpacity(layer.id, v / 100);
+            }}
+            min={0}
+            max={100}
+            step={1}
+          />
+          <span
+            className="w-8 shrink-0 text-right text-[9px] tabular-nums text-text-muted"
+            title="不透明度"
+          >
+            {opacityPct}%
+          </span>
+        </div>
+      </div>
+      <LayerSettingsDialog
+        layerId={layer.id}
+        feSettings={feSettings}
+        onUpdate={onFeSettingsChange}
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+      />
+    </div>
+  );
+};
+
+/**
+ * 物件ピン行(最前面固定の特殊行。BaseLayerRow=最下層固定の対称)。
+ * 検索結果の動的データのためスタック外で常駐し、表示切替と不透明度のみ
+ * 操作可(ドラッグ/無効化/グループ参加は不可。カタログエントリが無いため
+ * 設定モーダル・凡例ポップオーバーも無し)。
+ */
+export const PropertiesLayerRow: React.FC<{
+  layer: LayerRuntime;
+  layerActions: LayerActions;
+}> = ({ layer, layerActions }) => {
+  const opacityPct = Math.round(layer.opacity * 100);
+  const name = '物件ピン';
+
+  return (
+    <div className="flex items-stretch gap-1.5 rounded-lg border border-dashed border-border/80 bg-white/[0.03] px-1.5 py-1.5 select-none">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        {/* 1行目: 操作系 */}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Badge
+            variant="outline"
+            className="h-4 shrink-0 border-accent/40 bg-accent/10 px-1 text-[9px] text-accent"
+            title="物件ピン(最前面固定)"
+          >
+            物件
+          </Badge>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={layer.visible ? `${name}を非表示` : `${name}を表示`}
+            title={layer.visible ? '非表示にする' : '表示する'}
+            className={cn(
+              'shrink-0',
+              layer.visible ? 'text-text' : 'text-text-muted/60 hover:text-text-muted',
+            )}
+            onClick={() => layerActions.setPropertiesVisible(!layer.visible)}
+          >
+            {layer.visible ? <FaEye /> : <FaEyeSlash />}
+          </Button>
+          <span
+            className="min-w-0 flex-1 truncate text-xs text-text-muted"
+            title="サイドバーの検索結果に一致する物件ピン(最前面固定)"
+          >
+            {name}
+          </span>
+        </div>
+        {/* 2行目: 不透明度スライダー+%表示 */}
+        <div className="flex items-center gap-1">
+          <Slider
+            className="mx-3 min-w-0 grow"
+            aria-label={`${name}の不透明度`}
+            value={[opacityPct]}
+            onValueChange={(vals) => {
+              const v = Array.isArray(vals) ? vals[0] : vals;
+              if (typeof v === 'number') layerActions.setPropertiesOpacity(v / 100);
+            }}
+            min={0}
+            max={100}
+            step={1}
+          />
+          <span
+            className="w-8 shrink-0 text-right text-[9px] tabular-nums text-text-muted"
+            title="不透明度"
+          >
+            {opacityPct}%
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 /**
  * グループヘッダー(折りたたみ/名前inline編集/メンバー数/eye/不透明度/削除)。

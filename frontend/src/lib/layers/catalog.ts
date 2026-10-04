@@ -1,5 +1,11 @@
 import { LAYER_TAGS } from './types.ts';
-import type { LayerCatalogEntry, LayerTag, VectorLayerDef } from './types.ts';
+import type {
+  LayerCatalogEntry,
+  LayerTag,
+  LegendEntry,
+  LegendShape,
+  VectorLayerDef,
+} from './types.ts';
 import gsiStdVectorStyle from './styles/gsi_std_vector.json';
 import gsiContoursStyle from './styles/gsi_contours.json';
 
@@ -16,6 +22,18 @@ function toVectorDef(style: {
     glyphs: style.glyphs,
     sprite: style.sprite,
   };
+}
+
+/**
+ * 凡例定義ヘルパー(見本の形状をレイヤ単位で一括指定)。
+ * shape はジオメトリ種に合わせる(circle=ポイント, line=ライン, square=面)。
+ * レイヤ名ポップオーバーと地図上凡例コントロール(MapLegendControl)の両方が参照する。
+ */
+function legendOf(
+  shape: LegendShape,
+  items: ReadonlyArray<[color: string, label: string]>,
+): LegendEntry[] {
+  return items.map(([color, label]) => ({ color, label, shape }));
 }
 
 /**
@@ -96,6 +114,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 5,
     maxNativeZoom: 14,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
 
   // ── 写真・衛星 ──
@@ -109,6 +128,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 5,
     maxNativeZoom: 18,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'nendophoto2017',
@@ -120,6 +140,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 14,
     maxNativeZoom: 18,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'nendophoto2019',
@@ -131,6 +152,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 14,
     maxNativeZoom: 18,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
 
   // ── 歴史(年代別空中写真) ──
@@ -144,6 +166,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 10,
     maxNativeZoom: 17,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'gazo2',
@@ -155,6 +178,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 10,
     maxNativeZoom: 17,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'gazo3',
@@ -166,6 +190,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 10,
     maxNativeZoom: 17,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'gazo4',
@@ -177,6 +202,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 10,
     maxNativeZoom: 17,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
 
   // ── 標高・起伏 ──
@@ -189,6 +215,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     urlTemplate: `${GSI}/relief/{z}/{x}/{y}.png`,
     maxNativeZoom: 15,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'slopemap',
@@ -200,6 +227,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 3,
     maxNativeZoom: 15,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'hillshademap',
@@ -211,6 +239,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 2,
     maxNativeZoom: 16,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'sekishoku',
@@ -222,6 +251,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 2,
     maxNativeZoom: 14,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
 
   // ── 土地条件 ──
@@ -235,6 +265,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 4,
     maxNativeZoom: 16,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'lcmfc2',
@@ -246,6 +277,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 5,
     maxNativeZoom: 16,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'swale',
@@ -269,6 +301,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 5,
     maxNativeZoom: 17,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
 
   // ── 火山 ──
@@ -294,6 +327,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 2,
     maxNativeZoom: 17,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
 
   // ── 災害(活断層) ──
@@ -382,6 +416,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 13,
     maxNativeZoom: 16,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
   {
     id: 'lum200k',
@@ -393,6 +428,7 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     minZoom: 11,
     maxNativeZoom: 14,
     maxZoom: 20,
+    defaultOpacity: 0.5,
   },
 
   // ── 災害(ハザードマップポータル。公式定義は minZoom2/maxZoom17) ──
@@ -508,10 +544,10 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     vector: toVectorDef(gsiContoursStyle),
     defaultOpacity: 0.9,
     description: 'ベクタタイルの等高線。ラスタの陰影図・色別標高図と重ねられる',
-    legend: [
-      { color: 'rgb(200,160,60)', label: '計曲線(50m間隔・太線)' },
-      { color: 'rgb(200,160,60)', label: '主曲線(細線)' },
-    ],
+    legend: legendOf('line', [
+      ['rgb(200,160,60)', '計曲線(50m間隔・太線)'],
+      ['rgb(200,160,60)', '主曲線(細線)'],
+    ]),
   },
 
   // ── 国土数値情報(MLIT NLFTP)。scripts/ksj パイプラインで生成した
@@ -588,15 +624,23 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
       '2026年(令和8年)地価公示の標準地 約2.6万点(全国)。色は現況価格(円/m²)による7段階。標準地名・所在地を属性に持つ',
     note: '生成: 2026-09-16 (scripts/ksj)',
     defaultOpacity: 1,
-    legend: [
-      { color: 'rgb(225,49,33)', label: '1000万円以上/m²' },
-      { color: 'rgb(225,61,35)', label: '100万〜1000万円/m²' },
-      { color: 'rgb(226,84,39)', label: '75万〜100万円/m²' },
-      { color: 'rgb(231,145,52)', label: '50万〜75万円/m²' },
-      { color: 'rgb(235,178,61)', label: '25万〜50万円/m²' },
-      { color: 'rgb(239,211,71)', label: '10万〜25万円/m²' },
-      { color: 'rgb(245,245,81)', label: '10万円未満/m²' },
-    ],
+    legend: legendOf('circle', [
+      ['rgb(225,49,33)', '1000万円以上/m²'],
+      ['rgb(225,61,35)', '100万〜1000万円/m²'],
+      ['rgb(226,84,39)', '75万〜100万円/m²'],
+      ['rgb(231,145,52)', '50万〜75万円/m²'],
+      ['rgb(235,178,61)', '25万〜50万円/m²'],
+      ['rgb(239,211,71)', '10万〜25万円/m²'],
+      ['rgb(245,245,81)', '10万円未満/m²'],
+    ]),
+    featurePopup: {
+      titleKey: 'L01_024',
+      fields: [
+        { key: 'L01_008', label: '公示価格', format: 'jpy-m2' },
+        { key: 'L01_025', label: '所在地' },
+        { key: 'L01_007', label: '公示年' },
+      ],
+    },
   },
   {
     id: 'ksj_a29',
@@ -654,19 +698,19 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
       '都市計画法に基づく用途地域の指定範囲(2019年・令和元年調査、全国結合)。住居系から工業専用まで12区分(A29_004)で色分け',
     note: '生成: 2026-09-16 (scripts/ksj)',
     defaultOpacity: 0.5,
-    legend: [
-      { color: 'rgb(0,180,0)', label: '第1種低層住居専用地域' },
-      { color: 'rgb(60,190,90)', label: '第2種低層住居専用地域' },
-      { color: 'rgb(100,200,100)', label: '第1種中高層住居専用地域' },
-      { color: 'rgb(150,220,150)', label: '第2種中高層住居専用地域' },
-      { color: 'rgb(200,240,200)', label: '第1種・第2種住居地域' },
-      { color: 'rgb(255,230,180)', label: '準住居地域' },
-      { color: 'rgb(255,180,180)', label: '近隣商業地域' },
-      { color: 'rgb(255,100,100)', label: '商業地域' },
-      { color: 'rgb(200,150,255)', label: '準工業地域' },
-      { color: 'rgb(150,150,200)', label: '工業地域' },
-      { color: 'rgb(100,100,180)', label: '工業専用地域' },
-    ],
+    legend: legendOf('square', [
+      ['rgb(0,180,0)', '第1種低層住居専用地域'],
+      ['rgb(60,190,90)', '第2種低層住居専用地域'],
+      ['rgb(100,200,100)', '第1種中高層住居専用地域'],
+      ['rgb(150,220,150)', '第2種中高層住居専用地域'],
+      ['rgb(200,240,200)', '第1種・第2種住居地域'],
+      ['rgb(255,230,180)', '準住居地域'],
+      ['rgb(255,180,180)', '近隣商業地域'],
+      ['rgb(255,100,100)', '商業地域'],
+      ['rgb(200,150,255)', '準工業地域'],
+      ['rgb(150,150,200)', '工業地域'],
+      ['rgb(100,100,180)', '工業専用地域'],
+    ]),
   },
   {
     id: 'ksj_a09',
@@ -708,12 +752,12 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
       '都市計画区域の区域区分(線引き)。2018年(平成30年)調べ・全国結合。都市計画区域/市街化区域/市街化調整区域/区域区分未定を色分け',
     note: '生成: 2026-09-16 (scripts/ksj)',
     defaultOpacity: 0.5,
-    legend: [
-      { color: 'rgb(173,216,230)', label: '都市計画区域' },
-      { color: 'rgb(255,200,150)', label: '市街化区域' },
-      { color: 'rgb(150,220,150)', label: '市街化調整区域' },
-      { color: 'rgb(230,230,210)', label: '区域区分が定められていない都市計画区域' },
-    ],
+    legend: legendOf('square', [
+      ['rgb(173,216,230)', '都市計画区域'],
+      ['rgb(255,200,150)', '市街化区域'],
+      ['rgb(150,220,150)', '市街化調整区域'],
+      ['rgb(230,230,210)', '区域区分が定められていない都市計画区域'],
+    ]),
   },
   {
     id: 'ksj_n02',
@@ -744,6 +788,10 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
       '鉄道路線・駅構内のライン(2025年・令和7年版、全国)。路線名・事業者名(N02_003/N02_004)を属性に持つ',
     note: '生成: 2026-09-16 (scripts/ksj)',
     defaultOpacity: 0.9,
+    featurePopup: {
+      titleKey: 'N02_003',
+      fields: [{ key: 'N02_004', label: '事業者' }],
+    },
   },
   {
     id: 'ksj_s12',
@@ -765,7 +813,11 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
           paint: {
             'line-color': [
               'step',
-              ['get', 'S12_004'],
+              // S12_061 = 1日平均乗降客数(2024年度)。欠測駅は変換時に
+              // 0→null されているため step の既定色(灰色)に落ちる
+              ['get', 'S12_061'],
+              'hsl(0,0%,75%)',
+              1,
               'hsl(240,100%,50%)',
               100,
               'hsl(230,100%,55%)',
@@ -793,26 +845,41 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
       ],
     },
     description:
-      '駅ごとの1日平均乗降客数(2024年・令和6年、全国)。駅構内のラインを乗降客数10段階で色分け。駅名・路線名・事業者名を属性に持つ',
-    note: '生成: 2026-09-16 (scripts/ksj)',
+      '駅ごとの1日平均乗降客数(2024年・令和6年、全国)。駅構内のラインを乗降客数10段階で色分け(欠測は灰色)。駅名・路線名・事業者名を属性に持つ',
+    note: '生成: 2026-10-05 (scripts/ksj)',
     defaultOpacity: 0.9,
-    legend: [
-      { color: 'hsl(240,100%,50%)', label: '0 - 99人' },
-      { color: 'hsl(230,100%,55%)', label: '100 - 299人' },
-      { color: 'hsl(220,100%,60%)', label: '300 - 499人' },
-      { color: 'hsl(210,100%,65%)', label: '500 - 999人' },
-      { color: 'hsl(200,100%,70%)', label: '1000 - 4999人' },
-      { color: 'hsl(180,100%,50%)', label: '5000 - 19999人' },
-      { color: 'hsl(150,100%,50%)', label: '20000 - 99999人' },
-      { color: 'hsl(120,100%,50%)', label: '100000 - 499999人' },
-      { color: 'hsl(60,100%,50%)', label: '500000 - 1199999人' },
-      { color: 'hsl(0,100%,50%)', label: '1200000人+' },
-    ],
+    legend: legendOf('line', [
+      ['hsl(0,0%,75%)', 'データなし'],
+      ['hsl(240,100%,50%)', '1 - 99人'],
+      ['hsl(230,100%,55%)', '100 - 299人'],
+      ['hsl(220,100%,60%)', '300 - 499人'],
+      ['hsl(210,100%,65%)', '500 - 999人'],
+      ['hsl(200,100%,70%)', '1000 - 4999人'],
+      ['hsl(180,100%,50%)', '5000 - 19999人'],
+      ['hsl(150,100%,50%)', '20000 - 99999人'],
+      ['hsl(120,100%,50%)', '100000 - 499999人'],
+      ['hsl(60,100%,50%)', '500000 - 1199999人'],
+      ['hsl(0,100%,50%)', '1200000人+'],
+    ]),
+    featurePopup: {
+      // 現行KSJスキーマ(v3系): S12_001=駅名 / S12_002=運営会社 / S12_003=路線名
+      titleKey: 'S12_001',
+      fields: [
+        { key: 'S12_003', label: '路線' },
+        { key: 'S12_002', label: '事業者' },
+        { key: 'S12_061', label: '1日平均乗降客数', format: 'int' },
+      ],
+    },
   },
 ];
 
 export const catalogById: ReadonlyMap<string, LayerCatalogEntry> = new Map(
   LAYER_CATALOG.map((entry) => [entry.id, entry]),
+);
+
+/** カタログのうちベースマップ(role:'base')のみ。カタログ定義順(差し替えメニューの並び順) */
+export const baseEntries: LayerCatalogEntry[] = LAYER_CATALOG.filter(
+  (entry) => entry.role === 'base',
 );
 
 /** タグ→LAYER_TAGS定義順のインデックス(未定義タグは最後尾にソート) */

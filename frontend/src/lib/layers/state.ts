@@ -1,7 +1,13 @@
 import type { BaseLayerId, LayerConfigState, LayerGroup, LayerRuntime, StackItem } from './types.ts';
+import { PROPERTIES_LAYER_ID } from './types.ts';
 import { catalogById } from './catalog.ts';
 
 const STORAGE_KEY = 'yadokari:layers';
+
+/** 物件ピン(検索結果)レイヤの既定ランタイム(可視・不透明) */
+export function createDefaultPropertiesRuntime(): LayerRuntime {
+  return { id: PROPERTIES_LAYER_ID, visible: true, opacity: 1 };
+}
 
 export function createDefaultLayerConfig(): LayerConfigState {
   // 現行アプリの初期表示と同じく淡色ベース1枚
@@ -9,6 +15,7 @@ export function createDefaultLayerConfig(): LayerConfigState {
     v: 2,
     stack: [{ kind: 'layer', id: 'pale', visible: true, opacity: 1 }],
     groups: [],
+    properties: createDefaultPropertiesRuntime(),
   };
 }
 
@@ -34,6 +41,26 @@ export function flattenOrderIds(stack: StackItem[]): string[] {
   return flattenStack(stack).map((l) => l.id);
 }
 
+/**
+ * 実効ランタイム列(スタック順=先頭が最前面)。グループメンバーはグループの
+ * visible/opacity を反映した実効値に解決する(engine.sync のベクタ適用と同じ規則)。
+ * 地図上凡例コントロールなど、表示中レイヤの列挙に使う。
+ */
+export function effectiveRuntimeList(
+  config: LayerConfigState,
+): Array<LayerRuntime & { groupId?: string }> {
+  const groupById = new Map(config.groups.map((g) => [g.id, g]));
+  return flattenStack(config.stack).map((layer) => {
+    if (layer.groupId === undefined) return layer;
+    const group = groupById.get(layer.groupId);
+    return {
+      ...layer,
+      visible: layer.visible && group?.visible !== false,
+      opacity: layer.opacity * (group?.opacity ?? 1),
+    };
+  });
+}
+
 const findLayerGroup = (stack: StackItem[], id: string): string | undefined => {
   for (const item of stack) {
     if (layerItem(item)) continue;
@@ -56,6 +83,89 @@ const clamp01 = (v: unknown): number =>
 export type InitialOpacityProvider = (id: string) => number;
 
 const catalogInitialOpacity: InitialOpacityProvider = (id) => catalogById.get(id)?.defaultOpacity ?? 1;
+
+/** DnD確定時の挿入位置指定(placeLayerの入力) */
+export type DropPosition =
+  | { kind: 'top'; index: number }
+  | { kind: 'group'; groupId: string; index: number };
+
+/**
+ * レイヤを指定位置へ一括移動/挿入(無効↔有効のDnD確定用)。
+ * position.index は「移動前の表示座標系」での挿入位置を指す(over行の直前=その行の
+ * index、直後=+1)。同一リスト内の移動ではメンバー除去で座標がずれるため、ここで調整する。
+ * - 無効レイヤのidなら新規追加(visible=true、既定透明度)、有効レイヤならそのまま移動
+ * - ベースは最下層固定のため本関数では扱わない(切替はselectBase専用)。top indexは
+ *   ベース行の直前までにクランプされる
+ * - グループ未作成なら末尾にブロックを作る。存在しないid/グループはconfig不変
+ */
+export function placeLayer(
+  config: LayerConfigState,
+  id: string,
+  position: DropPosition,
+  initialOpacity: InitialOpacityProvider = catalogInitialOpacity,
+): LayerConfigState {
+  const entry = catalogById.get(id);
+  if (!entry || entry.role === 'base') return config;
+
+  // 移動元の現在位置(除去前座標系)。index調整に使用
+  const fromTopIndex = config.stack.findIndex((s) => layerItem(s) && s.id === id);
+  let fromMemberIndex = -1;
+  let fromGroupId: string | undefined;
+  if (fromTopIndex < 0 && flattenOrderIds(config.stack).includes(id)) {
+    for (const item of config.stack) {
+      if (layerItem(item)) continue;
+      const i = item.members.findIndex((m) => m.id === id);
+      if (i >= 0) {
+        fromMemberIndex = i;
+        fromGroupId = item.groupId;
+        break;
+      }
+    }
+  }
+  const wasEnabled = fromTopIndex >= 0 || fromMemberIndex >= 0;
+
+  const member: LayerRuntime = wasEnabled
+    ? { ...flattenStack(config.stack).find((l) => l.id === id)! }
+    : { id, visible: true, opacity: initialOpacity(id) };
+  const stack = wasEnabled ? removeLayerFromStack(config.stack, id) : config.stack;
+
+  if (position.kind === 'top') {
+    // ベースは最下層固定: 挿入位置はベース行の直前まで
+    const baseIndex = stack.findIndex(
+      (item) => layerItem(item) && catalogById.get(item.id)?.role === 'base',
+    );
+    const maxIndex = baseIndex >= 0 ? baseIndex : stack.length;
+    const at =
+      fromTopIndex >= 0 && position.index > fromTopIndex ? position.index - 1 : position.index;
+    const clamped = Math.min(Math.max(at, 0), maxIndex);
+    const next = [...stack];
+    next.splice(clamped, 0, { kind: 'layer', ...member });
+    return { ...config, stack: next };
+  }
+
+  if (!config.groups.some((g) => g.id === position.groupId)) return config;
+  const blockIndex = stack.findIndex(
+    (item) => !layerItem(item) && item.groupId === position.groupId,
+  );
+  if (blockIndex < 0) {
+    return {
+      ...config,
+      stack: [...stack, { kind: 'group', groupId: position.groupId, members: [member] }],
+    };
+  }
+  const block = stack[blockIndex];
+  if (layerItem(block)) return config;
+  const members = [...block.members];
+  // 同一グループ内の移動ではメンバー除去で挿入点が1つずれる
+  const from = fromGroupId === position.groupId ? fromMemberIndex : -1;
+  const at = from >= 0 && position.index > from ? position.index - 1 : position.index;
+  const clamped = Math.min(Math.max(at, 0), members.length);
+  members.splice(clamped, 0, member);
+  return {
+    ...config,
+    stack: stack.map((item, i) => (i === blockIndex ? { ...block, members } : item)),
+  };
+}
 
 // ─────────────────────────────────────────────
 // 純粋操作(単体テスト対象)。常に新しいオブジェクトを返す
@@ -309,6 +419,23 @@ export function assignLayerGroup(
   return groupId === null ? removeFromGroup(config, id) : moveToGroup(config, id, groupId);
 }
 
+// ── 物件ピンレイヤ(スタック外の最前面固定特殊行) ──
+
+export function setPropertiesVisible(
+  config: LayerConfigState,
+  visible: boolean,
+): LayerConfigState {
+  return { ...config, properties: { ...config.properties, visible } };
+}
+
+export function setPropertiesOpacity(
+  config: LayerConfigState,
+  opacity: number,
+): LayerConfigState {
+  const clamped = Math.min(1, Math.max(0, opacity));
+  return { ...config, properties: { ...config.properties, opacity: clamped } };
+}
+
 /**
  * AI互換の全レイヤ順序指定: 平坦なid列(グループは先頭メンバーの位置にブロック)。
  * グループのアンカー=新順序中の当該グループメンバーの最小index。メンバーは新順序内の
@@ -376,6 +503,8 @@ export interface LayerActions {
   setLayerOrder(ids: string[]): void;
   /** トップレベル要素(レイヤid or グループid)の並べ替え(v2) */
   reorderStack(itemIds: string[]): void;
+  /** DnD確定用の位置指定一括挿入/移動(無効↔有効、グループ参加含む) */
+  placeLayer(id: string, position: DropPosition): void;
   moveToGroup(id: string, groupId: string, index?: number): void;
   removeFromGroup(id: string): void;
   reorderGroupMembers(groupId: string, memberIds: string[]): void;
@@ -385,6 +514,10 @@ export interface LayerActions {
   setGroupVisible(groupId: string, visible: boolean): void;
   setGroupOpacity(groupId: string, opacity: number): void;
   assignLayerGroup(id: string, groupId: string | null): void;
+  /** 物件ピンレイヤ(最前面固定特殊行)の表示/非表示 */
+  setPropertiesVisible(visible: boolean): void;
+  /** 物件ピンレイヤの不透明度 */
+  setPropertiesOpacity(opacity: number): void;
 }
 
 type Commit = (updater: (config: LayerConfigState) => LayerConfigState) => void;
@@ -401,6 +534,7 @@ export function makeLayerActions(
     setLayerOpacity: (id, opacity) => commit((c) => setLayerOpacity(c, id, opacity)),
     setLayerOrder: (ids) => commit((c) => setLayerOrder(c, ids)),
     reorderStack: (itemIds) => commit((c) => reorderStack(c, itemIds)),
+    placeLayer: (id, position) => commit((c) => placeLayer(c, id, position, initialOpacity)),
     moveToGroup: (id, groupId, index) => commit((c) => moveToGroup(c, id, groupId, index)),
     removeFromGroup: (id) => commit((c) => removeFromGroup(c, id)),
     reorderGroupMembers: (groupId, memberIds) =>
@@ -411,6 +545,8 @@ export function makeLayerActions(
     setGroupVisible: (groupId, visible) => commit((c) => setGroupVisible(c, groupId, visible)),
     setGroupOpacity: (groupId, opacity) => commit((c) => setGroupOpacity(c, groupId, opacity)),
     assignLayerGroup: (id, groupId) => commit((c) => assignLayerGroup(c, id, groupId)),
+    setPropertiesVisible: (visible) => commit((c) => setPropertiesVisible(c, visible)),
+    setPropertiesOpacity: (opacity) => commit((c) => setPropertiesOpacity(c, opacity)),
   };
 }
 
@@ -440,7 +576,13 @@ export function saveLayerConfig(config: LayerConfigState): void {
 
 function normalizeLoadedConfig(parsed: unknown): LayerConfigState {
   if (!parsed || typeof parsed !== 'object') return createDefaultLayerConfig();
-  const p = parsed as { v?: unknown; layers?: unknown; stack?: unknown; groups?: unknown };
+  const p = parsed as {
+    v?: unknown;
+    layers?: unknown;
+    stack?: unknown;
+    groups?: unknown;
+    properties?: unknown;
+  };
 
   // v2以外のペイロード(v1形式・破損含む)はデフォルト設定へフォールバック
   if (p.v !== 2 || !Array.isArray(p.stack)) {
@@ -490,5 +632,12 @@ function normalizeLoadedConfig(parsed: unknown): LayerConfigState {
   for (const g of groups) {
     if (!blockIds.has(g.id)) stack.push({ kind: 'group', groupId: g.id, members: [] });
   }
-  return { v: 2, stack, groups };
+  // 物件ピンランタイム(本フィールド導入前のconfigでは欠落するため補完)
+  const pProps = (p.properties ?? null) as { visible?: unknown; opacity?: unknown } | null;
+  const properties: LayerRuntime = {
+    id: PROPERTIES_LAYER_ID,
+    visible: pProps ? pProps.visible !== false : true,
+    opacity: pProps ? clamp01(pProps.opacity) : 1,
+  };
+  return { v: 2, stack, groups, properties };
 }

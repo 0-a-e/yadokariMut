@@ -231,13 +231,13 @@ function detailLinkHtml(key: string): string {
   return (
     '<div style="margin-top:6px;">' +
     `<a href="${DETAIL_API_URL}/${encodeURIComponent(key)}" target="_blank" rel="noopener" ` +
-    'style="color:#c0392b;">大島てるで詳細を見る</a></div>'
+    'style="color:var(--accent);">大島てるで詳細を見る</a></div>'
   );
 }
 
 /** 詳細取得失敗・JSON不正時に必ず開くフォールバック(リンクのみ) */
 function linkOnlyPopupHtml(key: string): string {
-  return `<div style="min-width:160px;">${detailLinkHtml(key)}</div>`;
+  return `<div style="min-width:160px;font-size:calc(12px * var(--font-scale));line-height:1.5;">${detailLinkHtml(key)}</div>`;
 }
 
 function detailPopupHtml(key: string, json: unknown): string {
@@ -250,11 +250,11 @@ function detailPopupHtml(key: string, json: unknown): string {
   if (ad) rows.push(`<div style="margin-top:2px;">${escapeHtml(ad)}</div>`);
   if (info) {
     rows.push(
-      `<div style="margin-top:4px;font-size:12px;color:#555;">${escapeHtml(shorten(info, 160))}</div>`,
+      `<div style="margin-top:4px;color:var(--text-muted);">${escapeHtml(shorten(info, 160))}</div>`,
     );
   }
   rows.push(detailLinkHtml(key));
-  return `<div style="min-width:180px;">${rows.join('')}</div>`;
+  return `<div style="min-width:180px;font-size:calc(12px * var(--font-scale));line-height:1.5;">${rows.join('')}</div>`;
 }
 
 // ── アイコン ─────────────────────────────────────────────────────
@@ -495,9 +495,12 @@ class OshimaLayer extends L.Layer {
       return;
     }
     // 先に読み込み中ポップアップを開いておく(失敗時も開いたままになる)
-    marker.bindPopup('<div style="min-width:120px;">読み込み中…</div>', {
-      maxWidth: 320,
-    });
+    marker.bindPopup(
+      '<div style="min-width:120px;font-size:calc(12px * var(--font-scale));line-height:1.5;">読み込み中…</div>',
+      {
+        maxWidth: 320,
+      },
+    );
     marker.openPopup();
 
     let html: string;

@@ -534,9 +534,14 @@ export interface components {
     schemas: {
         /**
          * ActivityMessage
-         * @description An activity progress message emitted between chat messages.
+         * @description Structured progress that is not conversation content, materialised as a
+         *     message so it keeps its place in the sequence. Stands alone rather than
+         *     composing BaseMessage, because its content is an object rather than a
+         *     string.
          */
         ActivityMessage: {
+            /** Subagentrunid */
+            subagentRunId?: string | null;
             /** Id */
             id: string;
             /**
@@ -550,6 +555,10 @@ export interface components {
             content: {
                 [key: string]: unknown;
             };
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
         } & {
             [key: string]: unknown;
         };
@@ -678,9 +687,12 @@ export interface components {
         };
         /**
          * AssistantMessage
-         * @description An assistant message.
+         * @description A message from the agent. Content is optional because a turn may consist
+         *     only of tool calls.
          */
         AssistantMessage: {
+            /** Subagentrunid */
+            subagentRunId?: string | null;
             /** Id */
             id: string;
             /**
@@ -688,54 +700,37 @@ export interface components {
              * @enum {string}
              */
             role: "assistant";
-            /** Content */
-            content?: string | null;
             /** Name */
             name?: string | null;
             /** Encryptedvalue */
             encryptedValue?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+            /** Content */
+            content?: string | null;
             /** Toolcalls */
             toolCalls?: components["schemas"]["ToolCall"][] | null;
         } & {
             [key: string]: unknown;
         };
         /**
-         * AudioInputContent
-         * @description An audio input content fragment.
+         * AudioPart
+         * @description An audio part.
          */
-        AudioInputContent: {
+        AudioPart: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "audio";
-            /** Source */
-            source: components["schemas"]["InputContentDataSource"] | components["schemas"]["InputContentUrlSource"];
-            /** Metadata */
-            metadata?: unknown | null;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * BinaryInputContent
-         * @description A deprecated binary payload reference in a multimodal user message.
-         */
-        BinaryInputContent: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "binary";
-            /** Mimetype */
-            mimeType: string;
             /** Id */
             id?: string | null;
-            /** Url */
-            url?: string | null;
-            /** Data */
-            data?: string | null;
-            /** Filename */
-            filename?: string | null;
+            /** Source */
+            source: components["schemas"]["DataSource"] | components["schemas"]["UrlSource"] | components["schemas"]["FileSource"];
+            /** Metadata */
+            metadata?: unknown | null;
         } & {
             [key: string]: unknown;
         };
@@ -939,7 +934,8 @@ export interface components {
         };
         /**
          * Context
-         * @description Additional context for the agent.
+         * @description A named piece of ambient information given to the agent for the run,
+         *     distinct from the conversation.
          */
         Context: {
             /** Description */
@@ -950,10 +946,29 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * DataSource
+         * @description Bytes carried inline.
+         */
+        DataSource: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "data";
+            /** Value */
+            value: string;
+            /** Mimetype */
+            mimeType: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * DeveloperMessage
-         * @description A developer message.
+         * @description Instructions from the application developer.
          */
         DeveloperMessage: {
+            /** Subagentrunid */
+            subagentRunId?: string | null;
             /** Id */
             id: string;
             /**
@@ -961,27 +976,33 @@ export interface components {
              * @enum {string}
              */
             role: "developer";
-            /** Content */
-            content: string;
             /** Name */
             name?: string | null;
             /** Encryptedvalue */
             encryptedValue?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+            /** Content */
+            content: string;
         } & {
             [key: string]: unknown;
         };
         /**
-         * DocumentInputContent
-         * @description A document input content fragment.
+         * DocumentPart
+         * @description A document part.
          */
-        DocumentInputContent: {
+        DocumentPart: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "document";
+            /** Id */
+            id?: string | null;
             /** Source */
-            source: components["schemas"]["InputContentDataSource"] | components["schemas"]["InputContentUrlSource"];
+            source: components["schemas"]["DataSource"] | components["schemas"]["UrlSource"] | components["schemas"]["FileSource"];
             /** Metadata */
             metadata?: unknown | null;
         } & {
@@ -1033,8 +1054,31 @@ export interface components {
             global?: components["schemas"]["FeGlobalSettings"];
         };
         /**
+         * FileSource
+         * @description Bytes already at the provider, named by a handle the provider issued: an
+         *     OpenAI or Anthropic file id, a Gemini file URI, a storage URL only that
+         *     provider can read. No bytes travel and nothing is fetched. Only the
+         *     provider that minted the handle can resolve it; a peer that cannot drops
+         *     the part as it drops any part it cannot use.
+         */
+        FileSource: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "file";
+            /** Value */
+            value: string;
+            /** Provider */
+            provider?: string | null;
+            /** Mimetype */
+            mimeType?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * FunctionCall
-         * @description Name and arguments of a function call.
+         * @description The name and arguments of a tool call.
          */
         FunctionCall: {
             /** Name */
@@ -1074,53 +1118,21 @@ export interface components {
             status: "ok";
         };
         /**
-         * ImageInputContent
-         * @description An image input content fragment.
+         * ImagePart
+         * @description An image part.
          */
-        ImageInputContent: {
+        ImagePart: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "image";
+            /** Id */
+            id?: string | null;
             /** Source */
-            source: components["schemas"]["InputContentDataSource"] | components["schemas"]["InputContentUrlSource"];
+            source: components["schemas"]["DataSource"] | components["schemas"]["UrlSource"] | components["schemas"]["FileSource"];
             /** Metadata */
             metadata?: unknown | null;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * InputContentDataSource
-         * @description Inline base64-encoded source.
-         */
-        InputContentDataSource: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "data";
-            /** Value */
-            value: string;
-            /** Mimetype */
-            mimeType: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * InputContentUrlSource
-         * @description URL-referenced source.
-         */
-        InputContentUrlSource: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "url";
-            /** Value */
-            value: string;
-            /** Mimetype */
-            mimeType?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -1620,9 +1632,12 @@ export interface components {
         };
         /**
          * ReasoningMessage
-         * @description A reasoning message containing the agent's internal reasoning process.
+         * @description A span of the agent's reasoning, materialised as a message. Stands alone
+         *     rather than composing BaseMessage, because it carries no name.
          */
         ReasoningMessage: {
+            /** Subagentrunid */
+            subagentRunId?: string | null;
             /** Id */
             id: string;
             /**
@@ -1634,6 +1649,10 @@ export interface components {
             content: string;
             /** Encryptedvalue */
             encryptedValue?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
         } & {
             [key: string]: unknown;
         };
@@ -1815,6 +1834,27 @@ export interface components {
              * @description 適合したキャンペーン型 (discount / package 等)
              */
             matched_campaign_type?: string | null;
+        };
+        /**
+         * ResumeEntry
+         * @description An answer to one interrupt, sent on the run that continues from it.
+         */
+        ResumeEntry: {
+            /** Interruptid */
+            interruptId: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "resolved" | "cancelled";
+            /** Payload */
+            payload?: unknown | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+        } & {
+            [key: string]: unknown;
         };
         /**
          * RotationBatchPreview
@@ -2014,25 +2054,33 @@ export interface components {
         };
         /**
          * RunAgentInput
-         * @description Input for running an agent.
+         * @description A request to run an agent. Also echoed back as RUN_STARTED.input. Only
+         *     threadId, runId and messages are required: those are the three the SDKs
+         *     already agree on, and for tools and context an absent key and an empty
+         *     array mean the same thing, so requiring them would catch nothing a
+         *     producer could get wrong.
          */
         RunAgentInput: {
             /** Threadid */
             threadId: string;
             /** Runid */
             runId: string;
+            /** Protocolversion */
+            protocolVersion?: string | null;
             /** Parentrunid */
             parentRunId?: string | null;
             /** State */
-            state: unknown;
+            state?: unknown | null;
             /** Messages */
             messages: (components["schemas"]["DeveloperMessage"] | components["schemas"]["SystemMessage"] | components["schemas"]["AssistantMessage"] | components["schemas"]["UserMessage"] | components["schemas"]["ToolMessage"] | components["schemas"]["ActivityMessage"] | components["schemas"]["ReasoningMessage"])[];
             /** Tools */
-            tools: components["schemas"]["Tool"][];
+            tools?: components["schemas"]["Tool"][] | null;
             /** Context */
-            context: components["schemas"]["Context"][];
+            context?: components["schemas"]["Context"][] | null;
             /** Forwardedprops */
-            forwardedProps: unknown;
+            forwardedProps?: unknown | null;
+            /** Resume */
+            resume?: components["schemas"]["ResumeEntry"][] | null;
         } & {
             [key: string]: unknown;
         };
@@ -2235,9 +2283,11 @@ export interface components {
         };
         /**
          * SystemMessage
-         * @description A system message.
+         * @description Instructions from the system.
          */
         SystemMessage: {
+            /** Subagentrunid */
+            subagentRunId?: string | null;
             /** Id */
             id: string;
             /**
@@ -2245,12 +2295,16 @@ export interface components {
              * @enum {string}
              */
             role: "system";
-            /** Content */
-            content: string;
             /** Name */
             name?: string | null;
             /** Encryptedvalue */
             encryptedValue?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+            /** Content */
+            content: string;
         } & {
             [key: string]: unknown;
         };
@@ -2296,23 +2350,27 @@ export interface components {
             last_transfer?: components["schemas"]["TransferSnapshot"] | null;
         };
         /**
-         * TextInputContent
-         * @description A text fragment in a multimodal user message.
+         * TextPart
+         * @description A text part.
          */
-        TextInputContent: {
+        TextPart: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "text";
+            /** Id */
+            id?: string | null;
             /** Text */
             text: string;
+            /** Metadata */
+            metadata?: unknown | null;
         } & {
             [key: string]: unknown;
         };
         /**
          * Tool
-         * @description A tool definition.
+         * @description A tool the agent may call.
          */
         Tool: {
             /** Name */
@@ -2321,12 +2379,18 @@ export interface components {
             description: string;
             /** Parameters */
             parameters?: unknown | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
         } & {
             [key: string]: unknown;
         };
         /**
          * ToolCall
-         * @description A tool call, modelled after OpenAI tool calls.
+         * @description A call an assistant message made. Carries no subagent attribution of its
+         *     own and inherits its containing message's, since several calls can share
+         *     one parent.
          */
         ToolCall: {
             /** Id */
@@ -2340,14 +2404,21 @@ export interface components {
             function: components["schemas"]["FunctionCall"];
             /** Encryptedvalue */
             encryptedValue?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
         } & {
             [key: string]: unknown;
         };
         /**
          * ToolMessage
-         * @description A tool result message.
+         * @description What a tool returned, as a message in the conversation. Stands alone
+         *     rather than composing BaseMessage, because it carries no name.
          */
         ToolMessage: {
+            /** Subagentrunid */
+            subagentRunId?: string | null;
             /** Id */
             id: string;
             /**
@@ -2356,13 +2427,17 @@ export interface components {
              */
             role: "tool";
             /** Content */
-            content: string;
+            content: string | (components["schemas"]["TextPart"] | components["schemas"]["ImagePart"] | components["schemas"]["AudioPart"] | components["schemas"]["VideoPart"] | components["schemas"]["DocumentPart"])[];
             /** Toolcallid */
             toolCallId: string;
             /** Error */
             error?: string | null;
             /** Encryptedvalue */
             encryptedValue?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
         } & {
             [key: string]: unknown;
         };
@@ -2414,10 +2489,29 @@ export interface components {
             session_started_at?: number | null;
         };
         /**
+         * UrlSource
+         * @description Bytes referenced by URL, fetched by whoever needs them.
+         */
+        UrlSource: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "url";
+            /** Value */
+            value: string;
+            /** Mimetype */
+            mimeType?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * UserMessage
-         * @description A user message supporting text or multimodal content.
+         * @description A message from the person using the application.
          */
         UserMessage: {
+            /** Subagentrunid */
+            subagentRunId?: string | null;
             /** Id */
             id: string;
             /**
@@ -2425,12 +2519,16 @@ export interface components {
              * @enum {string}
              */
             role: "user";
-            /** Content */
-            content: string | (components["schemas"]["TextInputContent"] | components["schemas"]["ImageInputContent"] | components["schemas"]["AudioInputContent"] | components["schemas"]["VideoInputContent"] | components["schemas"]["DocumentInputContent"] | components["schemas"]["BinaryInputContent"])[];
             /** Name */
             name?: string | null;
             /** Encryptedvalue */
             encryptedValue?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
+            /** Content */
+            content: string | (components["schemas"]["TextPart"] | components["schemas"]["ImagePart"] | components["schemas"]["AudioPart"] | components["schemas"]["VideoPart"] | components["schemas"]["DocumentPart"])[];
         } & {
             [key: string]: unknown;
         };
@@ -2448,17 +2546,19 @@ export interface components {
             ctx?: Record<string, never>;
         };
         /**
-         * VideoInputContent
-         * @description A video input content fragment.
+         * VideoPart
+         * @description A video part.
          */
-        VideoInputContent: {
+        VideoPart: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "video";
+            /** Id */
+            id?: string | null;
             /** Source */
-            source: components["schemas"]["InputContentDataSource"] | components["schemas"]["InputContentUrlSource"];
+            source: components["schemas"]["DataSource"] | components["schemas"]["UrlSource"] | components["schemas"]["FileSource"];
             /** Metadata */
             metadata?: unknown | null;
         } & {

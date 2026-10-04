@@ -1,14 +1,18 @@
 import L from 'leaflet';
 import type { LayerConfigState } from './types.ts';
+import { PROPERTIES_LAYER_ID } from './types.ts';
 import { catalogById } from './catalog.ts';
 import { getAdapter } from './adapters/index.ts';
 import { VectorEngine, type VectorItem } from './vector.ts';
 
 const LAYER_PANE_PREFIX = 'yl-';
 const GROUP_PANE_PREFIX = 'yg-';
+/** 物件ピン(markercluster)を載せる専用pane。スタック外で常に最前面 */
+export const PROPERTIES_PANE = LAYER_PANE_PREFIX + PROPERTIES_LAYER_ID;
 /**
  * カスタムpaneのスタック基準値。tilePane(200)より上、overlayPane(400)・
- * markerPane(600, 物件ピン)より下に収まる範囲で重ね順を振る。
+ * markerPane(600)より下に収まる範囲で重ね順を振る。
+ * (物件ピンは markerPane ではなく PROPERTIES_PANE に載る)
  */
 const BASE_Z_INDEX = 300;
 
@@ -27,17 +31,35 @@ export class LayerEngine {
   private readonly vectorEngine: VectorEngine;
   /** vector エントリ現在適用中の attribution(entryId → 文字列) */
   private readonly vectorAttributions = new Map<string, string>();
+  /** sync()で計算したスタック最前面のzIndex。syncPropertiesが物件paneに使う */
+  private topStackZ = BASE_Z_INDEX;
+  /** ベクタフィーチャのクリックポップアップ有効か(Geoman描画中はMapPaneが無効化) */
+  private featureClickEnabled = true;
 
   constructor(map: L.Map) {
     this.map = map;
     this.vectorEngine = new VectorEngine(map);
+    // GL canvas は pointer-events:none のため MapLibre のクリックが発火しない。
+    // Leaflet 側の map click を拾って VectorEngine のヒットテストへ回す
+    map.on('click', this.handleMapClick, this);
   }
+
+  /** ベクタフィーチャのクリックポップアップの有効/無効(囲み描画中など) */
+  setFeatureClickEnabled(enabled: boolean): void {
+    this.featureClickEnabled = enabled;
+  }
+
+  private readonly handleMapClick = (e: L.LeafletMouseEvent): void => {
+    if (!this.featureClickEnabled) return;
+    this.vectorEngine.openFeaturePopupAt(e.containerPoint, e.latlng);
+  };
 
   sync(config: LayerConfigState): void {
     const map = this.map;
     const runtimeIds = new Set<string>();
     const activeGroupIds = new Set<string>();
     const total = config.stack.length;
+    this.topStackZ = BASE_Z_INDEX + total;
     const seenPanes = new Set<string>();
     const vectorItems: VectorItem[] = [];
 
@@ -140,7 +162,22 @@ export class LayerEngine {
     }
   }
 
+  /**
+   * 物件ピンレイヤ(スタック外の最前面固定行)のpane制御。
+   * L.Layer本体(markercluster)はMapPane側が管理するため、ここではpaneの
+   * 作成と zIndex(常にスタック最前面+1)/opacity/display の反映のみ行う
+   */
+  syncProperties(runtime: { visible: boolean; opacity: number }): void {
+    const map = this.map;
+    let pane = map.getPane(PROPERTIES_PANE);
+    if (!pane) pane = map.createPane(PROPERTIES_PANE);
+    pane.style.zIndex = String(this.topStackZ + 1);
+    pane.style.opacity = String(runtime.opacity ?? 1);
+    pane.style.display = runtime.visible === false ? 'none' : '';
+  }
+
   destroy(): void {
+    this.map.off('click', this.handleMapClick, this);
     for (const [, layer] of this.layerById) {
       this.map.removeLayer(layer);
     }
@@ -149,6 +186,7 @@ export class LayerEngine {
       this.removePane(gpName);
       this.groupPaneNames.delete(gpName);
     }
+    this.removePane(PROPERTIES_PANE);
     for (const [, attribution] of this.vectorAttributions) {
       this.map.attributionControl?.removeAttribution(attribution);
     }

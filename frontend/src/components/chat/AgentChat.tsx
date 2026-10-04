@@ -136,10 +136,10 @@ export const AgentChat: React.FC<AgentChatProps> = ({
         ),
       );
     };
-    // Subscribe-ish: poll lightly while chat is open (agent has no standard listener API here)
-    const t = window.setInterval(bump, 2000);
     bump();
-    return () => window.clearInterval(t);
+    // AG-UI の購読APIでメッセージ変化を拾う(ポーリング不要)
+    const subscription = agent.subscribe({ onMessagesChanged: bump });
+    return () => subscription.unsubscribe();
   }, [agent, threadId]);
 
   const handleNewThread = () => {
@@ -201,7 +201,10 @@ export const AgentChat: React.FC<AgentChatProps> = ({
       return `Displayed ${args.properties?.length ?? 0} properties in the chat.`;
     },
     render: ({ args, status }) => {
-      if (status === ToolCallStatus.InProgress) {
+      if (
+        status === ToolCallStatus.InProgress ||
+        status === ToolCallStatus.Executing
+      ) {
         return (
           <div className="flex flex-col gap-2 p-3 my-2">
             <Skeleton className="h-4 w-3/4" />
@@ -307,7 +310,10 @@ export const AgentChat: React.FC<AgentChatProps> = ({
       return `Displayed comparison of ${args.properties?.length ?? 0} properties.`;
     },
     render: ({ args, status }) => {
-      if (status === ToolCallStatus.InProgress) {
+      if (
+        status === ToolCallStatus.InProgress ||
+        status === ToolCallStatus.Executing
+      ) {
         return (
           <div className="p-3 my-2">
             <Skeleton className="h-24 w-full" />

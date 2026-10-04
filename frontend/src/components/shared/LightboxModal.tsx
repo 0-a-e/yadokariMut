@@ -1,10 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Dialog as DialogPrimitive } from '@base-ui/react/dialog';
 import { Button } from '@/components/ui/button.tsx';
-import { FaXmark, FaChevronLeft, FaChevronRight } from 'react-icons/fa6';
+import { FaChevronLeft, FaChevronRight } from 'react-icons/fa6';
 import { Carousel, CarouselContent, CarouselItem, type CarouselApi } from '@/components/ui/carousel.tsx';
 import { CarouselDots } from '@/components/shared/CarouselDots.tsx';
 import { useHorizontalWheelNav } from '../../hooks/useHorizontalWheelNav.ts';
+import { useSwipeDismiss } from '../../hooks/useSwipeDismiss.ts';
+
+/** ヒントの表示時間(ms)。その後 HINT_FADE_MS かけてフェードアウトする */
+const HINT_VISIBLE_MS = 1500;
+const HINT_FADE_MS = 700;
 
 interface LightboxModalProps {
   isOpen: boolean;
@@ -79,6 +84,43 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
     onNext: scrollNext,
   });
 
+  // ── モバイル: 上下スワイプで閉じる(Xは廃止) ──
+  // embla(axis: x + touch-action: pan-y)が縦ドラッグを無視するため横スワイプとの共存は
+  // dominance ゲートで足りる。ステージは fadeWithDrag で指に追従して薄れる
+  const swipe = useSwipeDismiss({
+    enabled: isOpen,
+    direction: 'vertical',
+    fadeWithDrag: true,
+    onDismiss: onClose,
+  });
+
+  // 「上下スワイプで閉じる」ヒント。開くたびに表示 → 一定時間後にフェードアウト。
+  // visible → fading(opacity 遷移中) → hidden(アンマウント)
+  const [hintState, setHintState] = useState<'hidden' | 'visible' | 'fading'>('hidden');
+  useEffect(() => {
+    if (!isOpen) {
+      setHintState('hidden');
+      return;
+    }
+    setHintState('visible');
+    const fadeTimer = window.setTimeout(
+      () => setHintState('fading'),
+      HINT_VISIBLE_MS,
+    );
+    const hideTimer = window.setTimeout(
+      () => setHintState('hidden'),
+      HINT_VISIBLE_MS + HINT_FADE_MS,
+    );
+    return () => {
+      window.clearTimeout(fadeTimer);
+      window.clearTimeout(hideTimer);
+    };
+  }, [isOpen]);
+  // スワイプを始めたらヒントは即隠す
+  useEffect(() => {
+    if (swipe.isDragging) setHintState('hidden');
+  }, [swipe.isDragging]);
+
   if (!isOpen || images.length === 0) return null;
 
   return (
@@ -88,24 +130,33 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
           className="fixed inset-0 z-[9998] bg-[rgba(13,14,18,0.95)] backdrop-blur-[12px] data-open:animate-in data-open:fade-in-0"
         />
         <DialogPrimitive.Popup
-          className="fixed inset-0 z-[9999] flex items-center justify-center outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95"
+          className="fixed inset-0 z-[9999] flex items-center justify-center outline-none overscroll-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95"
           // 枠外(ステージ外)クリックで閉じる。全画面Popup自体がクリック面になるため
           // Backdropではなくこちらで受ける(targetガードで子要素クリックは弾く)
           onClick={(e) => {
             if (e.target === e.currentTarget) onClose();
           }}
         >
-          {/* モバイルではステージが全画面になるためmax-wを解除 */}
-          <div className="relative max-w-[90%] max-md:max-w-full flex flex-col items-center">
-            {/* Xはモバイルのみ(デスクトップは枠外クリック/Escで閉じる) */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="absolute top-[calc(env(safe-area-inset-top,0px)+0.5rem)] right-[calc(env(safe-area-inset-right,0px)+0.5rem)] md:hidden z-10 size-9 rounded-full bg-black/60 border border-white/20 text-white hover:bg-primary hover:border-accent active:translate-y-0! active:bg-primary/70 active:border-accent"
-              onClick={onClose}
+          {/* スワイプ中の操作を妨げないようヒントは pointer-events-none */}
+          {hintState !== 'hidden' && (
+            <div
+              aria-hidden
+              className={`hidden max-md:block absolute top-[calc(env(safe-area-inset-top,0px)+0.75rem)] left-1/2 -translate-x-1/2 z-20 pointer-events-none text-white text-[13px] font-medium tracking-wide [text-shadow:0_1px_3px_rgba(0,0,0,0.9),0_0_10px_rgba(0,0,0,0.65)] transition-opacity duration-700 ${
+                hintState === 'fading' ? 'opacity-0' : 'opacity-100'
+              }`}
             >
-              <FaXmark />
-            </Button>
+              上下スワイプで閉じる
+            </div>
+          )}
+          {/* モバイルではステージが全画面になるためmax-wを解除。
+              スワイプdismissはこのステージ wrapper を丸ごと動かす */}
+          <div
+            ref={swipe.targetRef}
+            {...swipe.bind}
+            className={`relative max-w-[90%] max-md:max-w-full flex flex-col items-center ${
+              swipe.isDragging ? 'select-none' : ''
+            }`}
+          >
             {/* ステージは現スライドのアスペクト比に追従し、画像全体が収まる最大サイズまで
                 拡大する(90vw×80dvh上限)。枠内に余白が出ない。幅=高さ制約とアスペクトから
                 導出し、--lb-arの遷移で切替時に枠がモーフする。モバイルは全画面で枠・角丸・影なし */}

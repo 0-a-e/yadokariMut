@@ -124,3 +124,60 @@ describe('アダプタ登録(未登録アダプタが無音で壊れる弱点の
     }
   });
 });
+
+describe('featurePopup 定義(ベクタフィーチャのクリックポップアップ)', () => {
+  const entriesWithPopup = LAYER_CATALOG.filter((e) => e.featurePopup !== undefined);
+
+  it('featurePopup を持つのは maplibre アダプタのエントリのみ', () => {
+    for (const entry of entriesWithPopup) {
+      expect(entry.adapter, `${entry.id}: featurePopup は vector 描画のみ対応`).toBe('maplibre');
+    }
+    expect(entriesWithPopup.length).toBeGreaterThan(0);
+  });
+
+  it('fields は空でなく、format は既知種別のみ', () => {
+    const knownFormats = new Set(['plain', 'int', 'jpy-m2']);
+    for (const entry of entriesWithPopup) {
+      expect(entry.featurePopup!.fields.length, `${entry.id}: fields`).toBeGreaterThan(0);
+      for (const field of entry.featurePopup!.fields) {
+        expect(field.key.trim(), `${entry.id}: fields[].key`).toBeTruthy();
+        expect(field.label.trim(), `${entry.id}: fields[].label`).toBeTruthy();
+        expect(
+          knownFormats.has(field.format ?? 'plain'),
+          `${entry.id}: fields[].format=${field.format}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('ksj_l01 の属性キーはタイル実属性と一致(契約: tippecanoeが保持するL01属性)', () => {
+    const l01 = LAYER_CATALOG.find((e) => e.id === 'ksj_l01');
+    expect(l01?.featurePopup).toBeDefined();
+    expect(l01!.featurePopup!.titleKey).toBe('L01_024'); // 標準地名
+    const keys = l01!.featurePopup!.fields.map((f) => f.key);
+    expect(keys).toContain('L01_008'); // 価格(円/m²)
+    expect(l01!.featurePopup!.fields.find((f) => f.key === 'L01_008')?.format).toBe('jpy-m2');
+    expect(keys).toContain('L01_025'); // 所在地
+  });
+
+  it('ksj_s12 の属性キーは現行KSJスキーマ(v3系)と一致(契約: KEEP_ATTRIBUTESが残すS12属性)', () => {
+    // 現行スキーマ: S12_001=駅名 / S12_002=運営会社 / S12_003=路線名 /
+    // S12_004=鉄道区分(コード) / 乗降客数は年度別属性で2024年度=S12_061
+    // (旧S12-2形式の S12_002=駅名 / S12_004=乗降客数 とは互換がない)
+    const s12 = LAYER_CATALOG.find((e) => e.id === 'ksj_s12');
+    expect(s12?.featurePopup).toBeDefined();
+    expect(s12!.featurePopup!.titleKey).toBe('S12_001'); // 駅名
+    const keys = s12!.featurePopup!.fields.map((f) => f.key);
+    expect(keys).toContain('S12_003'); // 路線名
+    expect(keys).toContain('S12_002'); // 運営会社
+    const countField = s12!.featurePopup!.fields.find((f) => f.key === 'S12_061');
+    expect(countField?.label).toBe('1日平均乗降客数');
+    expect(countField?.format).toBe('int');
+    // 誤って旧スキーマのキーを使っていないこと(S12_004 は鉄道区分コード)
+    expect(keys).not.toContain('S12_004');
+    // 線色の step も乗降客数 S12_061 に束縛されていること
+    const lineColor = JSON.stringify(s12!.vector!.layers[0].paint);
+    expect(lineColor).toContain('S12_061');
+    expect(lineColor).not.toContain('S12_004');
+  });
+});

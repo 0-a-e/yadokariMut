@@ -23,6 +23,8 @@ import { CampaignCards } from './CampaignCards.tsx';
 import { PriceHistorySection, priceDeltaFromHistory } from './PriceHistorySection.tsx';
 import { computeStayEstimate } from '../../lib/filterLogic.ts';
 import { notify } from '../../lib/notify.ts';
+import { useIsMobile } from '../../hooks/useIsMobile.ts';
+import { useSwipeDismiss } from '../../hooks/useSwipeDismiss.ts';
 import {
   FaXmark,
   FaStar,
@@ -87,6 +89,25 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
     isActive: boolean;
     fetchedAt: string | null;
   } | null>(null);
+
+  // ── モバイル下スワイプで閉じる ──
+  // コンテンツ最上部(scrollTop===0)でのみ発始し、スクロールと両立させる
+  const isMobile = useIsMobile();
+  const scrollBodyRef = useRef<HTMLDivElement | null>(null);
+  /** 退場を始めた物件id。退場中に別物件へ差し替わったら閉じないためのガード */
+  const dismissingIdRef = useRef<number | null>(null);
+  const swipe = useSwipeDismiss({
+    enabled: isMobile,
+    direction: 'down',
+    scrollContainerRef: scrollBodyRef,
+    distanceThresholdPx: 120,
+    velocityThresholdPxMs: 0.55,
+    onDismiss: onClose,
+    onDismissStart: () => {
+      dismissingIdRef.current = feature?.properties.id ?? null;
+    },
+    isDismissValid: () => feature?.properties.id === dismissingIdRef.current,
+  });
 
   // Lazy-fetch detail (price_history + shortlist.comment)
   useEffect(() => {
@@ -296,8 +317,11 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
 
   return (
     <div
+      ref={swipe.targetRef}
+      {...swipe.bind}
       className={`
         detail-panel
+        ${swipe.isDragging ? 'select-none' : ''}
         absolute z-[1000] bg-panel backdrop-blur-glass border border-border
         flex flex-col overflow-hidden shadow-[0_10px_40px_rgba(0,0,0,0.6)]
         transition-all duration-400 ease-[cubic-bezier(0.16,1,0.3,1)]
@@ -312,18 +336,19 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
         }
       `}
     >
-      {/* Close stays fixed on the panel so it remains reachable while scrolling */}
+      {/* Close stays fixed on the panel so it remains reachable while scrolling.
+          モバイルは下スワイプで閉じるため X はデスクトップのみ */}
       <Button
         variant="ghost"
         size="icon"
-        className="absolute top-3 right-3 bg-black/50 border border-white/20 text-white hover:bg-black/80 hover:scale-110 z-[11]"
+        className="absolute top-3 right-3 max-md:hidden bg-black/50 border border-white/20 text-white hover:bg-black/80 hover:scale-110 z-[11]"
         onClick={onClose}
       >
         <FaXmark />
       </Button>
 
       {/* Body — image + content scroll together */}
-      <div className="overflow-y-auto grow min-h-0 app-scrollbar">
+      <div ref={scrollBodyRef} className="overflow-y-auto grow min-h-0 overscroll-contain app-scrollbar">
         <div className="flex flex-col gap-4">
           {isUnlisted && (
             <div

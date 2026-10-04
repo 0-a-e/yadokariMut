@@ -9,8 +9,11 @@ uvicorn[standard]
 apscheduler
 langgraph
 langchain-openai
-copilotkit
-ag-ui-langgraph
+# AG-UI プロトコル3点は FE (@ag-ui/client 1.0.1) と組み合わせを固定するため厳密ピン。
+# 更新時は FE 側 ag-ui との相互互換を必ず検証すること。
+copilotkit==0.1.96
+ag-ui-langgraph==0.0.46
+ag-ui-protocol==1.0.0
 langchain-deepseek
 langgraph-checkpoint-sqlite>=2.0.0
 aiosqlite

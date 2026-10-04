@@ -86,6 +86,38 @@ export interface VectorLayerDef {
 /** レイヤ設定モーダルに表示する設定項目の種類(拡張点) */
 export type LayerSettingKind = 'defaultOpacity' | 'clustering';
 
+/** 凡例見本の形状(ジオメトリ種に合わせて指定。未指定は square) */
+export type LegendShape = 'circle' | 'line' | 'square';
+
+/** 凡例エントリ(色見本+ラベル) */
+export interface LegendEntry {
+  color: string;
+  label: string;
+  /** 見本の形状。circle=ポイント(circleレイヤ), line=ライン, square=面(既定) */
+  shape?: LegendShape;
+}
+
+/**
+ * ベクタフィーチャ(maplibre アダプタ)クリック時の属性ポップアップ定義。
+ * 宣言型のためレイヤ追加時にカタログへ足すだけで表示へ対応する
+ * (VectorEngine がヒットテスト→この定義でHTML組み立てまで行う)。
+ */
+export interface FeaturePopupDef {
+  /** ポップアップのタイトル行に使う属性キー(例: 標準地名) */
+  titleKey?: string;
+  /** 属性→表示行の定義(上から順に表示) */
+  fields: FeaturePopupField[];
+}
+
+export interface FeaturePopupField {
+  /** フィーチャpropertiesのキー */
+  key: string;
+  /** 行ラベル(例: 「公示価格」) */
+  label: string;
+  /** 値の整形。plain=そのまま(既定), int=3桁カンマ区切り数値, jpy-m2=「xxx円/m²」 */
+  format?: 'plain' | 'int' | 'jpy-m2';
+}
+
 /** カタログエントリ(コードに埋め込む静的定義) */
 export interface LayerCatalogEntry {
   id: string;
@@ -112,8 +144,10 @@ export interface LayerCatalogEntry {
   vector?: VectorLayerDef;
   /** 凡例ポップオーバー用の説明文(description か legend のいずれかで表示) */
   description?: string;
-  /** 凡例エントリ(色見本+ラベル) */
-  legend?: { color: string; label: string }[];
+  /** 凡例エントリ(色見本+ラベル)。レイヤ名ポップオーバーと地図上凡例コントロールの両方で使用 */
+  legend?: LegendEntry[];
+  /** ベクタフィーチャクリック時の属性ポップアップ定義(adapter === 'maplibre' のみ有効) */
+  featurePopup?: FeaturePopupDef;
 }
 
 /**
@@ -139,14 +173,21 @@ export interface LayerGroup {
   collapsed: boolean;
 }
 
+/** 物件ピン(検索結果)レイヤの固定id。スタック外で常に最前面の特殊行として扱う */
+export const PROPERTIES_LAYER_ID = 'properties';
+
 /**
  * レイヤ構成(v2スキーマ)。stack先頭=最前面(GIMP方式)。
  * グループはスタック内に1ブロックとして1回だけ現れ、メンバーを内包する。
+ * 物件ピン(検索結果)は動的データのためスタック外の独立フィールドに置き、
+ * パネル上は最前面固定の特殊行(base行の対称)として表示する。
  */
 export interface LayerConfigState {
   v: 2;
   stack: StackItem[];
   groups: LayerGroup[];
+  /** 物件ピン(検索結果)。スタック外で常に最前面に描かれる固定ランタイム */
+  properties: LayerRuntime;
 }
 
 /** 上部タブが束ねるベースマップ固定種(末尾の gsi_std_vector がベクタ版標準地図) */

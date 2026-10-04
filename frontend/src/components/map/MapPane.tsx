@@ -5,8 +5,9 @@ import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import { FaVectorSquare, FaDrawPolygon, FaXmark, FaEraser } from 'react-icons/fa6';
 import { PropertyFeature, BoundsData } from '../../types.ts';
 import { getScoreColor } from '../../lib/score.ts';
-import { LayerEngine } from '../../lib/layers/engine.ts';
+import { LayerEngine, PROPERTIES_PANE } from '../../lib/layers/engine.ts';
 import type { LayerConfigState } from '../../lib/layers/types.ts';
+import { MapLegendControl } from './MapLegendControl.tsx';
 import { Button } from '@/components/ui/button.tsx';
 
 /** Geoman は描画開始時に遅延ロード(初期バンドル影響ゼロ)。side-effect で L に pm が生える */
@@ -142,11 +143,13 @@ export const MapPane: React.FC<MapPaneProps> = ({
   }, [drawMode]);
 
   // 描画中はマーカーがクリックを奪う(leaflet-interactive が pointer-events:auto 持ち)ため
-  // コンテナクラスで一括無効化する
+  // コンテナクラスで一括無効化する。ベクタフィーチャのクリックポップアップも
+  // 頂点確定クリックと衝突するため描画中は無効化する
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
     map.getContainer().classList.toggle('leaflet-draw-active', !!uiTool);
+    layerEngineRef.current?.setFeatureClickEnabled(!uiTool);
   }, [uiTool]);
 
   // 確定済みシェイプの表示(drawnPolygon が単一の情報源)
@@ -181,11 +184,15 @@ export const MapPane: React.FC<MapPaneProps> = ({
    * ピングループを生成する。markercluster に実行時トグルAPIは無いため、
    * pinClustering 変化時はグループを作り直してマーカーを再投入する。
    * 無効時は L.featureGroup()(getBounds を持つため AIツール側の
-   * mapPaneRef.cluster.getBounds() 呼び出しと互換)を使う
+   * mapPaneRef.cluster.getBounds() 呼び出しと互換)を使う。
+   * 物件ピンはレイヤシステムの専用pane(最前面固定)に載る:
+   * クラスタ円は clusterPane、個別マーカーは marker 生成時の pane 指定。
+   * これによりレイヤパネルの物件行(表示/不透明度)が pane CSS 経由で効く
    */
   const buildPinGroup = (clustering: boolean): any => {
     if (!clustering) return L.featureGroup();
     return (L as any).markerClusterGroup({
+      clusterPane: PROPERTIES_PANE,
       showCoverageOnHover: false,
       maxClusterRadius: 45,
       iconCreateFunction: (cluster: any) => {
@@ -215,6 +222,10 @@ export const MapPane: React.FC<MapPaneProps> = ({
     (map as any)._resizeObserver = ro;
 
     layerEngineRef.current = new LayerEngine(map);
+
+    // 物件ピンpaneを先行作成(cluster group が pane名を参照するため)。
+    // zIndex/opacity/display は engine.syncProperties が制御する
+    if (!map.getPane(PROPERTIES_PANE)) map.createPane(PROPERTIES_PANE);
 
     const pinGroup = buildPinGroup(pinClusteringRef.current);
     map.addLayer(pinGroup);
@@ -267,6 +278,7 @@ export const MapPane: React.FC<MapPaneProps> = ({
 
   useEffect(() => {
     layerEngineRef.current?.sync(layerConfig);
+    layerEngineRef.current?.syncProperties(layerConfig.properties);
   }, [layerConfig]);
 
   // pinClustering トグル: markercluster に実行時トグルAPIは無いため
@@ -325,7 +337,7 @@ export const MapPane: React.FC<MapPaneProps> = ({
         </div>`;
 
       const icon = L.divIcon({ html, iconSize: [32, 32], iconAnchor: [16, 32], className: '' });
-      const marker = L.marker(latlng, { icon }).on('click', () => onMarkerClick(feat));
+      const marker = L.marker(latlng, { icon, pane: PROPERTIES_PANE }).on('click', () => onMarkerClick(feat));
 
       // Bind custom tooltip showing details and active campaigns
       // BE campaigns に is_active 列は無い(常時有効)。掲載中判定は日付で行う
@@ -478,6 +490,9 @@ export const MapPane: React.FC<MapPaneProps> = ({
     const id = hoveredIdRef.current;
     const marker = id != null ? markersRef.current[id] : undefined;
     if (!map || !marker) return;
+    // 物件レイヤ非表示中は演出しない(ゴーストピンはpane外に直接addするため
+    // 非表示paneの制御が効かず、非表示を突き抜けて描画されてしまう)
+    if (map.getPane(PROPERTIES_PANE)?.style.display === 'none') return;
 
     const pinEl = document.getElementById(`marker-pin-${id}`);
     if (pinEl) {
@@ -548,6 +563,8 @@ export const MapPane: React.FC<MapPaneProps> = ({
   return (
     <div className="grow h-full w-full min-h-0 relative">
       <div id="map" ref={mapRef} className="absolute inset-0 h-full w-full" />
+      {/* 地図上凡例(表示中レイヤの凡例を左下に列挙。凡例定義なしor非表示レイヤのみなら非表示) */}
+      <MapLegendControl config={layerConfig} />
       {/* 囲み描画コントロール(右上はDetailPanelと衝突するため左上)。
           半透明+blurだと地図タイル次第で視認性が落ちるため、アプリ背景色の不透明リスト型にする
           (行間の境界線は置かず、外周の枠+影のみでクラスタ輪郭を確保) */}

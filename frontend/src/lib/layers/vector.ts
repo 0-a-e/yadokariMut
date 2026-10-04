@@ -2,6 +2,8 @@ import L from 'leaflet';
 import * as maplibregl from 'maplibre-gl';
 import { Protocol } from 'pmtiles';
 import maplibreGL from '@maplibre/maplibre-gl-leaflet';
+import { catalogById } from './catalog.ts';
+import { buildFeaturePopupHtml, catalogIdFromGlLayerId } from './featurePopup.ts';
 import type { LayerCatalogEntry, VectorLayerDef } from './types.ts';
 
 /**
@@ -101,6 +103,11 @@ export class VectorEngine {
   /** catalogId → GL上の source id 一覧 */
   private readonly entrySources = new Map<string, string[]>();
   private readonly entryStates = new Map<string, EntryState>();
+  /** フィーチャポップアップを開いているエントリid(エントリ除去時の自動クローズ用) */
+  private popupEntryId: string | null = null;
+  /** #map 要素のサイズ変化監視(Leaflet resizeイベントは invalidateSize 依存で
+   *  マウント直後のレイアウト確定前に初期化された場合に飛ばないため) */
+  private mapResizeObserver: ResizeObserver | null = null;
   private appliedGlyphs: string | undefined;
   private appliedSprite: string | undefined;
   private lastOrderSignature = '';
@@ -127,6 +134,10 @@ export class VectorEngine {
 
   /** GLインスタンスとペインを破棄する(LayerEngine.destroy から呼ばれる) */
   destroy(): void {
+    this.map.off('resize', this.handleMapResize, this);
+    this.mapResizeObserver?.disconnect();
+    this.mapResizeObserver = null;
+    this.closeFeaturePopup();
     if (this.glLeafletLayer) {
       this.map.removeLayer(this.glLeafletLayer); // プラグナが glMap.remove() する
       this.glLeafletLayer = null;
@@ -138,6 +149,7 @@ export class VectorEngine {
     this.entryLayerTypes.clear();
     this.entrySources.clear();
     this.entryStates.clear();
+    this.popupEntryId = null;
     this.appliedGlyphs = undefined;
     this.appliedSprite = undefined;
     this.lastOrderSignature = '';
@@ -175,7 +187,40 @@ export class VectorEngine {
       this.pendingItems = null;
       if (pending) this.apply(pending);
     });
+    // リサイズ追従: プラグナの _resize は maplibre v6 の内部構造
+    // (_actualCanvas) に依存しており失敗しうるため、失敗時は自前で
+    // container サイズ更新 + glMap.resize() を行うフォールバックを被せる。
+    // Leaflet の resize イベントは invalidateSize 起因で、マウント直後の
+    // レイアウト未確定(#map 幅0)で初期化された場合に飛ばないため、
+    // ResizeObserver で #map の実サイズ変化も直接監視する
+    this.map.on('resize', this.handleMapResize, this);
+    this.mapResizeObserver = new ResizeObserver(() => this.handleMapResize());
+    this.mapResizeObserver.observe(this.map.getContainer());
   }
+
+  /** Leaflet/コンテナのリサイズを GL へ追従させる */
+  private readonly handleMapResize = (): void => {
+    const glLeafletLayer = this.glLeafletLayer as
+      | (L.Layer & { _resize?: (e: unknown) => void; _resizeContainer?: () => void })
+      | null;
+    if (!glLeafletLayer || !this.glMap) return;
+    try {
+      // カメラ同期込みの純正追従(内部で requestAnimFrame → _resizeContainer)
+      glLeafletLayer._resize?.(undefined);
+    } catch (err) {
+      console.warn('[vector] プラグナのリサイズ処理に失敗(フォールバック実行)', err);
+      try {
+        glLeafletLayer._resizeContainer?.();
+      } catch {
+        // container 更新も失敗したら次の resize/move に委ねる
+      }
+    }
+    // container サイズ更新(_resizeContainer)は次フレームのため、
+    // その後に glMap.resize() で canvas へ反映してレンダリングを確実にする
+    window.requestAnimationFrame(() => {
+      this.glMap?.resize();
+    });
+  };
 
   // ── 差分適用 ───────────────────────────────────────────────────
 
@@ -193,6 +238,8 @@ export class VectorEngine {
       this.entryLayers.delete(catalogId);
       this.entryLayerTypes.delete(catalogId);
       this.entryStates.delete(catalogId);
+      // 当該エントリのフィーチャポップアップが開いていたら閉じる
+      if (this.popupEntryId === catalogId) this.closeFeaturePopup();
     }
     for (const [catalogId, sourceIds] of [...this.entrySources]) {
       if (desired.has(catalogId)) continue;
@@ -325,5 +372,69 @@ export class VectorEngine {
       }
     });
     this.entryStates.set(item.entry.id, { opacity: item.opacity, visible: item.visible });
+  }
+
+  // ── フィーチャクリック(featurePopup 定義を持つエントリ) ──────────
+
+  /** フィーチャポップアップを閉じる(エントリ除去・破棄時) */
+  private closeFeaturePopup(): void {
+    if (this.popupEntryId === null) return;
+    this.map.closePopup();
+    this.popupEntryId = null;
+  }
+
+  /**
+   * map click 時のフィーチャヒットテスト。GL canvas は pointer-events:none のため
+   * MapLibre のイベントが発火せず、Leaflet 側のクリック座標から GL canvas の
+   * CSS 座標へ実測変換して queryRenderedFeatures へ渡す(プラグナの padding・
+   * transform・リサイズ追従漏れを吸収するため、矩形比からの計算はしない)。
+   * 結果は最前面レイヤ順に返るため、featurePopup 定義を持つ最初のヒットを採用する。
+   * 戻り値: ポップアップを開いたか(呼び出し側がクリックを消費したかの判断用)
+   */
+  openFeaturePopupAt(containerPoint: L.Point, latlng: L.LatLng): boolean {
+    const glMap = this.glMap;
+    if (!glMap || !this.glReady) return false;
+    // Leaflet containerPoint(ビューポート座標)→ GL canvas 上のCSS座標
+    const canvasRect = glMap.getCanvas().getBoundingClientRect();
+    const mapRect = this.map.getContainer().getBoundingClientRect();
+    const x = mapRect.left + containerPoint.x - canvasRect.left;
+    const y = mapRect.top + containerPoint.y - canvasRect.top;
+    if (x < 0 || y < 0 || x > canvasRect.width || y > canvasRect.height) return false;
+    let features: Array<{ layer?: { id?: string }; properties?: unknown }>;
+    try {
+      features = glMap.queryRenderedFeatures([x, y]) as typeof features;
+      // circle 系レイヤはズームによって半径2〜5px程度と小さく、1点の厳密ヒットは
+      // ほぼ当たらないため、空なら近傍矩形(±4px)で再試行する
+      if (features.length === 0) {
+        const pad = 4;
+        features = glMap.queryRenderedFeatures([
+          [x - pad, y - pad],
+          [x + pad, y + pad],
+        ]) as typeof features;
+      }
+    } catch (err) {
+      // GL未初期化・座標異常などで例外が出てもクリックを殺さない
+      console.warn('[vector] queryRenderedFeatures 失敗(ポップアップをスキップ)', err);
+      return false;
+    }
+    for (const feature of features) {
+      const catalogId = catalogIdFromGlLayerId(String(feature.layer?.id ?? ''));
+      if (catalogId === null) continue;
+      const entry = catalogById.get(catalogId);
+      if (entry?.featurePopup === undefined) continue;
+      // visibility:none のレイヤはヒットしない前提だが、不透明度0(実効非表示)は
+      // 描画上ヒットしうるため除外する
+      const state = this.entryStates.get(catalogId);
+      if (state === undefined || !state.visible || state.opacity <= 0) continue;
+      const properties = (feature.properties ?? {}) as Record<string, unknown>;
+      const html = buildFeaturePopupHtml(entry.featurePopup, properties);
+      L.popup({ maxWidth: 320 })
+        .setLatLng(latlng)
+        .setContent(html)
+        .openOn(this.map);
+      this.popupEntryId = catalogId;
+      return true;
+    }
+    return false;
   }
 }
