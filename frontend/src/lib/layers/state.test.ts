@@ -18,9 +18,9 @@ import {
   selectBase,
   setLayerOrder,
   setLayerVisible,
-} from './state';
-import type { LayerConfigState } from './types';
-import { catalogById } from './catalog';
+} from './state.ts';
+import type { LayerConfigState } from './types.ts';
+import { catalogById } from './catalog.ts';
 
 function withLayers(...ids: string[]): LayerConfigState {
   return {
@@ -42,6 +42,22 @@ describe('selectBase (上部タブのショートカット)', () => {
     const next = selectBase(selectBase(withLayers('pale'), 'dark'), 'satellite');
     const bases = flattenStack(next.stack).filter((l) => catalogById.get(l.id)?.role === 'base');
     expect(bases.map((l) => l.id)).toEqual(['satellite']);
+  });
+
+  it('gsi_std_vector への切替は既存ベース(pale等)を除去し vector を末尾(最下段)に置く', () => {
+    const config = withLayers('hillshademap', 'pale', 'relief');
+    const next = selectBase(config, 'gsi_std_vector');
+    expect(flattenOrderIds(next.stack)).toEqual(['hillshademap', 'relief', 'gsi_std_vector']);
+    expect(flattenStack(next.stack)[2]).toMatchObject({ visible: true, opacity: 1 });
+  });
+
+  it('ベクタ→衛星→淡色の切替連鎖でも排他が保たれる', () => {
+    let next = selectBase(withLayers('relief', 'pale'), 'gsi_std_vector');
+    next = selectBase(next, 'satellite');
+    next = selectBase(next, 'pale');
+    const bases = flattenStack(next.stack).filter((l) => catalogById.get(l.id)?.role === 'base');
+    expect(bases.map((l) => l.id)).toEqual(['pale']);
+    expect(flattenOrderIds(next.stack)).toEqual(['relief', 'pale']);
   });
 });
 
@@ -220,7 +236,7 @@ describe('setLayerVisible はグループ内レイヤにも効く', () => {
   });
 });
 
-describe('永続化(v1→v2移行含む)', () => {
+describe('永続化', () => {
   it('localStorage無し環境(node)ではデフォルト設定を返す', () => {
     expect(loadLayerConfig()).toEqual(createDefaultLayerConfig());
   });
@@ -249,37 +265,32 @@ describe('永続化(v1→v2移行含む)', () => {
     }
   });
 
-  it('v1形式(平坦layers+groupId)はv2へ移行される: グループは先頭メンバー位置にブロック化', () => {
-    const store = new Map<string, string>();
+  it('v1形式などv2以外のペイロードは例外を投げずデフォルト設定へフォールバック', () => {
+    const payloads: unknown[] = [
+      // 旧v1形式(平坦layers+groupId)
+      {
+        v: 1,
+        layers: [
+          { id: 'relief', visible: true, opacity: 1, groupId: 'g1' },
+          { id: 'pale', visible: true, opacity: 1 },
+        ],
+        groups: [{ id: 'g1', name: '災害', visible: true, opacity: 0.9, collapsed: false }],
+      },
+      // v:2でもstackが配列でない壊れたペイロード
+      { v: 2, stack: 'broken', groups: [] },
+    ];
     const g = globalThis as { localStorage?: Storage };
     const backup = g.localStorage;
-    g.localStorage = {
-      getItem: () =>
-        JSON.stringify({
-          v: 1,
-          layers: [
-            { id: 'relief', visible: true, opacity: 1, groupId: 'g1' },
-            { id: 'pale', visible: true, opacity: 1 },
-            { id: 'flood_l2', visible: true, opacity: 0.4, groupId: 'g1' },
-            { id: 'gone-from-catalog', visible: true, opacity: 1 },
-          ],
-          groups: [{ id: 'g1', name: '災害', visible: true, opacity: 0.9, collapsed: false }],
-        }),
-      setItem: (k: string, v: string) => void store.set(k, v),
-      removeItem: (k: string) => void store.delete(k),
-    } as Storage;
     try {
-      const loaded = loadLayerConfig();
-      expect(loaded.v).toBe(2);
-      expect(
-        loaded.stack.map((s) => (s.kind === 'group' ? `g:${s.groupId}` : s.id)),
-      ).toEqual(['g:g1', 'pale']);
-      const block = loaded.stack[0];
-      if (block.kind === 'group') {
-        expect(block.members.map((m) => m.id)).toEqual(['relief', 'flood_l2']);
-        expect(block.members[1].opacity).toBe(0.4);
+      for (const payload of payloads) {
+        g.localStorage = {
+          getItem: () => JSON.stringify(payload),
+          setItem: () => {},
+          removeItem: () => {},
+        } as Storage;
+        expect(() => loadLayerConfig()).not.toThrow();
+        expect(loadLayerConfig()).toEqual(createDefaultLayerConfig());
       }
-      expect(loaded.groups[0]).toMatchObject({ id: 'g1', name: '災害', opacity: 0.9 });
     } finally {
       if (backup) g.localStorage = backup;
       else delete g.localStorage;

@@ -7,13 +7,14 @@ import {
   PropertyFeature,
   PropertyGeoJSON,
   ShortlistStatus,
-} from "../types";
-import { applyMapFilters, mergeMapFilters } from "../lib/filterLogic";
-import type { LayerConfigState } from "../lib/layers/types";
-import { LAYER_TAG_LABELS } from "../lib/layers/types";
-import { catalogById, LAYER_CATALOG } from "../lib/layers/catalog";
-import type { LayerActions } from "../lib/layers/state";
-import { flattenOrderIds } from "../lib/layers/state";
+} from "../types.ts";
+import { applyMapFilters, mergeMapFilters } from "../lib/filterLogic.ts";
+import { postShortlist } from "../lib/api/properties.ts";
+import type { LayerConfigState } from "../lib/layers/types.ts";
+import { LAYER_TAGS } from "../lib/layers/types.ts";
+import { catalogById, LAYER_CATALOG } from "../lib/layers/catalog.ts";
+import type { LayerActions } from "../lib/layers/state.ts";
+import { flattenOrderIds } from "../lib/layers/state.ts";
 import L from "leaflet";
 
 interface UseMapActionsProps {
@@ -169,12 +170,15 @@ export function useMapActions({
     },
   });
 
-  /** カタログ全体の「id: 名前 [タグ]」一覧（LLMへのヒント用） */
+  /** カタログ全体をタグごとの1行に圧縮した一覧(LLMへのヒント用。「タグラベル: id=名前, …」) */
   const layerCatalogSummary = () =>
-    LAYER_CATALOG.map(
-      (e) =>
-        `- ${e.id}: ${e.name} [${e.tags.map((t) => LAYER_TAG_LABELS[t]).join("/")}]`,
-    ).join("\n");
+    LAYER_TAGS.map((tag) => {
+      const entries = LAYER_CATALOG.filter((e) => e.tags[0] === tag.id);
+      if (entries.length === 0) return null;
+      return `${tag.label}: ${entries.map((e) => `${e.id}=${e.name}`).join(", ")}`;
+    })
+      .filter((line): line is string => line != null)
+      .join("\n");
 
   const layerName = (id: string) => catalogById.get(id)?.name ?? id;
 
@@ -193,7 +197,7 @@ export function useMapActions({
     handler: async ({ layerId }) => {
       const entry = catalogById.get(layerId);
       if (!entry) {
-        return `レイヤ「${layerId}」はカタログに存在しません。利用可能レイヤ一覧(id: 名前 [タグ]):\n${layerCatalogSummary()}`;
+        return `レイヤ「${layerId}」はカタログに存在しません。利用可能レイヤ一覧(タグ: id=名前):\n${layerCatalogSummary()}`;
       }
       if (flattenOrderIds(layerConfigRef.current.stack).includes(layerId)) {
         return `レイヤ ${entry.name} (${layerId}) はすでに表示中です。`;
@@ -366,7 +370,12 @@ export function useMapActions({
         .optional()
         .describe("必須設備（feature_summary部分一致AND）。指定時は配列ごと置換"),
       sortBy: sortKeySchema.optional(),
-      boundsEnabled: z.boolean().optional().describe("地図表示範囲で絞り込むか"),
+      areaMode: z
+        .enum(["all", "viewport", "drawn"])
+        .optional()
+        .describe(
+          "範囲絞り込み。all=全物件 / viewport=現在の地図表示範囲 / drawn=ユーザーが囲んだ範囲(未描画時はエラー)",
+        ),
       fitMap: z.boolean().optional().describe("適用後にfitMapToFiltered相当を実行"),
     }),
     handler: async (args) => {
@@ -395,12 +404,21 @@ export function useMapActions({
         patch.requiredFeatures = args.requiredFeatures;
       }
       if (args.sortBy !== undefined) patch.sortBy = args.sortBy;
-      if (args.boundsEnabled !== undefined) patch.boundsEnabled = args.boundsEnabled;
+      if (args.areaMode !== undefined) {
+        if (args.areaMode === "drawn" && !filtersRef.current.drawnPolygon) {
+          return JSON.stringify({
+            ok: false,
+            error:
+              "囲まれた範囲が未描画のため drawn は指定できません。ユーザーに地図上で「矩形/なげなわ」で範囲を囲ってもらうか、viewport を使ってください。",
+          });
+        }
+        patch.areaMode = args.areaMode;
+      }
 
       const next = mergeMapFilters(filtersRef.current, patch);
       onPatchFiltersRef.current(patch);
 
-      const bounds = next.boundsEnabled ? mapBoundsRef.current : null;
+      const bounds = next.areaMode === "viewport" ? mapBoundsRef.current : null;
       const { features, excludedUnestimable } = applyMapFilters(
         rawGeojsonRef.current,
         next,
@@ -452,15 +470,7 @@ export function useMapActions({
     handler: async ({ id, status, comment }) => {
       const feature = resolveFeatureByIdRef.current(id);
       try {
-        const res = await fetch(`/api/properties/${id}/shortlist`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status, comment: comment ?? null }),
-        });
-        if (!res.ok) {
-          const text = await res.text();
-          return `Failed to update shortlist: HTTP ${res.status} ${text}`;
-        }
+        await postShortlist(id, status, comment ?? null);
         onShortlistLocalRef.current(id, status, comment ?? null);
         const title = feature?.properties.title ?? `id=${id}`;
         return JSON.stringify({ ok: true, id, status, title, comment: comment ?? null });

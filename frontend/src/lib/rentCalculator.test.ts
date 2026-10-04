@@ -4,10 +4,10 @@ import {
   preferredPlanCodeForDays,
   selectPlanByDays,
   calculateRentTotal,
-  defaultDateRange,
+  calculateRentTotalByDays,
   CONTRACT_FEE_YEN,
   type CalculatorPlan,
-} from './rentCalculator';
+} from './rentCalculator.ts';
 
 const allPlans: CalculatorPlan[] = [
   {
@@ -210,16 +210,279 @@ describe('calculateRentTotal', () => {
   });
 });
 
-describe('defaultDateRange', () => {
-  it('uses next month start through the following month start', () => {
-    const r = defaultDateRange(new Date(2026, 6, 20)); // 2026-07-20
-    expect(r.checkIn).toBe('2026-08-01');
-    expect(r.checkOut).toBe('2026-09-01');
+describe('calculateRentTotalByDays', () => {
+  /** 既存テストの「structured yen discount」フィクスチャを流用したキャンペーン */
+  const earlyBirdCampaign = {
+    campaign_type: '早割',
+    is_active: true,
+    target_plan_code: 'all',
+    discount_unit: 'yen',
+    discount_value: 500,
+    period_max_days: 10,
+    starts_on: '2026-06-01',
+    ends_on: '2026-08-01',
+  };
+
+  it('returns the same outcome as calculateRentTotal with onDate=checkIn', () => {
+    const viaDates = calculateRentTotal({
+      checkIn: '2026-07-01',
+      checkOut: '2026-07-30',
+      plans: allPlans,
+      campaigns: [earlyBirdCampaign],
+    });
+    const viaDays = calculateRentTotalByDays({
+      stayDays: 30,
+      plans: allPlans,
+      campaigns: [earlyBirdCampaign],
+      onDate: '2026-07-01',
+    });
+    expect(viaDates.ok).toBe(true);
+    expect(viaDays).toEqual(viaDates);
   });
 
-  it('rolls over the year in December', () => {
-    const r = defaultDateRange(new Date(2026, 11, 15)); // 2026-12-15
-    expect(r.checkIn).toBe('2027-01-01');
-    expect(r.checkOut).toBe('2027-02-01');
+  it('skips out-of-period campaigns when onDate is before the window', () => {
+    const plan: CalculatorPlan[] = [
+      {
+        plan_code: 'short',
+        plan_name: 'ショート',
+        available: true,
+        original_daily_rent_yen: 4000,
+        discounted_daily_rent_yen: 3500,
+        effective_daily_rent_yen: 3500,
+        campaign_applied: true,
+        effective_campaign_label: '早割キャンペーン',
+        management_fee_daily_yen: 0,
+        cleaning_fee_yen: 0,
+      },
+    ];
+    const inPeriod = calculateRentTotalByDays({
+      stayDays: 30,
+      plans: plan,
+      campaigns: [earlyBirdCampaign],
+      onDate: '2026-07-01',
+    });
+    const beforePeriod = calculateRentTotalByDays({
+      stayDays: 30,
+      plans: plan,
+      campaigns: [earlyBirdCampaign],
+      onDate: '2026-05-20',
+    });
+    expect(inPeriod.ok && beforePeriod.ok).toBe(true);
+    if (inPeriod.ok && beforePeriod.ok) {
+      // 期間内: 4000 - floor(500×10/30) のキャンペーン反映
+      expect(inPeriod.breakdown.rentDaily).toBe(4000 - Math.floor((500 * 10) / 30));
+      // 基準日が期間前: キャンペーン不適用 → effective(=定価ベース)のまま
+      expect(beforePeriod.breakdown.rentDaily).toBe(3500);
+    }
+  });
+});
+
+/** UnionMonthly の非対称バンド(BE UNION_DURATION_BANDS ミラー)。semi_short を含む5帯 */
+const unionPlans: CalculatorPlan[] = [
+  {
+    plan_key: 's_short',
+    plan_code: 's_short',
+    plan_name: 'Sショート（7〜14日）',
+    duration_min_days: 7,
+    duration_max_days: 14,
+    available: true,
+    presentation_unit: 'per_day',
+    discounted_daily_rent_yen: 6000,
+    original_daily_rent_yen: 6000,
+    management_fee_daily_yen: 0,
+    cleaning_fee_yen: 0,
+  },
+  {
+    plan_key: 'semi_short',
+    plan_code: 'semi_short',
+    plan_name: 'セミショート（15〜29日）',
+    duration_min_days: 15,
+    duration_max_days: 29,
+    available: true,
+    presentation_unit: 'per_day',
+    discounted_daily_rent_yen: 4500,
+    original_daily_rent_yen: 4500,
+    management_fee_daily_yen: 0,
+    cleaning_fee_yen: 0,
+  },
+  {
+    plan_key: 'short',
+    plan_code: 'short',
+    plan_name: 'ショート（30〜89日）',
+    duration_min_days: 30,
+    duration_max_days: 89,
+    available: true,
+    presentation_unit: 'per_month',
+    utilities_yen: 9000,
+    utilities_included: false,
+    discounted_daily_rent_yen: 3000,
+    original_daily_rent_yen: 3000,
+    management_fee_daily_yen: 500,
+    cleaning_fee_yen: 20000,
+  },
+  {
+    plan_key: 'middle',
+    plan_code: 'middle',
+    plan_name: 'ミドル（90〜209日）',
+    duration_min_days: 90,
+    duration_max_days: 209,
+    available: true,
+    presentation_unit: 'per_day',
+    discounted_daily_rent_yen: 2600,
+    original_daily_rent_yen: 2600,
+    management_fee_daily_yen: 0,
+    cleaning_fee_yen: 40000,
+  },
+  {
+    plan_key: 'long',
+    plan_code: 'long',
+    plan_name: 'ロング（210〜729日）',
+    duration_min_days: 210,
+    duration_max_days: 729,
+    available: true,
+    presentation_unit: 'per_day',
+    discounted_daily_rent_yen: 2400,
+    original_daily_rent_yen: 2400,
+    management_fee_daily_yen: 0,
+    cleaning_fee_yen: 60000,
+  },
+];
+
+describe('duration帯データ駆動のプラン選択(乖離1: Union非対称バンド)', () => {
+  it('selects middle for a 100-day stay instead of the legacy short misjudgement', () => {
+    // レガシー固定バンド(<181 middle)では 100日は short と誤判定される帯
+    const r = calculateRentTotalByDays({ stayDays: 100, plans: unionPlans, onDate: '2026-07-01' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.selectedPlan.plan_key).toBe('middle');
+      expect(r.usedFallback).toBe(false);
+    }
+  });
+
+  it('selects semi_short for a 15-day stay and long for a 300-day stay', () => {
+    const r15 = calculateRentTotalByDays({ stayDays: 15, plans: unionPlans, onDate: '2026-07-01' });
+    expect(r15.ok && r15.selectedPlan.plan_key).toBe('semi_short');
+
+    const r300 = calculateRentTotalByDays({
+      stayDays: 300,
+      plans: unionPlans,
+      onDate: '2026-07-01',
+    });
+    expect(r300.ok && r300.selectedPlan.plan_key).toBe('long');
+  });
+
+  it('falls back to the closest longer band when no band contains the stay', () => {
+    // 100日だが middle が unavailable → 210-729 の long で代替(BE select_plan_for_stay 準拠)
+    const noMiddle = unionPlans.filter((p) => p.plan_key !== 'middle');
+    const r = calculateRentTotalByDays({ stayDays: 100, plans: noMiddle, onDate: '2026-07-01' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.selectedPlan.plan_key).toBe('long');
+      expect(r.usedFallback).toBe(true);
+      expect(r.fallbackNote).toContain('対応する料金プラン帯がないため');
+    }
+  });
+
+  it('keeps the legacy string-band path for plans without duration data', () => {
+    // duration_min_days が無い物件は従来の BraTTo 文字列バンド推定(既存テスト互換)
+    const noDuration = allPlans.map((p) => ({ ...p }));
+    const r = calculateRentTotalByDays({ stayDays: 45, plans: noDuration, onDate: '2026-07-01' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.selectedPlanCode).toBe('short');
+      expect(r.usedFallback).toBe(false);
+    }
+  });
+});
+
+describe('光熱費の加算(乖離2: utilities_included=false)', () => {
+  it('adds utilities per day when not included (per_month → floor division by 30)', () => {
+    const r = calculateRentTotalByDays({ stayDays: 60, plans: unionPlans, onDate: '2026-07-01' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      // short(30-89) 選択: 月額9000円 → 日額 floor(9000/30)=300
+      expect(r.breakdown.utilitiesDaily).toBe(300);
+      expect(r.breakdown.utilitiesTotal).toBe(300 * 60);
+      expect(r.grandTotal).toBe(
+        (3000 + 500) * 60 + 300 * 60 + 20000 + CONTRACT_FEE_YEN
+      );
+      expect(r.warnings.some((w) => w.includes('光熱費'))).toBe(true);
+    }
+  });
+
+  it('adds nothing when utilities are included', () => {
+    const included = unionPlans.map((p) =>
+      p.plan_key === 'short' ? { ...p, utilities_included: true } : p
+    );
+    const r = calculateRentTotalByDays({ stayDays: 60, plans: included, onDate: '2026-07-01' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.breakdown.utilitiesDaily).toBe(0);
+      expect(r.breakdown.utilitiesTotal).toBe(0);
+    }
+  });
+});
+
+describe('契約事務手数料の上書き(乖離3: contract_fee_yen)', () => {
+  it('uses the property contract_fee_yen when provided', () => {
+    const r = calculateRentTotalByDays({
+      stayDays: 30,
+      plans: unionPlans,
+      contractFeeYen: 9900,
+      onDate: '2026-07-01',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.breakdown.contractFee).toBe(9900);
+    }
+  });
+
+  it('falls back to the default 5500 when null or undefined', () => {
+    const withNull = calculateRentTotalByDays({
+      stayDays: 30,
+      plans: unionPlans,
+      contractFeeYen: null,
+      onDate: '2026-07-01',
+    });
+    const without = calculateRentTotalByDays({
+      stayDays: 30,
+      plans: unionPlans,
+      onDate: '2026-07-01',
+    });
+    expect(withNull.ok && withNull.breakdown.contractFee).toBe(CONTRACT_FEE_YEN);
+    expect(without.ok && without.breakdown.contractFee).toBe(CONTRACT_FEE_YEN);
+  });
+
+  it('threads contract_fee_yen from property properties via computeStayEstimate', async () => {
+    const { computeStayEstimate } = await import('./filterLogic.ts');
+    const props = {
+      id: 1,
+      room_id: 'r1',
+      title: 't',
+      detail_url: 'u',
+      address: 'a',
+      layout: '1K',
+      area_m2: 20,
+      min_daily_rent: 3000,
+      min_plan_total: null,
+      min_plan_name: null,
+      min_walk_minutes: null,
+      thumbnail_url: null,
+      images: [],
+      total_score: 0,
+      shortlist_status: 'none',
+      access_summary: '',
+      feature_summary: '',
+      station_summary: '',
+      contract_fee_yen: 9900,
+      rent_plans: unionPlans,
+      campaigns: [],
+    } as Parameters<typeof computeStayEstimate>[0];
+    const est = computeStayEstimate(props, '2026-07-01', '2026-07-30');
+    expect(est.ok).toBe(true);
+    // GeoJSON 由来(contract_fee_yen 無し)では 5500 のまま
+    const { contract_fee_yen: _omit, ...geoProps } = props;
+    const estGeo = computeStayEstimate(geoProps as typeof props, '2026-07-01', '2026-07-30');
+    expect(est.stayTotalYen).toBe(estGeo.stayTotalYen! + (9900 - CONTRACT_FEE_YEN));
   });
 });

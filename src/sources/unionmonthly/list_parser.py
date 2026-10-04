@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from sources.base import ListCard
+from sources.parsing import parse_money
 
 BASE = "https://www.unionmonthly.jp"
 
@@ -64,9 +65,7 @@ def _parse_item(
     price = None
     price_el = item.select_one("p.gArticle_price b")
     if price_el:
-        digits = re.sub(r"[^\d]", "", price_el.get_text())
-        if digits:
-            price = int(digits)
+        price = parse_money(price_el.get_text())
 
     address = None
     for li in item.select("ul.gArticle_infoList li"):

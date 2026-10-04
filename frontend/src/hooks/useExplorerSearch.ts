@@ -5,7 +5,7 @@ import {
   explorerSearchForNavigate,
   type ExplorerSearch,
   type ExplorerSearchPatch,
-} from '../lib/explorerSearch';
+} from '../lib/explorerSearch.ts';
 
 const explorerRoute = getRouteApi('/');
 

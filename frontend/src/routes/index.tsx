@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { App } from '../App'
-import { parseExplorerSearch, type ExplorerSearch } from '../lib/explorerSearch'
+import { App } from '../App.tsx'
+import { parseExplorerSearch, type ExplorerSearch } from '../lib/explorerSearch.ts'
 
 /**
  * Map explorer at `/` with typed search params (Phase R1).

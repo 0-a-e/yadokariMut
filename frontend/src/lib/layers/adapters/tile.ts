@@ -1,5 +1,5 @@
 import L from 'leaflet';
-import type { LayerAdapter, LayerCatalogEntry } from '../types';
+import type { LayerAdapter, LayerCatalogEntry } from '../types.ts';
 
 /** XYZラスタタイル汎用アダプタ(GSI/CARTO等のEPSG:3857タイルに対応) */
 export const tileAdapter: LayerAdapter = {

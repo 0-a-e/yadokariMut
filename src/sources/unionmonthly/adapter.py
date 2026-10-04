@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
-from urllib.parse import urljoin
 
 from sources.base import FetchedPage, ListCard, ListTarget, SourceAdapter
 from sources.registry import SourceRegistry
-from sources.unionmonthly.detail_parser import parse_detail_html
+from sources.unionmonthly.detail_parser import PARSER_VERSION, parse_detail_html
 from sources.unionmonthly.list_parser import extract_total_count, parse_list_html
 
 logger = logging.getLogger(__name__)
@@ -26,6 +25,7 @@ DEFAULT_PREFS = {
 class UnionMonthlyAdapter(SourceAdapter):
     source_id = "unionmonthly"
     display_name = "ユニオンマンスリー"
+    parser_version = PARSER_VERSION
 
     def __init__(self, config: dict | None = None):
         super().__init__(config)

@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from domain.models import PropertyDraft
-from sources.http.client import FetchError, HttpFetchClient
+from sources.http.client import FetchError, FetchedPage, HttpFetchClient
 from sources.http.metrics import get_transfer_metrics
 from sources.http.settings import load_http_settings
 
@@ -26,6 +26,9 @@ DEFAULT_HEADERS = {
     "Accept-Language": "ja,en-US;q=0.8,en;q=0.5",
 }
 
+# 各リクエスト前の間隔(秒)。config.json sources.<id> / scrape_settings で上書き可能
+DEFAULT_DELAY_SECONDS = 2.0
+
 
 @dataclass
 class ListTarget:
@@ -36,19 +39,6 @@ class ListTarget:
     prefecture_slug: str | None = None
     prefecture_name: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class FetchedPage:
-    url: str
-    html: str
-    status_code: int
-    page_type: str  # list | detail | city
-    transport: str = "direct"
-    attempts: int = 1
-    restricted_before_proxy: bool = False
-    bytes_downloaded: int = 0
-    bytes_uploaded: int = 0
 
 
 @dataclass
@@ -69,10 +59,13 @@ class ListCard:
 class SourceAdapter(ABC):
     source_id: str = "base"
     display_name: str = "Base"
+    # raw_pages.parser_version に記録されるパーサ版。サブクラスが
+    # 自パーサの版(例: "bratto-normalize-v2")で上書きする
+    parser_version: str = "1.0"
 
     def __init__(self, config: dict | None = None):
         self.config = config or {}
-        self.delay = float(self.config.get("delay_seconds", 2.0))
+        self.delay = float(self.config.get("delay_seconds", DEFAULT_DELAY_SECONDS))
         self.session = requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
         # Per-adapter HTTP client (shares process-wide transfer metrics)
@@ -83,6 +76,11 @@ class SourceAdapter(ABC):
             metrics=get_transfer_metrics(),
             default_headers=DEFAULT_HEADERS,
         )
+        cooldown = self.config.get("cooldown_seconds")
+        if cooldown is not None:
+            # 制限検知時クールダウンのソース別上書き。
+            # settings インスタンスはアダプタ毎に新規生成されるため安全
+            self.http.settings.cooldown_seconds = float(cooldown)
 
     def rate_limit(self) -> None:
         # delay is applied inside HttpFetchClient.request via delay_seconds
@@ -92,35 +90,23 @@ class SourceAdapter(ABC):
         logger.info("Fetching %s %s", method, url)
         data = kwargs.pop("data", None)
         headers = kwargs.pop("headers", None)
-        try:
-            result = self.http.request(
-                url,
-                method=method,
-                page_type=page_type,
-                headers=headers,
-                data=data,
-                delay_seconds=self.delay,
-                **kwargs,
-            )
-        except FetchError:
-            raise
+        # HttpFetchClient は FetchedPage を直接返す(旧 FetchResult は統合済み)
+        result = self.http.request(
+            url,
+            method=method,
+            page_type=page_type,
+            headers=headers,
+            data=data,
+            delay_seconds=self.delay,
+            **kwargs,
+        )
         # Non-2xx that was not classified as restriction still surfaces as error
         if result.status_code >= 400:
             raise FetchError(
                 f"HTTP {result.status_code} for {url}",
                 status_code=result.status_code,
             )
-        return FetchedPage(
-            url=result.url,
-            html=result.html,
-            status_code=result.status_code,
-            page_type=page_type,
-            transport=result.transport,
-            attempts=result.attempts,
-            restricted_before_proxy=result.restricted_before_proxy,
-            bytes_downloaded=result.bytes_downloaded,
-            bytes_uploaded=result.bytes_uploaded,
-        )
+        return result
 
     def soup(self, page: FetchedPage) -> BeautifulSoup:
         return BeautifulSoup(page.html, "html.parser")
@@ -143,6 +129,19 @@ class SourceAdapter(ABC):
 
     def list_total_count(self, page: FetchedPage) -> int | None:
         """Optional: extract 'N 件' from list HTML."""
+        return None
+
+    def has_next(self, page: FetchedPage, cards: list[ListCard]) -> bool | None:
+        """次ページの継続有無を判定する(任意オーバーライド)。
+
+        - True / False: 終端を判定できる(ページングを続行 / 打ち切り)
+        - None: 終端判定不可。パイプラインは総件数(list_total_count)や
+          取得カード数と page_size の比較といったヒューリスティクスで
+          終端を推定する
+
+        旧実装は bratto が ListCard.raw に ``_has_next`` を埋め込み、
+        pipeline がそれを覗き見る形だったが、この基底 API に置換済み。
+        """
         return None
 
     def page_size(self) -> int:

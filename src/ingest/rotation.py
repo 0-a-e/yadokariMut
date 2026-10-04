@@ -93,7 +93,7 @@ class RotationPlanner:
         }
         queue = [
             p
-            for p in sorted(pref_catalog, key=lambda p: self._sort_key(p, states))
+            for p in sorted(pref_catalog, key=lambda p: self.sort_key(p, states))
             if not is_suppressed(
                 states.get(p),
                 now=now,
@@ -129,7 +129,13 @@ class RotationPlanner:
         return RotationBatch(prefs=selected, est_items=est)
 
     @staticmethod
-    def _sort_key(p: str, states: Mapping[str, dict]) -> tuple:
+    def sort_key(p: str, states: Mapping[str, dict]) -> tuple:
+        """Queue sort key (public: web 層の admin queue 表示と共有).
+
+        旧 web_server.py の _rotation_queue_key に手写しされていた順序と
+        同一。NULLS FIRST, then oldest last_full_ok_at / known_total
+        昇順 (None は最大) / slug 昇順。
+        """
         row = states.get(p) or {}
         lfo = row.get("last_full_ok_at")
         known = row.get("known_total")

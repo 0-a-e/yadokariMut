@@ -5,22 +5,22 @@ import type {
   PropertyGeoJSON,
   SortKey,
   StayEstimateSummary,
-} from '../types';
+} from '../types.ts';
 import {
   CATALOG_PRICE_UNLIMITED,
   DEFAULT_MAP_FILTERS,
   STAY_PRICE_UNLIMITED,
-} from '../types';
+} from '../types.ts';
 import {
   calcStayDays,
   calculateRentTotal,
-  defaultDateRange,
   preferredPlanCodeForDays,
   PLAN_LABELS,
   type CalculatorCampaign,
   type CalculatorPlan,
   type PlanCode,
-} from './rentCalculator';
+} from './rentCalculator.ts';
+import { defaultDateRange } from './stayDates.ts';
 
 export interface FilterApplyResult {
   features: PropertyFeature[];
@@ -56,7 +56,14 @@ export function computeStayEstimate(
 ): StayEstimateSummary {
   const plans = (props.rent_plans || []) as CalculatorPlan[];
   const campaigns = (props.campaigns || []) as CalculatorCampaign[];
-  const r = calculateRentTotal({ checkIn, checkOut, plans, campaigns });
+  // 契約事務手数料は詳細API由来の contract_fee_yen があれば優先(GeoJSON には無い → 既定 5500)
+  const r = calculateRentTotal({
+    checkIn,
+    checkOut,
+    plans,
+    campaigns,
+    contractFeeYen: props.contract_fee_yen ?? null,
+  });
   if (!r.ok) {
     return {
       ok: false,
@@ -76,7 +83,7 @@ export function computeStayEstimate(
     rentDailyYen: r.breakdown.rentDaily,
     selectedPlanCode: code,
     usedFallback: r.usedFallback,
-    planLabel: PLAN_LABELS[code] || r.selectedPlan.plan_name,
+    planLabel: PLAN_LABELS[code] || r.selectedPlan.plan_name || null,
   };
 }
 
@@ -95,6 +102,24 @@ export function createDefaultMapFilters(today: Date = new Date()): MapFilters {
 function datesValid(checkIn: string, checkOut: string): boolean {
   if (!checkIn || !checkOut) return false;
   return checkIn <= checkOut;
+}
+
+/**
+ * Ray-cast point-in-polygon. ring is an unclosed [lng, lat][] ring.
+ * Antimeridian crossings are not handled (domestic use only).
+ */
+export function pointInPolygon(lng: number, lat: number, ring: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    if (yi > lat !== yj > lat && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }
 
 export function matchesMapFilters(
@@ -150,7 +175,7 @@ export function matchesMapFilters(
     if (!haystack.includes(q)) return false;
   }
 
-  if (filters.boundsEnabled && mapBounds) {
+  if (filters.areaMode === 'viewport' && mapBounds) {
     const coords = feat.geometry?.coordinates;
     if (coords && coords.length >= 2) {
       const [lng, lat] = coords;
@@ -159,6 +184,15 @@ export function matchesMapFilters(
       if (lat < swLat || lat > neLat || lng < swLng || lng > neLng) {
         return false;
       }
+    }
+  } else if (
+    filters.areaMode === 'drawn' &&
+    filters.drawnPolygon &&
+    filters.drawnPolygon.length >= 3
+  ) {
+    const coords = feat.geometry?.coordinates;
+    if (coords && coords.length >= 2 && !pointInPolygon(coords[0], coords[1], filters.drawnPolygon)) {
+      return false;
     }
   }
 
@@ -362,4 +396,36 @@ export function stayBandSummary(checkIn: string, checkOut: string): string | nul
   if (days == null) return null;
   const band = preferredPlanCodeForDays(days);
   return `${days}日 · ${PLAN_LABELS[band]}`;
+}
+
+/**
+ * フィルタ結果の stay_estimate を元フィーチャーへ反映する。
+ * フィルタ済みリストに計算済み値があればそれを優先し、無ければここで再計算する。
+ * 保存済み一覧・比較候補の表示用(App の useComparison から使用)。
+ */
+export function withStayEstimate(
+  f: PropertyFeature,
+  filtered: PropertyFeature | undefined,
+  checkIn: string,
+  checkOut: string,
+): PropertyFeature {
+  if (filtered?.properties.stay_estimate) {
+    return {
+      ...f,
+      properties: {
+        ...f.properties,
+        stay_estimate: filtered.properties.stay_estimate,
+        shortlist_comment:
+          f.properties.shortlist_comment ?? filtered.properties.shortlist_comment,
+      },
+    };
+  }
+  const est = computeStayEstimate(f.properties, checkIn, checkOut);
+  return {
+    ...f,
+    properties: {
+      ...f.properties,
+      stay_estimate: est.ok ? est : f.properties.stay_estimate,
+    },
+  };
 }

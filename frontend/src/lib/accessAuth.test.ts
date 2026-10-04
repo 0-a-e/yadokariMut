@@ -7,7 +7,7 @@ import {
   isGuardedUrl,
   onSessionExpired,
   relogin,
-} from './accessAuth';
+} from './accessAuth.ts';
 
 const ORIGIN = 'https://yadokari-mut.0ae.io';
 

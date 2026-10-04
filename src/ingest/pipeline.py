@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 from ingest.raw_store import save_raw_page
 from sources.base import ListCard, ListTarget, SourceAdapter
@@ -266,7 +265,12 @@ class IngestPipeline:
             draft.external_id = external_id
         path = None
         if self.save_raw:
-            path = save_raw_page(page, source_site=self.adapter.source_id, repo=self.repo)
+            path = save_raw_page(
+                page,
+                source_site=self.adapter.source_id,
+                repo=self.repo,
+                parser_version=self.adapter.parser_version,
+            )
             draft.raw_html_path = path
         return self.repo.upsert_property(draft)
 
@@ -299,7 +303,12 @@ class IngestPipeline:
                 raise
 
             if self.save_raw:
-                save_raw_page(fetched, source_site=self.adapter.source_id, repo=self.repo)
+                save_raw_page(
+                    fetched,
+                    source_site=self.adapter.source_id,
+                    repo=self.repo,
+                    parser_version=self.adapter.parser_version,
+                )
 
             result.list_pages += 1
             tr.list_pages += 1
@@ -314,9 +323,8 @@ class IngestPipeline:
             for c in cards:
                 by_id[c.external_id] = c
 
-            has_next_flag = None
-            if cards and isinstance(cards[0].raw, dict) and "_has_next" in cards[0].raw:
-                has_next_flag = bool(cards[0].raw.get("_has_next"))
+            # ページ継続判定はアダプタ任せ(未対応ソースは None → 件数ヒューリスティクス)
+            has_next_flag = self.adapter.has_next(fetched, cards)
 
             if total is not None and page_no * page_size >= total:
                 break
@@ -343,7 +351,10 @@ class IngestPipeline:
                 fetched = self.adapter.fetch_detail_page(card)
                 if self.save_raw:
                     path = save_raw_page(
-                        fetched, source_site=self.adapter.source_id, repo=self.repo
+                        fetched,
+                        source_site=self.adapter.source_id,
+                        repo=self.repo,
+                        parser_version=self.adapter.parser_version,
                     )
                 else:
                     path = None

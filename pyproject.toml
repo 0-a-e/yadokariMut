@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# テストは tests/ 配下に置く(ルート直下に散在させない)
+testpaths = ["tests"]
+# src/ を import パスに追加(各テストでの sys.path.insert ハックを不要にする)
+pythonpath = ["src"]

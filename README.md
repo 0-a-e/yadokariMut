@@ -4,8 +4,8 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 
 **多ソース収集**、各種追加費用やキャンペーンを適用した **滞在期間ベースの実質総額**、比較ボード、LLM / MCP 連携を統合しています。
 
-> **status:** 開発先端ベースのスナップショット（2026-09-08 時点）です。安定後はバージョンごとにスナップショットを反映します。 プルリク大歓迎です！</br>
-> **データ層の既定:** 現行仕様は **v2**（`yadokari_mut_v2.db` / `YADOKARIMUT_DATA_LAYER=v2`）です。v1（`yadokari_mut.db` + `rent_plans`）は互換のためのレガシー経路です。
+> **status:** 開発先端ベースのスナップショット（2026-10-04 時点）です。安定後はバージョンごとにスナップショットを反映します。 プルリク大歓迎です！</br>
+> **データ層:** 現行仕様は **v2**（`yadokari_mut_v2.db`）のみです。旧 v1 レガシー経路は削除済みです。
 
 ---
 
@@ -22,6 +22,12 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 ### 比較ボード
 
 ![比較ボード](assets/screenshots/comparison-board.jpg)
+
+### 物件分析
+
+![物件分析](assets/screenshots/analysis-modal.jpg)
+
+物件単位の分析モーダル。滞在日数に応じた **実質 1 日単価のカーブ**（料金プラン）を中心に、価格推移や市場全体との相場比較を確認できます。
 
 ### 設定ボード
 
@@ -63,7 +69,7 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 ### 5. AI アシスタント & MCP
 
 - **CopilotKit / AG-UI**: 画面チャットからフィルタ適用・比較・地図操作などを連動。
-- **MCP**: `cli.py run-mcp` で外部 LLM クライアントから検索・詳細・比較・ショートリスト・GeoJSON 出力が可能。
+- **MCP**: `src/cli.py run-mcp` で外部 LLM クライアントから検索・詳細・比較・ショートリスト・GeoJSON 出力が可能。
 
 ### 6. URL 状態再現 & PWA
 
@@ -85,7 +91,7 @@ cp .env.example .env
 
 ```bash
 # バインドマウント用に空dbを作成
-touch yadokari_mut_v2.db yadokari_mut.db
+touch yadokari_mut_v2.db
 mkdir -p data
 
 docker compose up --build -d
@@ -95,15 +101,15 @@ docker compose logs -f
 | 項目 | 内容 |
 |------|------|
 | 公開ポート | `127.0.0.1:8000`（API + 静的 UI） |
-| データ層 | `YADOKARIMUT_DATA_LAYER=v2`（compose 既定） |
-| 永続化 | `./yadokari_mut_v2.db`, `./yadokari_mut.db`, `./data`, `./config.json`, `./.env` |
-| 定期収集 | `ENABLE_SCHEDULER=true` + `ROTATION_*`（**県ローテーション**で cron ごとに各県を 1 バッチずつ取得） |
+| データ層 | v2（`yadokari_mut_v2.db`。`YADOKARIMUT_V2_DB_PATH` で変更可） |
+| 永続化 | `./yadokari_mut_v2.db`, `./data`, `./config.json`, `./.env` |
+| 定期収集 | `ENABLE_SCHEDULER=true`（**県ローテーション**で cron ごとに各県を 1 バッチずつ取得）。収集設定は管理画面から変更 |
 
 初回のデータ投入例（コンテナ内）:
 
 ```bash
-docker compose exec yadokari-mut python3 cli.py db-init-v2
-docker compose exec yadokari-mut python3 cli.py scrape-v2 --source unionmonthly --pref osaka --pages 1 --delay 2.0
+docker compose exec yadokari-mut python3 src/cli.py db-init
+docker compose exec yadokari-mut python3 src/cli.py scrape --source unionmonthly --pref osaka --pages 1 --delay 2.0
 ```
 
 アクセス: `http://127.0.0.1:8000/`  
@@ -114,7 +120,7 @@ docker compose exec yadokari-mut python3 cli.py scrape-v2 --source unionmonthly 
 
 ```bash
 source .venv/bin/activate
-python3 cli.py run-mcp
+python3 src/cli.py run-mcp
 ```
 
 設定例（**本リポジトリの絶対パス**に置き換え）:
@@ -124,7 +130,7 @@ python3 cli.py run-mcp
   "mcpServers": {
     "yadokariMut-explorer": {
       "command": "/path/to/yadokariMut/.venv/bin/python3",
-      "args": ["/path/to/yadokariMut/cli.py", "run-mcp"]
+      "args": ["/path/to/yadokariMut/src/cli.py", "run-mcp"]
     }
   }
 }
@@ -156,19 +162,17 @@ graph TD
         Pipeline --> Repo["Repository\nsrc/store/repository.py"]
         Repo --> DBv2[("SQLite v2\nyadokari_mut_v2.db")]
         DBv2 --> Pricing["PricingEngine SSOT\nsrc/domain/pricing.py"]
-        DBv2 --> Geo["geocode_v2 / geocoder"]
-        DBv2 --> Campaign["campaign_structurer\ncampaign_active"]
-        DBv2 --> Feature["feature_classifier"]
+        DBv2 --> Geo["geocode_v2\nsrc/store/"]
+        DBv2 --> Campaign["campaign_structurer\nsrc/sources/bratto/"]
     end
 
     subgraph Server ["サーバー・配信層"]
-        DBv2 --> ApiQ["store/api_queries\n(FE 互換 rent_plans マップ)"]
-        ApiQ --> Services["services.py"]
-        Services --> API["FastAPI\nsrc/web_server.py"]
-        Services --> CLI["cli.py\ndb-init-v2 / scrape-v2"]
-        Services --> MCP["mcp_server.py"]
+        DBv2 --> ApiQ["store/queries\n(FE 互換 rent_plans マップ)"]
+        ApiQ --> API["FastAPI\nsrc/web/ (create_app + routers)"]
         API --> Agent["agent_service.py\nAG-UI"]
-        API -.->|APScheduler\nscrape-v2 優先| Pipeline
+        API -.->|APScheduler\n県ローテーション収集| Pipeline
+        CLI["CLI\nsrc/cli.py"] --> Pipeline
+        MCP["MCP サーバー\nsrc/mcp_server.py"] --> ApiQ
     end
 
     subgraph Client ["クライアント層"]
@@ -184,15 +188,7 @@ graph TD
     style API fill:#1e293b,stroke:#854dff,stroke-width:2px,color:#fff
 ```
 
-**読み取り経路の切替**（`src/store/api_queries.py` の `use_v2_data_layer()`）:
-
-| 条件 | 使用データ層 |
-|------|----------------|
-| `YADOKARIMUT_DATA_LAYER=v2` | v2（推奨・Docker Compose 既定） |
-| `YADOKARIMUT_DATA_LAYER=v1` | v1 レガシー |
-| 未設定 | `YADOKARIMUT_V2_DB_PATH` がある、または既定の `yadokari_mut_v2.db` が存在すれば v2、なければ v1 |
-
-v1 レガシー経路: `src/scraper.py` + `src/parser.py` + `src/database.py` → `yadokari_mut.db`（`rent_plans`）。新規運用では v2 を使ってください。
+**データベースパス**: 既定はプロジェクト直下の `yadokari_mut_v2.db`。環境変数 `YADOKARIMUT_V2_DB_PATH` で変更できます。
 
 ---
 
@@ -393,28 +389,26 @@ erDiagram
                     API / MCP / GeoJSON / Frontend
 ```
 
-1. **一覧・詳細収集 (`scrape-v2` / `IngestPipeline`)**  
+1. **一覧・詳細収集 (`scrape` / `IngestPipeline`)**  
    - `config.json` の `sources.<id>` と `SourceRegistry` で Adapter を起動。  
    - 一覧ページング → 詳細 HTML 取得 → Domain DTO へ正規化 → `Repository` で upsert。  
    - 生 HTML は `raw_pages` / ストレージに保存可能（`--no-raw` で省略可）。
 2. **永続化 (`src/store/`)**  
-   - DDL は `schema.py`。読み取り API 形への変換は `api_queries.py`（`price_plans` → FE 互換 `rent_plans`）。
+   - DDL は `schema.py`。読み取り API 形への変換は `store/queries/`（search / detail / price_history / geojson / export。`price_plans` → FE 互換 `rent_plans`）。
 3. **料金計算 (`src/domain/pricing.py`)**  
    - stay 日数 inclusive、帯は duration マッチ、月額は `MONTH_DAYS=30` で日額化。  
    - 総額 ≈ (賃料日額 + 管理日額 + 光熱日額*) × 日数 + 清掃 + 契約手数料。
 4. **ジオコーディング**  
    - v2: `store/geocode_v2.py` 等。住所 → lat/lng（Nominatim / Google 等）。
-5. **キャンペーン・設備**  
-   - `campaign_structurer` / `campaign_active`、`feature_classifier` で構造化・正規化。
-6. **スコア**  
-   - `commute_scorer` 等（総合・徒歩・面積・築年など）。※一部ユーティリティは v1 テーブル前提の名残があり、v2 移行中のモジュールがあります。
+5. **キャンペーン**  
+   - 構造化は `src/sources/bratto/campaign_structurer.py`。指定期間での有効割引の反映は `domain/pricing.py`。
 
 CLI 対応表:
 
 | 目的 | コマンド |
 |------|----------|
-| v2 スキーマ初期化 | `python3 cli.py db-init-v2` |
-| 多ソース収集 | `python3 cli.py scrape-v2 --source unionmonthly --pref osaka --pages 1` |
+| v2 スキーマ初期化 | `python3 src/cli.py db-init` |
+| 多ソース収集 | `python3 src/cli.py scrape --source unionmonthly --pref osaka --pages 1` |
 
 ---
 
@@ -425,11 +419,11 @@ CLI 対応表:
 | **Back-end Core** | Python 3.10+, SQLite3 | 言語基盤・DB（v2 既定） |
 | **Ingest** | SourceAdapter / Registry / IngestPipeline | 多ソース収集・正規化 |
 | **Domain** | `domain/pricing.py`, `domain/models.py` | 料金・DTO の SSOT |
-| **Store** | `store/schema.py`, `repository.py`, `api_queries.py` | v2 DDL・永続化・読取 |
+| **Store** | `store/schema.py`, `repository.py`, `store/queries/` | v2 DDL・永続化・読取 |
 | **Web Server API** | FastAPI, Uvicorn, Pydantic | REST / GeoJSON / Admin / AG-UI |
 | **Agent / AI** | CopilotKit v2, AG-UI Protocol | UI 連動エージェント |
 | **LLM Integration** | MCP | 外部 LLM ツール |
-| **Task Schedule** | APScheduler | 定期 scrape-v2（Compose 既定） |
+| **Task Schedule** | APScheduler | 定期 scrape（Compose 既定） |
 | **Front-end Core** | React 18, TypeScript, Vite, **pnpm** | UI |
 | **Routing / State** | TanStack Router | URL search 同期 |
 | **Map & Visual** | Leaflet, MarkerCluster | 地図 |
@@ -442,52 +436,56 @@ CLI 対応表:
 
 ```text
 yadokariMut/
-├── cli.py                      db-init-v2 / scrape-v2 / score / run-mcp 等
-├── mcp_server.py               MCP サーバー
-├── config.json                  sources.* を含む設定
+├── pyproject.toml             pytest 設定 (testpaths=tests, pythonpath=src)
+├── config.json                sources.* を含む設定
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt
 ├── .env.example
+├── scripts/                   ユーティリティ
+│   ├── export_openapi.py      OpenAPI スキーマ出力
+│   ├── ksj/                   国土数値情報 → PMTiles 変換 (/api/tiles 用)
+│   ├── migrations/            one-shot データ移行
+│   └── rotation_sim.py        県ローテーション シミュレータ
+├── tests/                     pytest スイート (実サイト fixtures は非同梱・該当テストは skip)
 ├── src/
-│   ├── store/                  ★ v2 データ層
-│   │   ├── schema.py           v2 DDL (schema_version=2)
-│   │   ├── repository.py       永続化
-│   │   ├── api_queries.py      読取・DATA_LAYER 切替・FE 互換マップ
-│   │   ├── source_catalog.py   ソース一覧・管理 API 用
-│   │   ├── pref_master.py
+│   ├── cli.py                 db-init / scrape / geocode / run-mcp 等
+│   ├── mcp_server.py          MCP サーバー
+│   ├── web_server.py          FastAPI 起動シム (uvicorn web_server:app)
+│   ├── web/                   FastAPI 本体
+│   │   ├── app.py             create_app + ルータ登録
+│   │   └── routers/           properties / geojson / analysis / admin / …
+│   ├── store/                 ★ v2 データ層
+│   │   ├── schema.py          v2 DDL (schema_version=2)
+│   │   ├── repository.py      永続化
+│   │   ├── queries/           読取 (search / detail / price_history / geojson / …)
+│   │   ├── app_settings.py    収集設定などの JSON 設定ストア
+│   │   ├── source_catalog.py  ソース一覧・管理 API 用
 │   │   └── geocode_v2.py
-│   ├── sources/                ★ サイト別 Adapter
-│   │   ├── base.py / registry.py
-│   │   ├── bratto/
+│   ├── sources/               ★ サイト別 Adapter
+│   │   ├── base.py / registry.py / parsing.py
+│   │   ├── bratto/            一覧・詳細・正規化 (campaign_structurer 含む)
 │   │   ├── unionmonthly/
-│   │   └── http/               取得 HTTP・プロキシ骨格
+│   │   └── http/              取得 HTTP・プロキシ骨格
 │   ├── ingest/
-│   │   ├── pipeline.py         list→detail→upsert オーケストレーション
-│   │   ├── rotation.py         県ローテーション収集 (日次上限・失敗バックオフ)
+│   │   ├── pipeline.py        list→detail→upsert オーケストレーション
+│   │   ├── rotation.py        県ローテーション収集 (日次上限・失敗バックオフ)
 │   │   └── raw_store.py
 │   ├── domain/
-│   │   ├── pricing.py          料金 SSOT
+│   │   ├── pricing.py         料金 SSOT
 │   │   └── models.py
-│   ├── services.py             検索・詳細・比較・shortlist（v1/v2 分岐）
-│   ├── fe_settings.py          フロント既定設定（レイヤ構成など）の保存 API
-│   ├── web_server.py           FastAPI（/api, admin scrape-v2, AG-UI）
-│   ├── agent_service.py
-│   ├── campaign_structurer.py / campaign_active.py
-│   ├── feature_classifier.py
-│   ├── geocoder.py
-│   ├── database.py             レガシー v1 DDL (yadokari_mut.db)
-│   ├── scraper.py / parser.py  レガシー v1 BraTTo 経路
-│   └── …
+│   ├── agent_service.py       画面内 AI (AG-UI)
+│   ├── api_models.py          OpenAPI 正本モデル
+│   ├── fe_settings.py         フロント既定設定（レイヤ構成など）の保存 API
+│   ├── tiles.py               PMTiles → ZXY 配信 (/api/tiles)
+│   └── chat_threads.py
 └── frontend/
     ├── src/
-    │   ├── main.tsx            エントリ (Router + CopilotKit)
-    │   ├── App.tsx             地図・サイドバー・詳細・比較の統合 UI
+    │   ├── main.tsx           エントリ (Router + CopilotKit)
+    │   ├── App.tsx            地図・サイドバー・詳細・比較の統合 UI
     │   ├── router.tsx / routes/
-    │   ├── components/         LayerPanel / ComparisonBoard / AdminModal 等
-    │   ├── lib/                filterLogic, rentCalculator, explorerSearch
-    │   ├── lib/layers/         地図レイヤのカタログ・状態・エンジン
-    │   ├── hooks/              useMapActions / useCopilotContext
-    │   ├── types.ts            source_site / source_display_name 等
+    │   ├── components/        feature 単位 (map / layers / sidebar / detail / analysis / chat / admin)
+    │   ├── lib/               filterLogic / rentCalculator / api (openapi 生成型) / layers 等
+    │   ├── hooks/             useMapActions / useFilteredFeatures / useCopilotContext 等
     │   └── workers/filter.worker.ts
     └── package.json
 ```
@@ -520,11 +518,10 @@ cp .env.example .env
 
 テンプレート:  **`.env.example`**
 
-#### 最低限（.env.exampleに設定済み）
+#### データパス
 
 | 変数 | 必須? | 説明 |
 |------|--------|------|
-| `YADOKARIMUT_DATA_LAYER` | 推奨 | `v2`（現行）または `v1`（レガシー）。**Compose 既定は `v2`**。未設定時は v2 DB の有無で自動判定 |
 | `YADOKARIMUT_V2_DB_PATH` | 任意 | v2 SQLite のパス。未設定時はプロジェクト直下の `yadokari_mut_v2.db` |
 
 #### API キー
@@ -532,9 +529,9 @@ cp .env.example .env
 | 変数 | 役割 | 説明 |
 |------|------|------|
 | `DEEPSEEK_API_KEY` | 推奨 | [DeepSeek](https://platform.deepseek.com/) の API キー。画面内 AI チャット機能やキャンペーン・設備の LLM 分類で使用。無くても動くかもだが動作未確認 |
-| `GOOGLE_MAPS_API_KEY` | Google ジオコード時 | 未設定でも Nominatim 等の標準経路で利用可能 |
+| `GOOGLE_MAPS_API_KEY` | Google ジオコード時 | 未設定時は Nominatim 経路のみで動作 |
 | `DEEPSEEK_BASE_URL` | 任意 | 既定 `https://api.deepseek.com` |
-| `DEEPSEEK_MODEL` | 任意 | 既定 `deepseek-v4-flash` |
+| `DEEPSEEK_MODEL` | 任意 | 既定 `deepseek-flash` |
 
 
 ```bash
@@ -548,16 +545,12 @@ DEEPSEEK_API_KEY=...
 
 #### 運用・収集まわり（任意）
 
+収集の実行設定（県ローテーションの cron・日次上限・失敗バックオフ等）は **管理画面（設定ボード）から変更し、DB 上の `app_settings` に保存**されます。環境変数では管理しません。
+
 | 変数 | 既定の目安 | 説明 |
 |------|------------|------|
 | `ENABLE_SCHEDULER` | Compose: `true` / ローカル: 未設定なら off | `true` で APScheduler を起動 |
-| `ROTATION_SOURCES` | `bratto,unionmonthly` | 県ローテーション収集の対象ソース（カンマ区切り） |
-| `ROTATION_CRON_{SOURCE}` | `0 8,20 * * *` | ソース別の実行 cron（例: `ROTATION_CRON_BRATTO=0 2,14 * * *`） |
-| `ROTATION_DAILY_LIMIT_{SOURCE}` | `500` | ソース別の 1 日あたり取得上限件数 |
-| `ROTATION_DEFAULT_EST` | `60` | 県ごとの想定取得件数（バッチ分割の見積り） |
-| `ROTATION_FAILURE_MAX` | `3` | 連続失敗がこの回数に達したらクールダウン |
-| `ROTATION_FAILURE_COOLDOWN_HOURS` | `48` | クールダウン期間（時間） |
-| `SCHEDULER_CRON` | `0 2 * * *` | 旧・単一スクレイプの cron。`ROTATION_*` を使う場合は不要 |
+| `TILES_DIR` | `data/tiles` | `scripts/ksj/` で生成した PMTiles の配置先（`/api/tiles/{code}/{z}/{x}/{y}.pbf` 配信） |
 | `YADOKARIMUT_CHECKPOINT_DB` | `data/agent_checkpoints.db` 相当 | エージェント／チャットスレッド用 SQLite |
 | `SCRAPE_HTTP_MODE` | `off` | 収集 HTTP: `off` / `fallback` / `always_proxy` |
 | `SCRAPE_HTTP_PROXY` | （なし） | プロキシ URL（`fallback` / `always_proxy` 時） |
@@ -577,13 +570,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # 多ソース v2 スキーマ（現行）
-python3 cli.py db-init-v2
+python3 src/cli.py db-init
 ```
 
-`.env` で `YADOKARIMUT_DATA_LAYER=v2` を設定済みなら、CLI / API は v2を読む。シェルで明示する場合:
+DB パスは既定でプロジェクト直下の `yadokari_mut_v2.db`。シェルで明示する場合:
 
 ```bash
-export YADOKARIMUT_DATA_LAYER=v2
 export YADOKARIMUT_V2_DB_PATH="$(pwd)/yadokari_mut_v2.db"
 ```
 
@@ -593,10 +585,10 @@ export YADOKARIMUT_V2_DB_PATH="$(pwd)/yadokari_mut_v2.db"
 
 ```bash
 # Union Monthly（--source 省略時のデフォルトは unionmonthly）
-python3 cli.py scrape-v2 --source unionmonthly --pref osaka --pages 1 --delay 2.0
+python3 src/cli.py scrape --source unionmonthly --pref osaka --pages 1 --delay 2.0
 
 # BraTTo
-python3 cli.py scrape-v2 --source bratto --pref osaka --pages 1 --delay 1.5
+python3 src/cli.py scrape --source bratto --pref osaka --pages 1 --delay 1.5
 
 # よく使うオプション
 #   --all-pages      一覧を最後まで
@@ -608,7 +600,7 @@ python3 cli.py scrape-v2 --source bratto --pref osaka --pages 1 --delay 1.5
 座標が空の物件がある場合:
 
 ```bash
-python3 cli.py geocode --limit 50
+python3 src/cli.py geocode --limit 50
 ```
 
 ### 3. 開発サーバー（API + フロント）
@@ -617,9 +609,7 @@ python3 cli.py geocode --limit 50
 
 ```bash
 source .venv/bin/activate
-# .env を読まない起動方法の場合は export を併用
-export YADOKARIMUT_DATA_LAYER=v2
-uvicorn src.web_server:app --host 0.0.0.0 --port 8000 --reload
+uvicorn web_server:app --app-dir src --host 0.0.0.0 --port 8000 --reload
 ```
 
 **ターミナル 2 — Vite（`:5173`）**
@@ -637,31 +627,14 @@ pnpm dev
 
 ## テストの実行
 
-> **前提**: バックエンドの一部テストはローカル DB とフロントのビルド成果物を参照します。先に `python3 cli.py db-init-v2`（および必要に応じて `scrape-v2` でのデータ投入）と `cd frontend && pnpm build` を済ませてください。
+> **Note**: バックエンドのテストスイートは `tests/` 配下にあります（`pyproject.toml` の設定で収集）。実サイトのスクレイプ HTML フィクスチャ（`tests/fixtures/`）はリポジトリに同梱していないため、該当テストは自動的に skip されます。フロントの生成型を検証するテストも node / pnpm 環境が無い場合に skip されます。
 
 ### バックエンド
 
 ```bash
 source .venv/bin/activate
-export PYTHONPATH=src
-
-python3 -m unittest test_system.py
-python3 -m unittest test_campaign_active.py
-python3 -m unittest test_campaign_structurer.py
-python3 -m unittest test_web_api.py
-python3 -m unittest test_domain_pricing.py
-python3 -m unittest test_store_repository.py
-python3 -m unittest test_bratto_adapter.py
-python3 -m unittest test_unionmonthly_parsers.py
-python3 -m unittest test_unionmonthly_migration.py
-python3 -m unittest test_ingest_pipeline_prefs.py
-python3 -m unittest test_admin_sources.py
-python3 -m unittest test_http_fetch_client.py
-python3 -m unittest test_rotation_api.py
-python3 -m unittest test_rotation_planner.py
-python3 -m unittest test_search_visibility.py
-python3 -m unittest test_fe_settings.py
-python3 -m unittest test_agent_tools.py
+pip install pytest
+pytest
 ```
 
 ### フロントエンド

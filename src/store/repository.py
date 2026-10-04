@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Any, Optional, Sequence
+from typing import Any
 
 from domain.models import PropertyDraft
 from domain.pricing import compute_catalog_min_daily, resolve_plans_effective
@@ -17,10 +17,6 @@ def default_db_path() -> str:
         "YADOKARIMUT_V2_DB_PATH",
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "yadokari_mut_v2.db"),
     )
-
-
-# Back-compat alias (evaluated lazily via default_db_path in Repository)
-DEFAULT_DB_PATH = default_db_path()
 
 
 def get_connection(db_path: str | None = None) -> sqlite3.Connection:
@@ -317,6 +313,14 @@ class Repository:
     # ------------------------------------------------------------------
 
     def get_property(self, property_id: int) -> dict[str, Any] | None:
+        """生の properties 行 + 子テーブル行を取得する.
+
+        本番コードからは未使用で、tests (upsert 後の行検証 / calculate_stay_total への
+        price_plans 供給) が意図して使用している。get_property_detail
+        (store.queries.detail) が契約モデル互換の応答を返すのに対し、本メソッドは
+        DB 行の素通しである点が違い。将来 get_property_detail の行取得基盤として
+        再利用する可能性を残すため保持するが、共通化リファクタは未実施。
+        """
         conn = self.connect()
         try:
             cur = conn.cursor()
@@ -361,40 +365,6 @@ class Repository:
                 )
             ]
             return prop
-        finally:
-            conn.close()
-
-    def search_properties(
-        self,
-        *,
-        source_sites: Sequence[str] | None = None,
-        prefecture_name: str | None = None,
-        is_active: bool = True,
-        limit: int = 1000,
-        offset: int = 0,
-    ) -> list[dict[str, Any]]:
-        """Skeleton search: filters on source / prefecture / active."""
-        conn = self.connect()
-        try:
-            clauses = ["1=1"]
-            params: list[Any] = []
-            if is_active:
-                clauses.append("is_active = 1")
-            if source_sites:
-                placeholders = ",".join("?" for _ in source_sites)
-                clauses.append(f"source_site IN ({placeholders})")
-                params.extend(source_sites)
-            if prefecture_name:
-                clauses.append("prefecture_name = ?")
-                params.append(prefecture_name)
-            params.extend([limit, offset])
-            sql = f"""
-                SELECT * FROM properties
-                WHERE {' AND '.join(clauses)}
-                ORDER BY catalog_rent_per_day_yen IS NULL, catalog_rent_per_day_yen ASC
-                LIMIT ? OFFSET ?
-            """
-            return [dict(r) for r in conn.execute(sql, params)]
         finally:
             conn.close()
 
@@ -620,6 +590,44 @@ class Repository:
                 )
             conn.commit()
             return len(to_deactivate)
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Shortlist
+    # ------------------------------------------------------------------
+
+    def update_shortlist(
+        self,
+        property_id: int,
+        status: str,
+        comment: str | None = None,
+    ) -> None:
+        """ショートリスト行を 1 物件分更新する (status が空系/'none' なら行削除).
+
+        物件 id の解決 (external_id / 県間曖昧性) は queries 層の
+        resolve_property_id (store.queries._common) の専任とし、本メソッドは
+        解決済み properties.id への書込 (DELETE / INSERT..ON CONFLICT + commit)
+        のみを担う。queries 側の公開 API は store.queries.detail.update_shortlist。
+        """
+        conn = self.connect()
+        try:
+            cur = conn.cursor()
+            if status in (None, "", "none"):
+                cur.execute("DELETE FROM shortlists WHERE property_id = ?", (property_id,))
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO shortlists (property_id, status, comment, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(property_id) DO UPDATE SET
+                        status = excluded.status,
+                        comment = COALESCE(excluded.comment, shortlists.comment),
+                        updated_at = excluded.updated_at
+                    """,
+                    (property_id, status, comment, datetime.now().isoformat()),
+                )
+            conn.commit()
         finally:
             conn.close()
 
@@ -906,3 +914,43 @@ class Repository:
             return inserted
         finally:
             conn.close()
+
+    # ------------------------------------------------------------------
+    # Admin stats
+    # ------------------------------------------------------------------
+
+    def db_stats(self) -> dict[str, Any]:
+        """Admin status 用の DB 統計。
+
+        旧 web_server.py の /api/admin/status 直 SQL (properties / shortlists
+        の 4 集計) を web 層から Repository へ集約したもの。by_source は既存
+        count_by_source() を再利用する。
+        Returns {total_properties, missing_coordinates, shortlist, by_source}.
+        """
+        conn = self.connect()
+        try:
+            cur = conn.cursor()
+            total_properties = cur.execute(
+                "SELECT COUNT(*) FROM properties WHERE is_active = 1"
+            ).fetchone()[0]
+            missing_coordinates = cur.execute(
+                """
+                SELECT COUNT(*) FROM properties
+                WHERE is_active = 1 AND (lat IS NULL OR lng IS NULL)
+                """
+            ).fetchone()[0]
+            shortlist_stats: dict[str, int] = {
+                row["status"]: row["n"]
+                for row in cur.execute(
+                    "SELECT status, COUNT(*) AS n FROM shortlists GROUP BY status"
+                )
+            }
+        finally:
+            conn.close()
+        # by_source は既存メソッドを再利用 (集計条件は同一: is_active = 1)
+        return {
+            "total_properties": int(total_properties),
+            "missing_coordinates": int(missing_coordinates),
+            "shortlist": shortlist_stats,
+            "by_source": self.count_by_source(),
+        }

@@ -1,26 +1,21 @@
-import type { LayerCatalogEntry } from './layers/types';
+import type { LayerCatalogEntry } from './layers/types.ts';
+import type { components } from './api/schema';
+
+type Schemas = components['schemas'];
 
 /**
  * バックエンド保存のフロントエンド設定(GET/POST /api/fe-settings)の契約型。
- * - layers: レイヤ毎の上書き設定(未指定キーはカタログのデフォルトにフォールバック)
- * - global: アプリ全体の表示設定
- * 保存値は「デフォルト」のみ。レイヤの実行時状態(並び順・現在透明度)は
- * localStorage(yadokari:layers)側に置く(設計 doc §2)。
+ * 契約正本は生成 schema (BE FeSettingsResponse)。layers はレイヤ毎の上書き
+ * 設定(未指定キーはカタログのデフォルトにフォールバック)、global は
+ * アプリ全体の表示設定。保存値は「デフォルト」のみ。レイヤの実行時状態
+ * (並び順・現在透明度)は localStorage(yadokari:layers)側に置く(設計 doc §2)。
  */
-export interface LayerSettingOverrides {
-  /** レイヤ追加時のデフォルト透明度(0-1)。送信 null でカタログ値へ戻す */
-  defaultOpacity?: number | null;
-  /** クラスタリング対応レイヤ(oshima)のクラスタ表示 */
-  clustering?: boolean;
-}
+export type LayerSettingOverrides = Schemas['FeLayerOverrides'];
 
-export interface FeSettings {
-  layers: Record<string, LayerSettingOverrides>;
-  global: {
-    /** 物件ピンのクラスタリング(未指定=true) */
-    pinClustering?: boolean;
-  };
-}
+/** global は BE が既定値付きで必ず返す(未指定/null 無し)ため必須に固定する */
+export type FeSettings = Omit<Schemas['FeSettingsResponse'], 'global'> & {
+  global: NonNullable<Schemas['FeSettingsResponse']['global']>;
+};
 
 export const EMPTY_FE_SETTINGS: FeSettings = { layers: {}, global: {} };
 

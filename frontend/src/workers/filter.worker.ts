@@ -1,5 +1,5 @@
-import { BoundsData, MapFilters, PropertyGeoJSON } from '../types';
-import { applyMapFilters } from '../lib/filterLogic';
+import { BoundsData, MapFilters, PropertyGeoJSON } from '../types.ts';
+import { applyMapFilters } from '../lib/filterLogic.ts';
 
 export interface FilterRequestData {
   rawGeojsonData: PropertyGeoJSON | null;

@@ -18,20 +18,16 @@ from domain.models import (
     PropertyImage,
     PropertyLink,
 )
-from domain.pricing import UNION_DURATION_BANDS, parse_union_duration_text
+from domain.pricing import (
+    UNION_DURATION_BANDS,
+    UNION_PLAN_CODE_MAP,
+    parse_union_duration_text,
+)
 from sources.base import ListCard
+from sources.parsing import parse_japanese_era, parse_money, split_access
 
 BASE = "https://www.unionmonthly.jp"
 PARSER_VERSION = "unionmonthly-detail-1.1"
-
-TAB_TO_KEY = {
-    "ショート": "short",
-    "ミドル": "middle",
-    "ロング": "long",
-    "スーパーショート": "s_short",
-    "sショート": "s_short",
-    "セミショート": "semi_short",
-}
 
 # 全物件共通で掲載されるバナー（物件固有のキャンペーンではないため登録対象外）
 SITE_WIDE_CAMPAIGN_TITLES = {"嬉しい3大特典キャンペーン"}
@@ -171,14 +167,16 @@ def _parse_layout_area(text: str | None) -> tuple[Optional[str], Optional[float]
 
 
 def _parse_built(text: str | None) -> tuple[Optional[int], Optional[int], Optional[str]]:
+    """築年テキストを (西暦年, 月, 原文) へ解釈する。
+
+    共通層 sources.parsing.parse_japanese_era 経由で和暦
+    (昭和/平成/令和) にも対応。旧実装は西暦のみで、和暦表記の物件で
+    built_year が欠落していた。
+    """
     if not text:
         return None, None, None
-    m = re.search(r"(\d{4})\s*年\s*(\d{1,2})?\s*月?", text)
-    if m:
-        year = int(m.group(1))
-        month = int(m.group(2)) if m.group(2) else None
-        return year, month, text.strip()
-    return None, None, text.strip()
+    year, month = parse_japanese_era(text)
+    return year, month, text.strip()
 
 
 def _parse_geo(html: str, soup: BeautifulSoup) -> tuple[Optional[float], Optional[float]]:
@@ -258,7 +256,7 @@ def _parse_accesses(soup: BeautifulSoup, html: str) -> list[PropertyAccess]:
         if raw in seen:
             continue
         seen.add(raw)
-        line, station, walk = _split_access(raw)
+        line, station, walk = split_access(raw)
         accesses.append(
             PropertyAccess(
                 line_name=line,
@@ -269,23 +267,6 @@ def _parse_accesses(soup: BeautifulSoup, html: str) -> list[PropertyAccess]:
             )
         )
     return accesses
-
-
-def _split_access(raw: str) -> tuple[Optional[str], Optional[str], Optional[int]]:
-    walk = None
-    m = re.search(r"徒歩\s*(\d+)\s*分", raw)
-    if m:
-        walk = int(m.group(1))
-    station = None
-    m2 = re.search(r"([^\s　]+駅)", raw)
-    if m2:
-        station = m2.group(1)
-    line = None
-    if station and station in raw:
-        line = raw.split(station)[0].strip(" 　/")
-        if not line:
-            line = None
-    return line, station, walk
 
 
 def _parse_features(soup: BeautifulSoup) -> list[PropertyFeature]:
@@ -334,7 +315,7 @@ def _parse_price_plans(soup: BeautifulSoup) -> list[PricePlan]:
 
     for i, panel in enumerate(panels):
         tab_name = tabs[i] if i < len(tabs) else f"plan_{i}"
-        plan_key = TAB_TO_KEY.get(tab_name, re.sub(r"\W+", "_", tab_name).lower() or f"plan_{i}")
+        plan_key = UNION_PLAN_CODE_MAP.get(tab_name, re.sub(r"\W+", "_", tab_name).lower() or f"plan_{i}")
 
         rent_orig = rent_cur = mgmt = clean_orig = clean_cur = None
         duration_text = None
@@ -347,7 +328,7 @@ def _parse_price_plans(soup: BeautifulSoup) -> list[PricePlan]:
                 for dl in block.select("dl"):
                     dt = dl.select_one("dt")
                     label = dt.get_text(strip=True) if dt else ""
-                    bs = [_money(b.get_text()) for b in dl.select("b")]
+                    bs = [parse_money(b.get_text()) for b in dl.select("b")]
                     bs = [x for x in bs if x is not None]
                     if "賃料" in label:
                         if bs:
@@ -359,18 +340,18 @@ def _parse_price_plans(soup: BeautifulSoup) -> list[PricePlan]:
                 # right column campaign rents without dt
                 right_bs = []
                 for box in block.select(".outline_price_box_right b, .campaign_price_list b"):
-                    v = _money(box.get_text())
+                    v = parse_money(box.get_text())
                     if v is not None:
                         right_bs.append(v)
                 left_rent = None
                 for dl in block.select(".outline_price_box_left dl, .normal_price_list"):
                     dt = dl.select_one("dt")
                     if dt and "賃料" in dt.get_text():
-                        left_rent = _money(dl.get_text())
+                        left_rent = parse_money(dl.get_text())
                 # Better pass: walk price boxes
                 rent_orig, rent_cur, mgmt = _parse_uchiwake(block, rent_orig, rent_cur, mgmt)
             elif "清掃" in ttl:
-                nums = [_money(b.get_text()) for b in block.select("b")]
+                nums = [parse_money(b.get_text()) for b in block.select("b")]
                 nums = [n for n in nums if n is not None]
                 if len(nums) >= 2:
                     clean_orig, clean_cur = nums[0], nums[1]
@@ -394,9 +375,9 @@ def _parse_price_plans(soup: BeautifulSoup) -> list[PricePlan]:
                 n = block.select_one(".normal_price_list b")
                 c = block.select_one(".campaign_price_list b")
                 if n:
-                    rent_orig = _money(n.get_text())
+                    rent_orig = parse_money(n.get_text())
                 if c:
-                    rent_cur = _money(c.get_text())
+                    rent_cur = parse_money(c.get_text())
             # these are totals including mgmt — subtract if mgmt known later
 
         # Re-parse 内訳 carefully once more with dedicated helper on full panel
@@ -481,8 +462,8 @@ def _parse_panel_breakdown(panel) -> tuple:
                 if left:
                     dt = left.select_one("dt")
                     label = dt.get_text(strip=True) if dt else left.get_text(" ", strip=True)
-                left_val = _money(left.get_text()) if left else None
-                right_val = _money(right.get_text()) if right else None
+                left_val = parse_money(left.get_text()) if left else None
+                right_val = parse_money(right.get_text()) if right else None
                 if "賃料" in label:
                     rent_orig = left_val if left_val is not None else rent_orig
                     rent_cur = right_val if right_val is not None else rent_cur
@@ -492,7 +473,7 @@ def _parse_panel_breakdown(panel) -> tuple:
         if "清掃" in ttl:
             left = block.select_one(".outline_price_box_left") or block.select_one(".normal_price_list")
             right = block.select_one(".outline_price_box_right") or block.select_one(".campaign_price_list")
-            nums = [_money(b.get_text()) for b in block.select("b")]
+            nums = [parse_money(b.get_text()) for b in block.select("b")]
             nums = [n for n in nums if n is not None]
             if len(nums) >= 2:
                 clean_orig, clean_cur = nums[0], nums[1]
@@ -563,18 +544,6 @@ def _parse_links(soup: BeautifulSoup, *, base_url: str) -> list[PropertyLink]:
         links.append(PropertyLink(link_type="map", url=a["href"], label="Google Map"))
         break
     return links
-
-
-def _money(text: str | None) -> int | None:
-    if not text:
-        return None
-    digits = re.sub(r"[^\d]", "", text)
-    if not digits:
-        return None
-    try:
-        return int(digits)
-    except ValueError:
-        return None
 
 
 def _text(el) -> str | None:

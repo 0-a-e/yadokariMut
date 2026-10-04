@@ -1,4 +1,11 @@
 /** Local metadata for chat sessions (titles / recency), merged with server checkpoints. */
+import type {
+  ChatThreadMessage,
+  ChatThreadMessagesResponse,
+  ChatThreadsResponse,
+} from '../types.ts';
+import { fetchApi, fetchJson } from './api/client.ts';
+import { createId } from './utils.ts';
 
 export interface ChatSessionMeta {
   id: string;
@@ -51,12 +58,35 @@ export function setActiveThreadId(id: string): void {
   }
 }
 
+/**
+ * アクティブスレッド id を読み、無ければ新規発行して保存する。
+ * App の初期化時に 1 回呼ぶ。
+ */
+export function loadOrCreateActiveThread(): string {
+  try {
+    const existing = localStorage.getItem(ACTIVE_THREAD_KEY);
+    if (existing) return existing;
+  } catch {
+    /* ignore */
+  }
+  const id = createId();
+  setActiveThreadId(id);
+  upsertSessionMeta({
+    id,
+    title: '新しい会話',
+    updatedAt: new Date().toISOString(),
+    messageCount: 0,
+  });
+  return id;
+}
+
 export function titleFromMessage(text: string): string {
   const t = text.trim().replace(/\s+/g, ' ');
   if (!t) return '新しい会話';
   return t.length > 40 ? `${t.slice(0, 40)}…` : t;
 }
 
+/** Server-side thread row (GET /api/chat/threads の要素を FE 用に正規化したビュー) */
 export interface ServerThread {
   id: string;
   title: string;
@@ -110,36 +140,46 @@ export function mergeThreads(
   );
 }
 
+/** GET /api/chat/threads — チェックポイント DB 由来のセッション一覧。失敗時は [] */
 export async function fetchServerThreads(): Promise<ServerThread[]> {
   try {
-    const res = await fetch('/api/chat/threads');
-    if (!res.ok) return [];
-    const data = await res.json();
-    return Array.isArray(data.threads) ? data.threads : [];
+    const data = await fetchJson<ChatThreadsResponse>('/api/chat/threads');
+    const threads = Array.isArray(data.threads) ? data.threads : [];
+    // 生成型(ChatThreadSummary) → FE 内部ビュー(ServerThread)へ写像する
+    return threads.map((t) => ({
+      id: t.id,
+      title: t.title,
+      preview: t.preview,
+      updatedAt: t.updatedAt ?? null,
+      messageCount: t.messageCount,
+      checkpointCount: t.checkpointCount,
+    }));
   } catch {
     return [];
   }
 }
 
+/** GET /api/chat/threads/{id}/messages — AG-UI 正規化済みメッセージ。失敗時は [] */
 export async function fetchThreadMessages(
   threadId: string,
-): Promise<{ id: string; role: string; content: string }[]> {
+): Promise<ChatThreadMessage[]> {
   try {
-    const res = await fetch(`/api/chat/threads/${encodeURIComponent(threadId)}/messages`);
-    if (!res.ok) return [];
-    const data = await res.json();
+    const data = await fetchJson<ChatThreadMessagesResponse>(
+      `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+    );
     return Array.isArray(data.messages) ? data.messages : [];
   } catch {
     return [];
   }
 }
 
+/** DELETE /api/chat/threads/{id} — チェックポイント削除。成功/失敗を真偽で返す */
 export async function deleteServerThread(threadId: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
+    await fetchApi(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
       method: 'DELETE',
     });
-    return res.ok;
+    return true;
   } catch {
     return false;
   }

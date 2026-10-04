@@ -2,7 +2,7 @@
 
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
 
-import { cn } from "@/lib/utils"
+import { cn } from "@/lib/utils.ts"
 
 function TooltipProvider({
   delay = 0,
@@ -45,7 +45,7 @@ function TooltipContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
-        className="isolate z-50"
+        className="isolate z-[10000]"
       >
         <TooltipPrimitive.Popup
           data-slot="tooltip-content"

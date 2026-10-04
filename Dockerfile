@@ -28,10 +28,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code and config
 COPY src/ ./src/
-COPY cli.py .
-COPY mcp_server.py .
 COPY config.json .
-COPY opencode.json .
 
 # Copy built frontend assets from Stage 1
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
@@ -44,10 +41,10 @@ RUN mkdir -p /app/data
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV YADOKARIMUT_DB_PATH=/app/yadokari_mut.db
 ENV YADOKARIMUT_CHECKPOINT_DB=/app/data/agent_checkpoints.db
 ENV PYTHONPATH=/app/src
 ENV TZ=Asia/Tokyo
 
 # Run uvicorn server with increased keep-alive for SSE streaming
-CMD ["uvicorn", "src.web_server:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "120", "--proxy-headers"]
+# (モジュール名はテストと同一のフラット名。PYTHONPATH=/app/src で解決)
+CMD ["uvicorn", "web_server:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "120", "--proxy-headers"]

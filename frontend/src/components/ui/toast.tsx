@@ -10,8 +10,8 @@ import {
   LuTriangleAlert,
   LuX,
 } from "react-icons/lu"
-import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils.ts"
+import { Button } from "@/components/ui/button.tsx"
 
 /**
  * モジュール単独のtoastマネージャ(React外から呼び出し可能)。

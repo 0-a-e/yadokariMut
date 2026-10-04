@@ -1,9 +1,11 @@
-import type { AdapterKind, LayerAdapter } from '../types';
-import { tileAdapter } from './tile';
-import { oshimaAdapter, setOshimaRuntimeOptions } from './oshima';
+import type { AdapterKind, LayerAdapter } from '../types.ts';
+import { tileAdapter } from './tile.ts';
+import { oshimaAdapter, setOshimaRuntimeOptions } from './oshima.ts';
+import { maplibreAdapter } from './maplibre.ts';
 
 const registry: Partial<Record<AdapterKind, LayerAdapter>> = {
   tile: tileAdapter,
+  maplibre: maplibreAdapter,
 };
 
 registerAdapter('oshima', oshimaAdapter);

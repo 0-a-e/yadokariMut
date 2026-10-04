@@ -213,14 +213,13 @@ export function computeHighlightIds(
 
 export function activeCampaignSummary(
   campaigns:
-    | { title?: string | null; is_active?: boolean; campaign_type?: string | null }[]
+    | { title?: string | null; campaign_type?: string | null }[]
     | undefined
     | null,
 ): string {
+  // BE campaigns に is_active 列は無い(常時有効)。掲載中判定は日付で行う
   if (!campaigns?.length) return '';
-  const active = campaigns.filter((c) => c.is_active !== false);
-  if (!active.length) return '';
-  return active
+  return campaigns
     .map((c) => c.title || c.campaign_type || 'CP')
     .filter(Boolean)
     .slice(0, 3)

@@ -15,6 +15,8 @@ from domain.models import (
 )
 from domain.pricing import BRATTO_DURATION_BANDS
 
+PARSER_VERSION = "bratto-normalize-v2"
+
 
 def draft_from_normalized(normalized: dict[str, Any]) -> PropertyDraft:
     """Map v1 normalized property dict into multi-source v2 PropertyDraft."""
@@ -145,7 +147,7 @@ def draft_from_normalized(normalized: dict[str, Any]) -> PropertyDraft:
         features=features,
         price_plans=plans,
         campaigns=campaigns,
-        parser_version="bratto-normalize-v2",
+        parser_version=PARSER_VERSION,
     )
 
 

@@ -5,7 +5,7 @@ import {
   explorerSearchForNavigate,
   parseCompareIds,
   parseExplorerSearch,
-} from './explorerSearch';
+} from './explorerSearch.ts';
 
 describe('parseCompareIds', () => {
   it('parses comma-separated ids and dedupes', () => {

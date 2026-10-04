@@ -1,4 +1,4 @@
-"""Catalog of ingest sources for admin UI / scrape-v2 (extensible)."""
+"""Catalog of ingest sources for admin UI / scrape (extensible)."""
 
 from __future__ import annotations
 
@@ -33,6 +33,20 @@ SOURCE_CATALOG: list[dict[str, Any]] = [
     # {"id": "tm21", "display_name": "東京マンスリー21", ...},
     # {"id": "goodmonthly", "display_name": "グッドマンスリー", ...},
 ]
+
+
+# ソース表示名の SSOT (旧 store.api_queries.SOURCE_DISPLAY より移設)。
+# queries 層 (store.queries) は本モジュールから import する一方向依存とし、
+# API/MCP/GeoJSON/KML/価格トレンドで同一の表示名を使う。
+SOURCE_DISPLAY: dict[str, str] = {
+    "bratto": "BraTTo",
+    "unionmonthly": "ユニオンマンスリー",
+    "tokyomonthly": "東京マンスリー",
+    "tm21": "東京マンスリー21",
+    "goodmonthly": "グッドマンスリー",
+    "shintoshin": "マンスリー新都心",
+    "weeklymonthly": "ウィークリー＆マンスリー",
+}
 
 
 def load_app_config() -> dict:
@@ -144,9 +158,7 @@ def _merge_targets(
 
 def list_source_admin_info() -> list[dict[str, Any]]:
     """Merge catalog + registry + config + DB counts + per-target status for admin API."""
-    import sources  # noqa: F401
     from sources.registry import SourceRegistry
-    from store.api_queries import SOURCE_DISPLAY, use_v2_data_layer
     from store.repository import Repository
 
     config = load_app_config()
@@ -157,41 +169,40 @@ def list_source_admin_info() -> list[dict[str, Any]]:
     counts_pref: dict[str, dict[str, dict[str, Any]]] = {}
     runs_pref: dict[str, dict[str, dict[str, Any]]] = {}
 
-    if use_v2_data_layer():
+    try:
+        repo = Repository()
+        # Ensure new tables exist (scrape_run_targets)
         try:
-            repo = Repository()
-            # Ensure new tables exist (scrape_run_targets)
-            try:
-                repo.init_db()
-            except Exception:
-                pass
-            conn = repo.connect()
-            try:
-                for row in conn.execute(
-                    """
-                    SELECT source_site,
-                           COUNT(*) AS total,
-                           SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active,
-                           SUM(CASE WHEN is_active = 1 AND (lat IS NULL OR lng IS NULL) THEN 1 ELSE 0 END) AS missing_coords
-                    FROM properties
-                    GROUP BY source_site
-                    """
-                ):
-                    counts[row["source_site"]] = {
-                        "total": row["total"] or 0,
-                        "active": row["active"] or 0,
-                        "missing_coords": row["missing_coords"] or 0,
-                    }
-            finally:
-                conn.close()
-            try:
-                counts_pref = repo.counts_by_prefecture()
-                runs_pref = repo.latest_scrape_runs_by_target()
-            except Exception:
-                counts_pref = {}
-                runs_pref = {}
+            repo.init_db()
         except Exception:
             pass
+        conn = repo.connect()
+        try:
+            for row in conn.execute(
+                """
+                SELECT source_site,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active,
+                       SUM(CASE WHEN is_active = 1 AND (lat IS NULL OR lng IS NULL) THEN 1 ELSE 0 END) AS missing_coords
+                FROM properties
+                GROUP BY source_site
+                """
+            ):
+                counts[row["source_site"]] = {
+                    "total": row["total"] or 0,
+                    "active": row["active"] or 0,
+                    "missing_coords": row["missing_coords"] or 0,
+                }
+        finally:
+            conn.close()
+        try:
+            counts_pref = repo.counts_by_prefecture()
+            runs_pref = repo.latest_scrape_runs_by_target()
+        except Exception:
+            counts_pref = {}
+            runs_pref = {}
+    except Exception:
+        pass
 
     out: list[dict[str, Any]] = []
     seen_ids: set[str] = set()

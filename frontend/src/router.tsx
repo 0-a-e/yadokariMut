@@ -1,5 +1,5 @@
 import { createRouter } from '@tanstack/react-router'
-import { routeTree } from './routeTree.gen'
+import { routeTree } from './routeTree.gen.ts'
 
 /**
  * TanStack Router entry (Phase R1).

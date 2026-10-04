@@ -1,190 +1,75 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, Suspense } from 'react';
 import L from 'leaflet';
 import {
-  PropertyGeoJSON,
   PropertyFeature,
   BoundsData,
-  MapFilters,
   ShortlistStatus,
-} from './types';
-import {
-  collectPrefectures,
-  collectSources,
-  computeStayEstimate,
-  createDefaultMapFilters,
-  mergeMapFilters,
-} from './lib/filterLogic';
-import { loadStoredDateRange, saveStoredDateRange } from './lib/rentCalculator';
-import {
-  EXPLORER_MAX_COMPARE,
-  normalizeCompareIds,
-} from './lib/explorerSearch';
-import { Sidebar } from './components/Sidebar';
-import { MapPane } from './components/MapPane';
-import { DetailPanel } from './components/DetailPanel';
-import { ComparisonBoard } from './components/ComparisonBoard';
-import { AdminModal } from './components/AdminModal';
-import { LightboxModal } from './components/LightboxModal';
-import { AccessSessionDialog } from './components/AccessSessionDialog';
-import { AgentChat } from './components/AgentChat';
-import { useCopilotMapContext } from './hooks/useCopilotContext';
-import { useMapActions } from './hooks/useMapActions';
-import type { LayerConfigState } from './lib/layers/types';
-import { catalogById } from './lib/layers/catalog';
-import { configureAdapter } from './lib/layers/adapters';
+  AnalysisTarget,
+} from './types.ts';
+import { collectPrefectures, collectSources } from './lib/filterLogic.ts';
+import { Sidebar } from './components/sidebar/Sidebar.tsx';
+import { MapPane } from './components/map/MapPane.tsx';
+import { DetailPanel } from './components/detail/DetailPanel.tsx';
+import { ComparisonBoard } from './components/shared/ComparisonBoard.tsx';
+import { AdminModal } from './components/admin/AdminModal.tsx';
+/** recharts を含むため遅延ロード */
+const AnalysisModal = React.lazy(() =>
+  import('./components/analysis/AnalysisModal.tsx').then((m) => ({ default: m.AnalysisModal })),
+);
+import { LightboxModal } from './components/shared/LightboxModal.tsx';
+import { GeojsonLoadProgress } from './components/shared/GeojsonLoadProgress.tsx';
+import { AccessSessionDialog } from './components/shared/AccessSessionDialog.tsx';
+import { AgentChat } from './components/chat/AgentChat.tsx';
+import { useCopilotMapContext } from './hooks/useCopilotContext.ts';
+import { useMapActions } from './hooks/useMapActions.ts';
+import { useIsMobile } from './hooks/useIsMobile.ts';
+import { usePropertyData } from './hooks/usePropertyData.ts';
+import { useFilteredFeatures } from './hooks/useFilteredFeatures.ts';
+import { useFiltersUrlSync } from './hooks/useFiltersUrlSync.ts';
+import { useSelectedFeature } from './hooks/useSelectedFeature.ts';
+import { useComparison } from './hooks/useComparison.ts';
+import { useDrawnAreaMode } from './hooks/useDrawnAreaMode.ts';
+import { useFeSettings } from './hooks/useFeSettings.ts';
+import type { LayerConfigState } from './lib/layers/types.ts';
+import { catalogById } from './lib/layers/catalog.ts';
 import {
   loadLayerConfig,
   makeLayerActions,
   saveLayerConfig,
   type LayerActions,
-} from './lib/layers/state';
-import {
-  EMPTY_FE_SETTINGS,
-  resolveInitialOpacity,
-  resolvePinClustering,
-  type FeSettings,
-} from './lib/feSettings';
-import { fetchFeSettings, postFeSettings } from './lib/feSettingsClient';
-import { useExplorerSearch } from './hooks/useExplorerSearch';
-import { TooltipProvider } from '@/components/ui/tooltip';
-import { Toaster, toast } from '@/components/ui/toast';
+} from './lib/layers/state.ts';
+import { resolveInitialOpacity, resolvePinClustering } from './lib/feSettings.ts';
+import { useExplorerSearch } from './hooks/useExplorerSearch.ts';
+import { TooltipProvider } from '@/components/ui/tooltip.tsx';
+import { Toaster, toast } from '@/components/ui/toast.tsx';
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
-} from '@/components/ui/resizable';
+} from '@/components/ui/resizable.tsx';
 import { FaMapLocationDot, FaCircle, FaHouse } from 'react-icons/fa6';
-import { ACTIVE_THREAD_KEY, setActiveThreadId, upsertSessionMeta } from './lib/chatSessions';
-import { createId } from './lib/utils';
-
-/** Build initial filters: URL dates/mode > localStorage dates > defaults. */
-function initialMapFilters(search: {
-  checkIn?: string;
-  checkOut?: string;
-  priceMode?: 'stay' | 'catalog';
-}): MapFilters {
-  const base = createDefaultMapFilters();
-  let checkIn = base.checkIn;
-  let checkOut = base.checkOut;
-  try {
-    const stored = loadStoredDateRange();
-    checkIn = stored.checkIn;
-    checkOut = stored.checkOut;
-  } catch {
-    /* ignore */
-  }
-  if (search.checkIn && search.checkOut) {
-    checkIn = search.checkIn;
-    checkOut = search.checkOut;
-  }
-  const priceMode = search.priceMode ?? base.priceMode;
-  return mergeMapFilters(base, { checkIn, checkOut, priceMode });
-}
+import { loadOrCreateActiveThread, setActiveThreadId } from './lib/chatSessions.ts';
+import { createId } from './lib/utils.ts';
 
 type MobileTab = 'list' | 'map' | 'chat';
-
-function loadOrCreateThreadId(): string {
-  try {
-    const existing = localStorage.getItem(ACTIVE_THREAD_KEY);
-    if (existing) return existing;
-  } catch {
-    /* ignore */
-  }
-  const id = createId();
-  setActiveThreadId(id);
-  upsertSessionMeta({
-    id,
-    title: '新しい会話',
-    updatedAt: new Date().toISOString(),
-    messageCount: 0,
-  });
-  return id;
-}
-
-function useIsMobile(breakpoint = 768): boolean {
-  const [isMobile, setIsMobile] = useState(() =>
-    typeof window !== 'undefined' ? window.innerWidth < breakpoint : false,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
-    const apply = () => setIsMobile(mq.matches);
-    apply();
-    mq.addEventListener('change', apply);
-    return () => mq.removeEventListener('change', apply);
-  }, [breakpoint]);
-  return isMobile;
-}
-
-function withStayEstimate(
-  f: PropertyFeature,
-  filtered: PropertyFeature | undefined,
-  checkIn: string,
-  checkOut: string,
-): PropertyFeature {
-  if (filtered?.properties.stay_estimate) {
-    return {
-      ...f,
-      properties: {
-        ...f.properties,
-        stay_estimate: filtered.properties.stay_estimate,
-        shortlist_comment:
-          f.properties.shortlist_comment ?? filtered.properties.shortlist_comment,
-      },
-    };
-  }
-  const est = computeStayEstimate(f.properties, checkIn, checkOut);
-  return {
-    ...f,
-    properties: {
-      ...f.properties,
-      stay_estimate: est.ok ? est : f.properties.stay_estimate,
-    },
-  };
-}
 
 export const App: React.FC = () => {
   const isMobile = useIsMobile();
   const { search, patchSearch } = useExplorerSearch();
 
-  const [rawGeojsonData, setRawGeojsonData] = useState<PropertyGeoJSON | null>(null);
-  const [filteredFeatures, setFilteredFeatures] = useState<PropertyFeature[]>([]);
-  const [selectedFeature, setSelectedFeature] = useState<PropertyFeature | null>(null);
+  const { rawGeojsonData, setRawGeojsonData, rawGeojsonRef, geojsonProgress } =
+    usePropertyData();
+  const { feSettings, feSettingsRef, updateFeSettings } = useFeSettings();
+
   const [layerConfig, setLayerConfig] = useState<LayerConfigState>(() => loadLayerConfig());
-  /** バックエンド保存のデフォルト設定(レイヤ毎/全体)。失敗時は空=カタログ既定で動作 */
-  const [feSettings, setFeSettings] = useState<FeSettings>(EMPTY_FE_SETTINGS);
-  const feSettingsRef = useRef(feSettings);
-  useEffect(() => {
-    feSettingsRef.current = feSettings;
-  }, [feSettings]);
-  useEffect(() => {
-    let alive = true;
-    fetchFeSettings().then((s) => {
-      if (alive) setFeSettings(s);
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-  /** 部分マージ保存(自動保存+Toastは呼び出し側UIで行う)。③以降のUIが使用 */
-  const updateFeSettings = useCallback(async (update: FeSettings): Promise<FeSettings | null> => {
-    try {
-      const next = await postFeSettings(update);
-      setFeSettings(next);
-      return next;
-    } catch {
-      return null;
-    }
-  }, []);
-  /** oshimaアダプタへクラスタリング設定を反映(変更時はアクティブレイヤへ即時通知される) */
-  useEffect(() => {
-    configureAdapter('oshima', { clustering: feSettings.layers.oshima?.clustering ?? false });
-  }, [feSettings.layers.oshima?.clustering]);
   const layerActions = useMemo(
     () =>
       makeLayerActions(
         (updater) => setLayerConfig((c) => updater(c)),
         (id) => resolveInitialOpacity(feSettingsRef.current, catalogById.get(id)),
       ),
+    // feSettingsRef は最新値読み込み用のため依存に不要
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
   /**
@@ -222,101 +107,66 @@ export const App: React.FC = () => {
   useEffect(() => {
     saveLayerConfig(layerConfig);
   }, [layerConfig]);
+
   const [isAdminOpen, setIsAdminOpen] = useState(false);
+  /** 分析モーダルの表示対象(null=閉じる)。市場全体(メニュー)or 物件単位(詳細パネル) */
+  const [analysisTarget, setAnalysisTarget] = useState<AnalysisTarget | null>(null);
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [lightboxImages, setLightboxImages] = useState<string[]>([]);
   const [lightboxIndex, setLightboxIndex] = useState(0);
-  const [threadId, setThreadId] = useState<string>(() => loadOrCreateThreadId());
+  const [threadId, setThreadId] = useState<string>(() => loadOrCreateActiveThread());
   const [mobileTab, setMobileTab] = useState<MobileTab>('map');
-
-  const [filters, setFilters] = useState<MapFilters>(() => initialMapFilters(search));
-  const [excludedUnestimable, setExcludedUnestimable] = useState(0);
+  /** サイドバーカードのホバー中物件(マップピンハイライト連動) */
+  const [hoveredPropertyId, setHoveredPropertyId] = useState<number | null>(null);
   const [mapBounds, setMapBounds] = useState<BoundsData | null>(null);
-
   const [mapState, setMapState] = useState<{ center: [number, number] | null; zoom: number }>({
     center: null,
     zoom: 13,
   });
-
-  const workerRef = useRef<Worker | null>(null);
-  const requestIdRef = useRef(0);
   const mapPaneRef = useRef<{ map: L.Map | null; cluster: any }>({ map: null, cluster: null });
-  const rawGeojsonRef = useRef<PropertyGeoJSON | null>(null);
-  const filtersRef = useRef(filters);
-  const filteredFeaturesRef = useRef(filteredFeatures);
-  /** Skip echoing our own navigations when syncing URL → filters. */
-  const syncingFromUrlRef = useRef(false);
 
-  useEffect(() => {
-    rawGeojsonRef.current = rawGeojsonData;
-  }, [rawGeojsonData]);
-  useEffect(() => {
-    filtersRef.current = filters;
-  }, [filters]);
-  useEffect(() => {
-    filteredFeaturesRef.current = filteredFeatures;
-  }, [filteredFeatures]);
+  const { filters, filtersRef, patchFilters, handleDatesChange } = useFiltersUrlSync(
+    search,
+    patchSearch,
+  );
+  const { filteredFeatures, filteredFeaturesRef, excludedUnestimable } = useFilteredFeatures(
+    rawGeojsonData,
+    filters,
+    mapBounds,
+  );
 
-  // ── URL → filters (back/forward + shared links) ──
-  useEffect(() => {
-    const patch: Partial<MapFilters> = {};
-    if (search.checkIn && search.checkOut) {
-      if (
-        search.checkIn !== filtersRef.current.checkIn ||
-        search.checkOut !== filtersRef.current.checkOut
-      ) {
-        patch.checkIn = search.checkIn;
-        patch.checkOut = search.checkOut;
-      }
-    }
-    if (search.priceMode && search.priceMode !== filtersRef.current.priceMode) {
-      patch.priceMode = search.priceMode;
-    }
-    if (Object.keys(patch).length === 0) return;
-    syncingFromUrlRef.current = true;
-    setFilters((prev) => mergeMapFilters(prev, patch));
-    queueMicrotask(() => {
-      syncingFromUrlRef.current = false;
+  const resolveFeatureById = useCallback(
+    (id: number): PropertyFeature | null => {
+      const filtered = filteredFeaturesRef.current.find((f) => f.properties.id === id);
+      if (filtered) return filtered;
+      return rawGeojsonRef.current?.features.find((f) => f.properties.id === id) ?? null;
+    },
+    [filteredFeaturesRef, rawGeojsonRef],
+  );
+
+  const { selectedFeature, setSelectedFeature, openFeature, closeFeature } =
+    useSelectedFeature({
+      search,
+      patchSearch,
+      resolveFeatureById,
+      rawGeojsonData,
+      filteredFeatures,
+      isMobile,
+      setMobileTab,
     });
-  }, [search.checkIn, search.checkOut, search.priceMode]);
 
-  // Persist stay dates for simulator / reloads without URL
-  useEffect(() => {
-    if (filters.checkIn && filters.checkOut) {
-      saveStoredDateRange(filters.checkIn, filters.checkOut);
-    }
-  }, [filters.checkIn, filters.checkOut]);
+  const {
+    savedFeatures,
+    compareIds,
+    comparisonOpen,
+    compareCandidateFeatures,
+    handleCompareIdsChange,
+    handleComparisonOpenChange,
+    handleOpenComparison,
+  } = useComparison({ rawGeojsonData, filteredFeatures, filters, search, patchSearch });
 
-  // Keep selected feature's stay_estimate in sync with filtered list
-  useEffect(() => {
-    if (!selectedFeature) return;
-    const id = selectedFeature.properties.id;
-    const updated = filteredFeatures.find((f) => f.properties.id === id);
-    if (updated && updated !== selectedFeature) {
-      setSelectedFeature(updated);
-    }
-  }, [filteredFeatures]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const resolveFeatureById = useCallback((id: number): PropertyFeature | null => {
-    const filtered = filteredFeaturesRef.current.find((f) => f.properties.id === id);
-    if (filtered) return filtered;
-    return rawGeojsonRef.current?.features.find((f) => f.properties.id === id) ?? null;
-  }, []);
-
-  // ── URL id → selection (after data load / back-forward) ──
-  useEffect(() => {
-    if (search.id == null) {
-      if (selectedFeature) setSelectedFeature(null);
-      return;
-    }
-    if (selectedFeature?.properties.id === search.id) return;
-    const feat = resolveFeatureById(search.id);
-    if (feat) {
-      setSelectedFeature(feat);
-      if (isMobile) setMobileTab('map');
-    }
-    // If geojson not loaded yet, wait for next rawGeojsonData change
-  }, [search.id, rawGeojsonData, filteredFeatures, resolveFeatureById, isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { drawMode, handleShapeDrawn, handleShapeClear, handleDrawModeChange } =
+    useDrawnAreaMode({ filters, filtersRef, patchFilters, isMobile, setMobileTab });
 
   const prefectureOptions = useMemo(
     () => collectPrefectures(rawGeojsonData),
@@ -328,67 +178,7 @@ export const App: React.FC = () => {
     [rawGeojsonData],
   );
 
-  const patchFilters = useCallback(
-    (patch: Partial<MapFilters> & { reset?: boolean }) => {
-      setFilters((prev) => {
-        const next = mergeMapFilters(prev, patch);
-        if (!syncingFromUrlRef.current) {
-          const urlPatch: {
-            checkIn?: string | null;
-            checkOut?: string | null;
-            priceMode?: 'stay' | 'catalog' | null;
-          } = {};
-          let touchUrl = false;
-          if (
-            patch.checkIn !== undefined ||
-            patch.checkOut !== undefined ||
-            patch.reset
-          ) {
-            urlPatch.checkIn = next.checkIn;
-            urlPatch.checkOut = next.checkOut;
-            touchUrl = true;
-          }
-          if (patch.priceMode !== undefined || patch.reset) {
-            urlPatch.priceMode = next.priceMode;
-            touchUrl = true;
-          }
-          if (touchUrl) {
-            patchSearch(urlPatch, { replace: true });
-          }
-        }
-        return next;
-      });
-    },
-    [patchSearch],
-  );
-
-  const handleDatesChange = useCallback(
-    (checkIn: string, checkOut: string) => {
-      setFilters((prev) => mergeMapFilters(prev, { checkIn, checkOut }));
-      patchSearch({ checkIn, checkOut }, { replace: true });
-    },
-    [patchSearch],
-  );
-
-  /** Open property — push history (back closes). */
-  const openFeature = useCallback(
-    (feature: PropertyFeature) => {
-      setSelectedFeature(feature);
-      if (isMobile) setMobileTab('map');
-      if (search.id !== feature.properties.id) {
-        patchSearch({ id: feature.properties.id }, { replace: false });
-      }
-    },
-    [isMobile, patchSearch, search.id],
-  );
-
-  const closeFeature = useCallback(() => {
-    setSelectedFeature(null);
-    if (search.id != null) {
-      patchSearch({ id: null }, { replace: true });
-    }
-  }, [patchSearch, search.id]);
-
+  /** ショートリスト状態のローカル反映(選択中 + 全件データの双方へパッチ) */
   const applyShortlistLocal = useCallback(
     (propertyId: number, status: ShortlistStatus, comment?: string | null) => {
       const patchProps = (props: PropertyFeature['properties']) => ({
@@ -413,136 +203,8 @@ export const App: React.FC = () => {
         };
       });
     },
-    [],
+    [setSelectedFeature, setRawGeojsonData],
   );
-
-  const applyDetailPatch = useCallback(
-    (
-      propertyId: number,
-      patch: {
-        shortlist_comment?: string | null;
-        shortlist_status?: ShortlistStatus;
-        price_history?: PropertyFeature['properties']['price_history'];
-      },
-    ) => {
-      const merge = (props: PropertyFeature['properties']) => ({
-        ...props,
-        ...(patch.shortlist_comment !== undefined
-          ? { shortlist_comment: patch.shortlist_comment }
-          : {}),
-        ...(patch.shortlist_status !== undefined
-          ? { shortlist_status: patch.shortlist_status }
-          : {}),
-        ...(patch.price_history !== undefined ? { price_history: patch.price_history } : {}),
-      });
-      setSelectedFeature((prev) =>
-        prev && prev.properties.id === propertyId
-          ? { ...prev, properties: merge(prev.properties) }
-          : prev,
-      );
-      setRawGeojsonData((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          features: prev.features.map((feat) =>
-            feat.properties.id === propertyId
-              ? { ...feat, properties: merge(feat.properties) }
-              : feat,
-          ),
-        };
-      });
-    },
-    [],
-  );
-
-  const savedFeatures = useMemo(() => {
-    if (!rawGeojsonData) return [];
-    return rawGeojsonData.features
-      .filter((f) => f.properties.shortlist_status === 'saved')
-      .map((f) => {
-        const filtered = filteredFeatures.find((x) => x.properties.id === f.properties.id);
-        return withStayEstimate(f, filtered, filters.checkIn, filters.checkOut);
-      });
-  }, [rawGeojsonData, filteredFeatures, filters.checkIn, filters.checkOut]);
-
-  const compareIds = search.compare ?? [];
-  const comparisonOpen = search.view === 'compare';
-
-  /** Candidates: saved + any explicit compare ids resolved from full dataset. */
-  const compareCandidateFeatures = useMemo(() => {
-    if (!rawGeojsonData) return savedFeatures;
-    const byId = new Map<number, PropertyFeature>();
-    for (const f of savedFeatures) {
-      byId.set(f.properties.id, f);
-    }
-    for (const id of compareIds) {
-      if (byId.has(id)) continue;
-      const raw = rawGeojsonData.features.find((f) => f.properties.id === id);
-      if (!raw) continue;
-      const filtered = filteredFeatures.find((x) => x.properties.id === id);
-      byId.set(id, withStayEstimate(raw, filtered, filters.checkIn, filters.checkOut));
-    }
-    // Order: compare ids first (for picker checked state), then remaining saved
-    const ordered: PropertyFeature[] = [];
-    const seen = new Set<number>();
-    for (const id of compareIds) {
-      const f = byId.get(id);
-      if (f) {
-        ordered.push(f);
-        seen.add(id);
-      }
-    }
-    for (const f of savedFeatures) {
-      if (!seen.has(f.properties.id)) ordered.push(f);
-    }
-    return ordered;
-  }, [
-    rawGeojsonData,
-    savedFeatures,
-    compareIds,
-    filteredFeatures,
-    filters.checkIn,
-    filters.checkOut,
-  ]);
-
-  const handleCompareIdsChange = useCallback(
-    (ids: number[]) => {
-      const next = normalizeCompareIds(ids).slice(0, EXPLORER_MAX_COMPARE);
-      patchSearch({ compare: next.length ? next : null }, { replace: true });
-    },
-    [patchSearch],
-  );
-
-  const handleComparisonOpenChange = useCallback(
-    (open: boolean) => {
-      if (open) {
-        // Seed compare from shortlist if URL has no explicit list
-        let nextCompare = search.compare;
-        if (!nextCompare?.length && savedFeatures.length > 0) {
-          nextCompare = savedFeatures
-            .slice(0, Math.min(EXPLORER_MAX_COMPARE, savedFeatures.length))
-            .map((f) => f.properties.id);
-        }
-        patchSearch(
-          {
-            view: 'compare',
-            ...(nextCompare?.length && !search.compare?.length
-              ? { compare: nextCompare }
-              : {}),
-          },
-          { replace: false },
-        );
-      } else {
-        // Close panel only; keep compare ids for share links
-        patchSearch({ view: null }, { replace: true });
-      }
-    },
-    [patchSearch, search.compare, savedFeatures],
-  );
-
-  const handleOpenComparison = useCallback(() => {
-    handleComparisonOpenChange(true);
-  }, [handleComparisonOpenChange]);
 
   useCopilotMapContext(
     mapState,
@@ -580,62 +242,49 @@ export const App: React.FC = () => {
     mapPaneRef.current = { map, cluster };
   };
 
-  const loadDefaultData = async () => {
-    try {
-      const res = await fetch('/api/geojson');
-      if (res.ok) {
-        const data = await res.json();
-        setRawGeojsonData(data);
-        return;
-      }
-    } catch (e) {
-      console.warn('API geojson fetch failed, falling back to local file...');
-    }
-    try {
-      const res = await fetch('/map.geojson');
-      if (res.ok) {
-        const data = await res.json();
-        setRawGeojsonData(data);
-      }
-    } catch (e) {
-      console.error('Could not load map.geojson', e);
-    }
-  };
-
-  useEffect(() => {
-    loadDefaultData();
-  }, []);
-
-  useEffect(() => {
-    workerRef.current = new Worker(
-      new URL('./workers/filter.worker.ts', import.meta.url),
-      { type: 'module' },
-    );
-    workerRef.current.onmessage = (e) => {
-      const { type, requestId, features, excludedUnestimable: excluded } = e.data;
-      if (type === 'filterResult' && requestId === requestIdRef.current) {
-        setFilteredFeatures(features);
-        setExcludedUnestimable(typeof excluded === 'number' ? excluded : 0);
-      }
-    };
-    return () => {
-      workerRef.current?.terminate();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!workerRef.current) return;
-    requestIdRef.current++;
-    workerRef.current.postMessage({
-      type: 'filter',
-      requestId: requestIdRef.current,
-      data: {
-        rawGeojsonData,
-        filters,
-        mapBounds: filters.boundsEnabled ? mapBounds : null,
+  /** 詳細API由来の遅延フィールド(comment / price_history 等)をローカルへマージ */
+  const applyDetailPatch = useCallback(
+    (
+      propertyId: number,
+      patch: {
+        shortlist_comment?: string | null;
+        shortlist_status?: ShortlistStatus;
+        price_history?: PropertyFeature['properties']['price_history'];
+        contract_fee_yen?: number | null;
       },
-    });
-  }, [rawGeojsonData, filters, filters.boundsEnabled ? mapBounds : null]);
+    ) => {
+      const merge = (props: PropertyFeature['properties']) => ({
+        ...props,
+        ...(patch.shortlist_comment !== undefined
+          ? { shortlist_comment: patch.shortlist_comment }
+          : {}),
+        ...(patch.shortlist_status !== undefined
+          ? { shortlist_status: patch.shortlist_status }
+          : {}),
+        ...(patch.price_history !== undefined ? { price_history: patch.price_history } : {}),
+        ...(patch.contract_fee_yen !== undefined
+          ? { contract_fee_yen: patch.contract_fee_yen }
+          : {}),
+      });
+      setSelectedFeature((prev) =>
+        prev && prev.properties.id === propertyId
+          ? { ...prev, properties: merge(prev.properties) }
+          : prev,
+      );
+      setRawGeojsonData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          features: prev.features.map((feat) =>
+            feat.properties.id === propertyId
+              ? { ...feat, properties: merge(feat.properties) }
+              : feat,
+          ),
+        };
+      });
+    },
+    [setSelectedFeature, setRawGeojsonData],
+  );
 
   const handleShortlistUpdate = (
     propertyId: number,
@@ -650,16 +299,13 @@ export const App: React.FC = () => {
     setLightboxIndex(index);
     setIsLightboxOpen(true);
   };
-  const handleLightboxPrev = () => {
-    if (lightboxImages.length === 0) return;
-    setLightboxIndex((prev) => (prev - 1 + lightboxImages.length) % lightboxImages.length);
-  };
-  const handleLightboxNext = () => {
-    if (lightboxImages.length === 0) return;
-    setLightboxIndex((prev) => (prev + 1) % lightboxImages.length);
-  };
+  // 表示中のインデックスはLightboxModal(Carousel)内部で管理されるため、
+  // Appが持つlightboxIndexはオープン時の初期値としてのみ使う
 
   const handleCardClick = (feature: PropertyFeature) => {
+    // タッチ端末ではタップでmouseenterのみ飛びmouseleaveが来ないことがあるため、
+    // 選択時にホバー状態を明示クリアする(マップのゴーストピン残存防止)
+    setHoveredPropertyId(null);
     openFeature(feature);
   };
 
@@ -692,11 +338,13 @@ export const App: React.FC = () => {
       feSettings={feSettings}
       onFeSettingsChange={updateFeSettings}
       onAdminToggle={() => setIsAdminOpen(true)}
+      onOpenAnalysis={() => setAnalysisTarget({ kind: 'market' })}
       filters={filters}
       onFiltersChange={patchFilters}
       prefectureOptions={prefectureOptions}
       sourceOptions={sourceOptions}
       onCardClick={handleCardClick}
+      onCardHover={setHoveredPropertyId}
       compactHeader={isMobile}
       excludedUnestimable={excludedUnestimable}
       savedCount={savedFeatures.length}
@@ -709,8 +357,14 @@ export const App: React.FC = () => {
       <MapPane
         filteredFeatures={filteredFeatures}
         selectedId={selectedFeature?.properties.id ?? null}
+        hoveredId={hoveredPropertyId}
         layerConfig={layerConfig}
         pinClustering={pinClustering}
+        drawnPolygon={filters.drawnPolygon}
+        drawMode={drawMode}
+        onDrawModeChange={handleDrawModeChange}
+        onShapeDrawn={handleShapeDrawn}
+        onShapeClear={handleShapeClear}
         onMarkerClick={handleMarkerClick}
         onMapMove={handleMapMove}
         onMapInit={handleMapInit}
@@ -725,6 +379,7 @@ export const App: React.FC = () => {
         checkOut={filters.checkOut}
         onDatesChange={handleDatesChange}
         onDetailPatch={applyDetailPatch}
+        onOpenAnalysis={(propertyId) => setAnalysisTarget({ kind: 'property', propertyId })}
       />
     </div>
   );
@@ -816,20 +471,32 @@ export const App: React.FC = () => {
           onGeoJsonLoaded={setRawGeojsonData}
           feSettings={feSettings}
           onFeSettingsUpdate={updateFeSettings}
+          filteredFeatures={filteredFeatures}
+          allFeatures={rawGeojsonData?.features ?? []}
         />
 
+        <Suspense fallback={null}>
+          <AnalysisModal
+            isOpen={analysisTarget !== null}
+            onClose={() => setAnalysisTarget(null)}
+            target={analysisTarget ?? { kind: 'market' }}
+            allFeatures={rawGeojsonData?.features ?? []}
+            onTargetChange={setAnalysisTarget}
+          />
+        </Suspense>
+
         <AccessSessionDialog />
+
+        {geojsonProgress && <GeojsonLoadProgress progress={geojsonProgress} />}
 
         <Toaster />
 
         <LightboxModal
           isOpen={isLightboxOpen}
           images={lightboxImages}
-          currentIndex={lightboxIndex}
+          initialIndex={lightboxIndex}
           title={selectedFeature?.properties.title ?? ''}
           onClose={() => setIsLightboxOpen(false)}
-          onPrev={handleLightboxPrev}
-          onNext={handleLightboxNext}
         />
 
         <ComparisonBoard

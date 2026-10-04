@@ -1,5 +1,5 @@
 import L from 'leaflet';
-import type { LayerAdapter, LayerCatalogEntry } from '../types';
+import type { LayerAdapter, LayerCatalogEntry } from '../types.ts';
 
 /**
  * オシマランド(大島てる)事故物件マーカーレイヤ。

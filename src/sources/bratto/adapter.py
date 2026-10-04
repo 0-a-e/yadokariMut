@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from datetime import datetime
 from typing import Any
 
-from parser import normalize_property, parse_detail_page, parse_list_page
+from store.source_catalog import load_app_config
+
 from sources.base import FetchedPage, ListCard, ListTarget, SourceAdapter
-from sources.bratto.convert import draft_from_normalized
+from sources.bratto.convert import PARSER_VERSION, draft_from_normalized
+from sources.bratto.detail_parser import parse_detail_page
+from sources.bratto.list_parser import parse_list_page, parse_pagination
+from sources.bratto.normalize import normalize_property
+from sources.parsing import parse_money
 from sources.registry import SourceRegistry
 
 logger = logging.getLogger(__name__)
@@ -19,19 +22,19 @@ DEFAULT_BASE = "https://www.000area-weekly.com"
 
 
 def _load_bratto_config() -> dict:
-    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config.json")
-    path = os.path.abspath(path)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return (json.load(f).get("sources") or {}).get("bratto") or {}
-    except Exception:
-        return {}
+    """config.json の sources.bratto ブロック(load_app_config 経由の唯一の入口)。
+
+    呼び出し元(cli 等)が渡す config とマージして使うため、
+    旧実装のようなアダプタ内 config.json 直読み(二重読み)はしない。
+    """
+    return ((load_app_config().get("sources") or {}).get("bratto")) or {}
 
 
 @SourceRegistry.register("bratto")
 class BrattoAdapter(SourceAdapter):
     source_id = "bratto"
     display_name = "BraTTo"
+    parser_version = PARSER_VERSION
 
     def __init__(self, config: dict | None = None):
         file_cfg = _load_bratto_config()
@@ -73,8 +76,7 @@ class BrattoAdapter(SourceAdapter):
         return int(self.config.get("page_size", 20))
 
     def parse_list(self, page: FetchedPage, target: ListTarget) -> list[ListCard]:
-        props, _info, has_next, _next = parse_list_page(page.html, target_url=target.list_url)
-        # stash has_next on first card raw for pipeline heuristics via empty next page
+        props, _info, _has_next, _next = parse_list_page(page.html, target_url=target.list_url)
         cards: list[ListCard] = []
         for p in props:
             rid = p.get("room_id")
@@ -83,13 +85,10 @@ class BrattoAdapter(SourceAdapter):
             p = dict(p)
             p["prefecture_slug"] = target.prefecture_slug
             p["prefecture_name"] = target.prefecture_name
-            p["_has_next"] = has_next
             # list price: cheapest available daily if present
             list_price = None
             for _name, pv in (p.get("rent_plans") or {}).items():
                 if isinstance(pv, dict) and pv.get("available"):
-                    from parser import parse_money
-
                     list_price = parse_money(
                         pv.get("discounted_daily_rent") or pv.get("original_daily_rent")
                     )
@@ -109,6 +108,11 @@ class BrattoAdapter(SourceAdapter):
                 )
             )
         return cards
+
+    def has_next(self, page: FetchedPage, cards: list[ListCard]) -> bool | None:
+        """検索結果の「次へ」リンク有無で終端を判定する。"""
+        _info, has_next, _next_url = parse_pagination(self.soup(page), page.url)
+        return has_next
 
     def parse_detail(self, page: FetchedPage, card: ListCard):
         detail = parse_detail_page(page.html, base_url=self.base_url)

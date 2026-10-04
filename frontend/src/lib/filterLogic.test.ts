@@ -5,7 +5,8 @@ import {
   monthlyTotalYen,
   createDefaultMapFilters,
   computeStayEstimate,
-} from './filterLogic';
+  pointInPolygon,
+} from './filterLogic.ts';
 import {
   CATALOG_PRICE_UNLIMITED,
   DEFAULT_MAP_FILTERS,
@@ -13,12 +14,16 @@ import {
   PropertyFeature,
   PropertyGeoJSON,
   STAY_PRICE_UNLIMITED,
-} from '../types';
-import type { RentPlan } from '../types';
+} from '../types.ts';
+import type { RentPlan } from '../types.ts';
 
 function plan(partial: Partial<RentPlan> & { plan_code: string; plan_name: string }): RentPlan {
   return {
     available: true,
+    presentation_unit: 'per_day',
+    utilities_included: true,
+    campaign_applied: false,
+    campaign_expired: false,
     discounted_daily_rent_yen: 3000,
     original_daily_rent_yen: 3000,
     campaign_label: null,
@@ -53,10 +58,12 @@ function feat(
       images: [],
       total_score: partial.total_score ?? 50,
       shortlist_status: partial.shortlist_status ?? 'none',
+      is_active: true,
       access_summary: '',
       feature_summary: partial.feature_summary ?? '',
       station_summary: '',
       rent_plans: partial.rent_plans ?? [],
+      campaigns: [],
       ...partial,
     },
   };
@@ -313,5 +320,76 @@ describe('listingVisibility (掲載状態フィルタ)', () => {
     const ids = applyMapFilters(scoreData, { ...catalogBase, listingVisibility: 'all' }, null)
       .features.map((f) => f.properties.id);
     expect(ids).toEqual([11, 10]);
+  });
+});
+
+describe('pointInPolygon (レイキャスト)', () => {
+  const rect: [number, number][] = [
+    [139.65, 35.55],
+    [139.75, 35.55],
+    [139.75, 35.65],
+    [139.65, 35.65],
+  ];
+
+  it('矩形の内側', () => {
+    expect(pointInPolygon(139.7, 35.6, rect)).toBe(true);
+  });
+
+  it('矩形の外側', () => {
+    expect(pointInPolygon(139.8, 35.6, rect)).toBe(false);
+    expect(pointInPolygon(139.7, 35.7, rect)).toBe(false);
+  });
+
+  it('凹みのあるL字ポリゴン', () => {
+    const lShape: [number, number][] = [
+      [0, 0],
+      [2, 0],
+      [2, 1],
+      [1, 1],
+      [1, 2],
+      [0, 2],
+    ];
+    expect(pointInPolygon(0.5, 0.5, lShape)).toBe(true);
+    expect(pointInPolygon(1.5, 1.5, lShape)).toBe(false);
+    expect(pointInPolygon(-0.5, 1.5, lShape)).toBe(false);
+  });
+
+  it('時計回りと反時計回りで結果が一致', () => {
+    expect(pointInPolygon(139.7, 35.6, [...rect].reverse())).toBe(true);
+  });
+});
+
+describe('areaMode=drawn (囲った範囲で絞り込み)', () => {
+  const polyData: PropertyGeoJSON = {
+    type: 'FeatureCollection',
+    features: [
+      feat({ id: 20 }, [139.7, 35.6]), // 内側
+      feat({ id: 21 }, [139.8, 35.6]), // 外側
+    ],
+  };
+  const drawnBase: MapFilters = {
+    ...catalogBase,
+    areaMode: 'drawn',
+    drawnPolygon: [
+      [139.65, 35.55],
+      [139.75, 35.55],
+      [139.75, 35.65],
+      [139.65, 35.65],
+    ],
+  };
+
+  it('ポリゴン内の物件のみ残る', () => {
+    const r = applyMapFilters(polyData, drawnBase, null);
+    expect(r.features.map((f) => f.properties.id)).toEqual([20]);
+  });
+
+  it('drawnPolygon が null なら範囲制限なし', () => {
+    const r = applyMapFilters(polyData, { ...drawnBase, drawnPolygon: null }, null);
+    expect(r.features.map((f) => f.properties.id).sort()).toEqual([20, 21]);
+  });
+
+  it('areaMode=all ならポリゴンを無視', () => {
+    const r = applyMapFilters(polyData, { ...drawnBase, areaMode: 'all' }, null);
+    expect(r.features.map((f) => f.properties.id).sort()).toEqual([20, 21]);
   });
 });

@@ -9,28 +9,20 @@ services:
       # nginx からだけ到達できればよいので loopback にバインド
       - "127.0.0.1:8000:8000"
     volumes:
-      # 永続データ（物件DB・チェックポイント・設定・APIキー）
-      - ./yadokari_mut.db:/app/yadokari_mut.db
+      # 永続データ（物件DB(v2)・チェックポイント・設定・APIキー）
       - ./yadokari_mut_v2.db:/app/yadokari_mut_v2.db
       - ./data:/app/data
       - ./config.json:/app/config.json
       - ./.env:/app/.env
     environment:
       - TZ=Asia/Tokyo
-      - YADOKARIMUT_DB_PATH=/app/yadokari_mut.db
       - YADOKARIMUT_V2_DB_PATH=/app/yadokari_mut_v2.db
-      - YADOKARIMUT_DATA_LAYER=v2
       - YADOKARIMUT_CHECKPOINT_DB=/app/data/agent_checkpoints.db
+      # 定期収集の有効化。収集設定（県ローテーション・日次上限・cron 等）は
+      # 管理画面（設定ボード）から app_settings (DB) に保存して変更する
       - ENABLE_SCHEDULER=true
-      # 県ローテーション収集: cron ごとに各県を 1 バッチずつ順に取得する
-      - ROTATION_SOURCES=bratto,unionmonthly
-      - ROTATION_CRON_BRATTO=0 2,14 * * *
-      - ROTATION_CRON_UNIONMONTHLY=0 5,17 * * *
-      - ROTATION_DAILY_LIMIT_BRATTO=500
-      - ROTATION_DAILY_LIMIT_UNIONMONTHLY=500
-      - ROTATION_DEFAULT_EST=60
-      - ROTATION_FAILURE_MAX=3
-      - ROTATION_FAILURE_COOLDOWN_HOURS=48
+      # KSJ から生成した PMTiles の配置先 (/api/tiles 配信)
+      - TILES_DIR=/app/data/tiles
       - PYTHONUNBUFFERED=1
     restart: always
     healthcheck:

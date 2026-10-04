@@ -3,8 +3,8 @@ import ReactDOM from 'react-dom/client'
 import { RouterProvider } from '@tanstack/react-router'
 import { CopilotKitProvider } from "@copilotkit/react-core/v2"
 import { HttpAgent } from "@ag-ui/client"
-import { router } from './router'
-import { installAccessAuthGuard } from './lib/accessAuth'
+import { router } from './router.tsx'
+import { installAccessAuthGuard } from './lib/accessAuth.ts'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet.markercluster/dist/MarkerCluster.css'
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css'

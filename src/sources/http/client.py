@@ -26,11 +26,17 @@ class FetchError(Exception):
 
 
 @dataclass
-class FetchResult:
+class FetchedPage:
+    """Fetched page shared by all transports and source adapters.
+
+    正本はこのモジュール(sources.base が再エクスポート)。sources.base →
+    sources.http.client の依存方向を保ち循環を作らないため、下位レイヤ側に定義する
+    """
+
     url: str
     html: str
     status_code: int
-    page_type: str
+    page_type: str  # list | detail | city
     transport: str = "direct"
     attempts: int = 1
     restricted_before_proxy: bool = False
@@ -74,7 +80,7 @@ class HttpFetchClient:
         timeout: float | None = None,
         delay_seconds: float = 0,
         **kwargs: Any,
-    ) -> FetchResult:
+    ) -> FetchedPage:
         if delay_seconds > 0:
             time.sleep(delay_seconds)
 
@@ -89,7 +95,7 @@ class HttpFetchClient:
                 attempts += 1
                 try:
                     if transport == "direct":
-                        result = self._direct(
+                        result = self._send(
                             url,
                             method=method,
                             headers=headers,
@@ -98,12 +104,18 @@ class HttpFetchClient:
                             **kwargs,
                         )
                     elif transport == "proxy":
-                        result = self._proxy(
+                        if not self.settings.http_proxy_url:
+                            UnconfiguredProxyProvider().fetch(url)
+                        result = self._send(
                             url,
                             method=method,
                             headers=headers,
                             data=data,
                             timeout=timeout,
+                            proxies={
+                                "http": self.settings.http_proxy_url,
+                                "https": self.settings.http_proxy_url,
+                            },
                             **kwargs,
                         )
                     else:
@@ -160,7 +172,7 @@ class HttpFetchClient:
                         self._mark_cooldown()
                     break
 
-                return FetchResult(
+                return FetchedPage(
                     url=result["final_url"],
                     html=body,
                     status_code=status,
@@ -196,7 +208,7 @@ class HttpFetchClient:
             self.settings.cooldown_seconds
         )
 
-    def _direct(
+    def _send(
         self,
         url: str,
         *,
@@ -204,61 +216,21 @@ class HttpFetchClient:
         headers: dict | None,
         data: Any,
         timeout: float,
+        proxies: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         method_u = method.upper()
         req_headers = dict(headers or {})
+        send_kwargs: dict[str, Any] = dict(kwargs)
+        if proxies is not None:
+            send_kwargs["proxies"] = proxies
         if method_u == "POST":
             resp = self.session.post(
-                url, headers=req_headers or None, data=data, timeout=timeout, **kwargs
+                url, headers=req_headers or None, data=data, timeout=timeout, **send_kwargs
             )
         else:
             resp = self.session.get(
-                url, headers=req_headers or None, timeout=timeout, **kwargs
-            )
-        if not resp.encoding or resp.encoding.lower() == "iso-8859-1":
-            resp.encoding = resp.apparent_encoding or "utf-8"
-        return {
-            "status_code": resp.status_code,
-            "text": resp.text,
-            "final_url": str(resp.url),
-        }
-
-    def _proxy(
-        self,
-        url: str,
-        *,
-        method: str,
-        headers: dict | None,
-        data: Any,
-        timeout: float,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        if not self.settings.http_proxy_url:
-            UnconfiguredProxyProvider().fetch(url)
-
-        proxies = {
-            "http": self.settings.http_proxy_url,
-            "https": self.settings.http_proxy_url,
-        }
-        method_u = method.upper()
-        req_headers = dict(headers or {})
-        if method_u == "POST":
-            resp = self.session.post(
-                url,
-                headers=req_headers or None,
-                data=data,
-                timeout=timeout,
-                proxies=proxies,
-                **kwargs,
-            )
-        else:
-            resp = self.session.get(
-                url,
-                headers=req_headers or None,
-                timeout=timeout,
-                proxies=proxies,
-                **kwargs,
+                url, headers=req_headers or None, timeout=timeout, **send_kwargs
             )
         if not resp.encoding or resp.encoding.lower() == "iso-8859-1":
             resp.encoding = resp.apparent_encoding or "utf-8"

@@ -1,7 +1,8 @@
 import L from 'leaflet';
-import type { LayerConfigState } from './types';
-import { catalogById } from './catalog';
-import { getAdapter } from './adapters';
+import type { LayerConfigState } from './types.ts';
+import { catalogById } from './catalog.ts';
+import { getAdapter } from './adapters/index.ts';
+import { VectorEngine, type VectorItem } from './vector.ts';
 
 const LAYER_PANE_PREFIX = 'yl-';
 const GROUP_PANE_PREFIX = 'yg-';
@@ -22,9 +23,14 @@ export class LayerEngine {
   private readonly map: L.Map;
   private readonly layerById = new Map<string, L.Layer>();
   private readonly groupPaneNames = new Set<string>();
+  /** ベクタレイヤ(maplibre)の実体を担うエンジン(composition) */
+  private readonly vectorEngine: VectorEngine;
+  /** vector エントリ現在適用中の attribution(entryId → 文字列) */
+  private readonly vectorAttributions = new Map<string, string>();
 
   constructor(map: L.Map) {
     this.map = map;
+    this.vectorEngine = new VectorEngine(map);
   }
 
   sync(config: LayerConfigState): void {
@@ -33,6 +39,7 @@ export class LayerEngine {
     const activeGroupIds = new Set<string>();
     const total = config.stack.length;
     const seenPanes = new Set<string>();
+    const vectorItems: VectorItem[] = [];
 
     const ensureLayer = (
       state: { id: string; visible: boolean; opacity: number },
@@ -41,6 +48,7 @@ export class LayerEngine {
     ) => {
       const entry = catalogById.get(state.id);
       if (!entry) return;
+      if (entry.adapter === 'maplibre') return; // VectorEngine 側で処理(ここを通らない設計)
       runtimeIds.add(state.id);
 
       const paneName = LAYER_PANE_PREFIX + state.id;
@@ -69,6 +77,13 @@ export class LayerEngine {
     config.stack.forEach((item, index) => {
       const z = BASE_Z_INDEX + (total - index);
       if (item.kind === 'layer') {
+        // ベクタレイヤは pane/L.Layer を作らず VectorEngine へ
+        const entry = catalogById.get(item.id);
+        if (entry?.adapter === 'maplibre') {
+          runtimeIds.add(item.id);
+          vectorItems.push({ entry, opacity: item.opacity, visible: item.visible, z });
+          return;
+        }
         const mapPane = map.getPane('mapPane')!;
         ensureLayer(item, mapPane, z);
         return;
@@ -90,9 +105,23 @@ export class LayerEngine {
 
       const mTotal = item.members.length;
       item.members.forEach((member, mIndex) => {
+        // グループ内ベクタレイヤは pane CSS が効かないため、実効値を計算して渡す
+        const entry = catalogById.get(member.id);
+        if (entry?.adapter === 'maplibre') {
+          runtimeIds.add(member.id);
+          vectorItems.push({
+            entry,
+            opacity: member.opacity * (group?.opacity ?? 1),
+            visible: member.visible && group?.visible !== false,
+            z,
+          });
+          return;
+        }
         ensureLayer(member, gPane, 100 + (mTotal - mIndex));
       });
     });
+
+    this.syncVector(vectorItems);
 
     // 無効化されたレイヤの除去
     for (const [id, layer] of [...this.layerById]) {
@@ -120,6 +149,31 @@ export class LayerEngine {
       this.removePane(gpName);
       this.groupPaneNames.delete(gpName);
     }
+    for (const [, attribution] of this.vectorAttributions) {
+      this.map.attributionControl?.removeAttribution(attribution);
+    }
+    this.vectorAttributions.clear();
+    this.vectorEngine.destroy();
+  }
+
+  /**
+   * ベクタレイヤ一群を VectorEngine へ反映し、attribution を管理する
+   * (tileAdapter が L.tileLayer のオプションで行うのと同等の挙動)。
+   */
+  private syncVector(items: VectorItem[]): void {
+    const activeIds = new Set(items.map((item) => item.entry.id));
+    for (const [id, attribution] of [...this.vectorAttributions]) {
+      if (!activeIds.has(id)) {
+        this.map.attributionControl?.removeAttribution(attribution);
+        this.vectorAttributions.delete(id);
+      }
+    }
+    for (const item of items) {
+      if (this.vectorAttributions.has(item.entry.id)) continue;
+      this.map.attributionControl?.addAttribution(item.entry.attribution);
+      this.vectorAttributions.set(item.entry.id, item.entry.attribution);
+    }
+    this.vectorEngine.sync(items);
   }
 
   private removePane(name: string): void {

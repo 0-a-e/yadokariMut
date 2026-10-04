@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Literal
+
+from store.source_catalog import load_app_config
 
 HttpMode = Literal["off", "fallback", "always_proxy"]
 
@@ -67,11 +68,8 @@ def load_http_settings(config: dict[str, Any] | None = None) -> HttpFetchSetting
         or cfg_http.get("timeout_seconds")
         or 45
     )
-    cooldown = float(
-        os.environ.get("SCRAPE_PROXY_COOLDOWN_SECONDS")
-        or cfg_http.get("cooldown_seconds")
-        or 600
-    )
+    # cooldown は env でなく config.json / scrape_settings(DB上書き)で管理する
+    cooldown = float(cfg_http.get("cooldown_seconds") or 600)
 
     restriction = cfg_http.get("restriction") or {}
     status_codes = restriction.get("status_codes") or [403, 429, 503]
@@ -106,12 +104,6 @@ def load_http_settings(config: dict[str, Any] | None = None) -> HttpFetchSetting
 
 
 def _load_config_http_block() -> dict[str, Any]:
-    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config.json")
-    path = os.path.abspath(path)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        block = data.get("http")
-        return block if isinstance(block, dict) else {}
-    except Exception:
-        return {}
+    """config.json の http ブロック(load_app_config 経由の唯一の入口)。"""
+    block = load_app_config().get("http")
+    return block if isinstance(block, dict) else {}

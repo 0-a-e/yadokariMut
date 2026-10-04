@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from typing import Any, Mapping, Optional, Sequence, Union
+from typing import Any, Mapping, Sequence, Union
 
 from domain.models import Campaign, PricePlan
 
@@ -727,3 +727,39 @@ def duration_for_plan_key(plan_key: str, source: str = "bratto") -> tuple[int, i
     key = plan_key.lower().strip()
     bands = UNION_DURATION_BANDS if source == "unionmonthly" else BRATTO_DURATION_BANDS
     return bands.get(key, (1, None))
+
+
+# ---------------------------------------------------------------------------
+# Plan code vocabularies (parser-side label → plan_key)
+# ---------------------------------------------------------------------------
+
+# BraTTo プラン名の語彙 → plan_code。語彙は BRATTO_DURATION_BANDS と同一系。
+# 「sショート」に「ショート」が部分一致するため、s_short を必ず先に判定する
+# (辞書の挿入順がマッチ優先度を決める)。未一致はパーサ側で "other"。
+BRATTO_PLAN_CODE_MAP: dict[str, tuple[str, ...]] = {
+    "s_short": ("sショート", "s-short", "1ヶ月未満"),
+    "short": ("ショート", "1ヶ月~3ヶ月", "1～3ヶ月"),
+    "middle": ("ミドル", "3ヶ月～6ヶ月", "3～6ヶ月"),
+    "long": ("ロング", "6ヶ月以上"),
+}
+
+
+def resolve_bratto_plan_code(plan_name: str) -> str:
+    """BraTTo プラン表示名 → plan_code (未一致は "other")。"""
+    name_lower = (plan_name or "").lower()
+    for code, keywords in BRATTO_PLAN_CODE_MAP.items():
+        if any(kw in name_lower for kw in keywords):
+            return code
+    return "other"
+
+
+# Union Monthly のプランタブ表示名 → plan_key。語彙は UNION_DURATION_BANDS と同一系。
+# タブ名が未知のときのフォールバック(key 正規化)はパーサ側で行う。
+UNION_PLAN_CODE_MAP: dict[str, str] = {
+    "ショート": "short",
+    "ミドル": "middle",
+    "ロング": "long",
+    "スーパーショート": "s_short",
+    "sショート": "s_short",
+    "セミショート": "semi_short",
+}

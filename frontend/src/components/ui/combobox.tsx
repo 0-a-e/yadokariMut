@@ -1,7 +1,7 @@
 import * as React from "react"
 import { Combobox as ComboboxPrimitive } from "@base-ui/react/combobox"
 
-import { cn } from "@/lib/utils"
+import { cn } from "@/lib/utils.ts"
 import { LuCheck, LuX } from "react-icons/lu"
 
 export interface MultiComboboxItem {

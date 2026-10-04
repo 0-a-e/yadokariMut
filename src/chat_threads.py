@@ -8,16 +8,14 @@ from typing import Any, Dict, List, Optional
 
 import aiosqlite
 
-logger = logging.getLogger(__name__)
+from agent.checkpointer import checkpoint_db_path, get_checkpointer
 
-_CHECKPOINT_DB = os.environ.get(
-    "YADOKARIMUT_CHECKPOINT_DB",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "agent_checkpoints.db"),
-)
+logger = logging.getLogger(__name__)
 
 
 def _checkpoint_db_path() -> str:
-    return os.path.abspath(_CHECKPOINT_DB)
+    # チェックポイント DB パスの正本は agent.checkpointer (agent_service と共有)
+    return checkpoint_db_path()
 
 
 async def list_threads(limit: int = 100) -> List[Dict[str, Any]]:
@@ -136,8 +134,6 @@ def _message_to_dict(msg: Any) -> Optional[Dict[str, Any]]:
 async def get_thread_messages(thread_id: str) -> List[Dict[str, Any]]:
     """Load messages for a thread from the latest checkpoint via AsyncSqliteSaver."""
     try:
-        from agent_service import get_checkpointer
-
         cp = await get_checkpointer()
         config = {"configurable": {"thread_id": thread_id}}
         tup = await cp.aget_tuple(config)
@@ -159,8 +155,6 @@ async def get_thread_messages(thread_id: str) -> List[Dict[str, Any]]:
 async def delete_thread(thread_id: str) -> Dict[str, Any]:
     """Delete all checkpoints for a thread."""
     try:
-        from agent_service import get_checkpointer
-
         cp = await get_checkpointer()
         if hasattr(cp, "adelete_thread"):
             await cp.adelete_thread(thread_id)

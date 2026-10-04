@@ -1,7 +1,8 @@
-"""Registry mapping source_id -> SourceAdapter class."""
+"""Registry mapping source_id -> SourceAdapter class (lazy import)."""
 
 from __future__ import annotations
 
+import importlib
 from typing import TYPE_CHECKING, Optional, Type
 
 if TYPE_CHECKING:
@@ -10,6 +11,15 @@ if TYPE_CHECKING:
 
 class SourceRegistry:
     _adapters: dict[str, Type["SourceAdapter"]] = {}
+
+    # source_id → アダプタモジュール。get()/create()/get_all() 呼び出し時に
+    # ensure_loaded() が importlib で遅延 import し、@register の副作用登録を
+    # 走らせる。新ソース追加時はここにモジュールパスを追記する
+    # (明示 import しなくても Registry 経由で解決できるようにするため)。
+    _adapter_modules: dict[str, str] = {
+        "bratto": "sources.bratto.adapter",
+        "unionmonthly": "sources.unionmonthly.adapter",
+    }
 
     @classmethod
     def register(cls, source_id: str):
@@ -20,11 +30,26 @@ class SourceRegistry:
         return decorator
 
     @classmethod
+    def ensure_loaded(cls) -> None:
+        """アダプタモジュールを遅延 import して登録を保証する。
+
+        ``import sources`` 単独では副作用登録が走らないため、
+        Registry 経由の参照(get/create/get_all)がこの地点で
+        アダプタを解決できるようにする。
+        """
+        for source_id, module_name in cls._adapter_modules.items():
+            if source_id in cls._adapters:
+                continue
+            importlib.import_module(module_name)
+
+    @classmethod
     def get(cls, source_id: str) -> Optional[Type["SourceAdapter"]]:
+        cls.ensure_loaded()
         return cls._adapters.get(source_id.lower())
 
     @classmethod
     def get_all(cls) -> dict[str, Type["SourceAdapter"]]:
+        cls.ensure_loaded()
         return dict(cls._adapters)
 
     @classmethod

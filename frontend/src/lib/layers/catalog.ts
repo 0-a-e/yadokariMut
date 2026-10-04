@@ -1,4 +1,22 @@
-import type { LayerCatalogEntry } from './types';
+import { LAYER_TAGS } from './types.ts';
+import type { LayerCatalogEntry, LayerTag, VectorLayerDef } from './types.ts';
+import gsiStdVectorStyle from './styles/gsi_std_vector.json';
+import gsiContoursStyle from './styles/gsi_contours.json';
+
+/** ベンダリングしたGSIスタイル断片(scripts/vendor-gsi-style.mjs 生成)を VectorLayerDef へ */
+function toVectorDef(style: {
+  sources: Record<string, unknown>;
+  layers: unknown[];
+  glyphs?: string;
+  sprite?: string;
+}): VectorLayerDef {
+  return {
+    sources: style.sources as VectorLayerDef['sources'],
+    layers: style.layers,
+    glyphs: style.glyphs,
+    sprite: style.sprite,
+  };
+}
 
 /**
  * レイヤカタログ。ズーム値は地理院地図の公式レイヤ定義
@@ -467,18 +485,350 @@ export const LAYER_CATALOG: LayerCatalogEntry[] = [
     defaultOpacity: 1,
     settings: ['defaultOpacity', 'clustering'],
   },
+
+  // ── ベクタタイル(MapLibre GL。VectorEngine が単一canvasで描画) ──
+  {
+    id: 'gsi_std_vector',
+    name: '標準地図ベクタ (国土地理院)',
+    tags: ['basemap'],
+    adapter: 'maplibre',
+    attribution: GSI_ATTR,
+    role: 'base',
+    vector: toVectorDef(gsiStdVectorStyle),
+    description:
+      '地理院の最適化ベクトルタイル(試験公開)。ラスタ版「標準地図」との併用切り替え可能',
+    note: '試験公開のため、提供URL・内容が変わる可能性があります',
+  },
+  {
+    id: 'gsi_contours',
+    name: '等高線ベクタ (国土地理院)',
+    tags: ['terrain'],
+    adapter: 'maplibre',
+    attribution: GSI_ATTR,
+    vector: toVectorDef(gsiContoursStyle),
+    defaultOpacity: 0.9,
+    description: 'ベクタタイルの等高線。ラスタの陰影図・色別標高図と重ねられる',
+    legend: [
+      { color: 'rgb(200,160,60)', label: '計曲線(50m間隔・太線)' },
+      { color: 'rgb(200,160,60)', label: '主曲線(細線)' },
+    ],
+  },
+
+  // ── 国土数値情報(MLIT NLFTP)。scripts/ksj パイプラインで生成した
+  //    PMTiles を /api/tiles/{code}/{z}/{x}/{y}.pbf で配信(ZXY直参照)。
+  //    凡例の色は OH3 (refs/oh3-layers) の attribution 内凡例に準拠。
+  {
+    id: 'ksj_n03',
+    name: '行政区域 (国土数値情報 2024)',
+    tags: ['admin'],
+    adapter: 'maplibre',
+    attribution:
+      '出典: <a href="https://nlftp.mlit.go.jp/ksj/" target="_blank" rel="noopener">国土数値情報(行政区域)</a>',
+    vector: {
+      sources: {
+        n03: { type: 'vector', tiles: ['/api/tiles/n03/{z}/{x}/{y}.pbf'], minzoom: 4, maxzoom: 13 },
+      },
+      layers: [
+        {
+          id: 'n03-fill',
+          type: 'fill',
+          source: 'n03',
+          'source-layer': 'polygon',
+          paint: { 'fill-color': '#9575cd', 'fill-opacity': 1 },
+        },
+      ],
+    },
+    description:
+      '都道府県・市区町村の行政界(面)。2024年(令和6年)版の47都道府県分を結合。北海道の支庁・振興局界を含む',
+    note: '生成: 2026-09-16 (scripts/ksj)',
+    defaultOpacity: 0.5,
+  },
+  {
+    id: 'ksj_l01',
+    name: '地価公示 (国土数値情報 2026)',
+    tags: ['realestate'],
+    adapter: 'maplibre',
+    attribution:
+      '出典: <a href="https://nlftp.mlit.go.jp/ksj/" target="_blank" rel="noopener">国土数値情報(地価公示)</a>',
+    vector: {
+      sources: {
+        l01: { type: 'vector', tiles: ['/api/tiles/l01/{z}/{x}/{y}.pbf'], minzoom: 4, maxzoom: 7 },
+      },
+      layers: [
+        {
+          id: 'l01-circle',
+          type: 'circle',
+          source: 'l01',
+          'source-layer': 'point',
+          paint: {
+            'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 2, 16, 5],
+            'circle-color': [
+              'step',
+              ['get', 'L01_008'],
+              'rgb(245,245,81)',
+              100000,
+              'rgb(239,211,71)',
+              250000,
+              'rgb(235,178,61)',
+              500000,
+              'rgb(231,145,52)',
+              750000,
+              'rgb(226,84,39)',
+              1000000,
+              'rgb(225,61,35)',
+              10000000,
+              'rgb(225,49,33)',
+            ],
+            'circle-opacity': 1,
+          },
+        },
+      ],
+    },
+    description:
+      '2026年(令和8年)地価公示の標準地 約2.6万点(全国)。色は現況価格(円/m²)による7段階。標準地名・所在地を属性に持つ',
+    note: '生成: 2026-09-16 (scripts/ksj)',
+    defaultOpacity: 1,
+    legend: [
+      { color: 'rgb(225,49,33)', label: '1000万円以上/m²' },
+      { color: 'rgb(225,61,35)', label: '100万〜1000万円/m²' },
+      { color: 'rgb(226,84,39)', label: '75万〜100万円/m²' },
+      { color: 'rgb(231,145,52)', label: '50万〜75万円/m²' },
+      { color: 'rgb(235,178,61)', label: '25万〜50万円/m²' },
+      { color: 'rgb(239,211,71)', label: '10万〜25万円/m²' },
+      { color: 'rgb(245,245,81)', label: '10万円未満/m²' },
+    ],
+  },
+  {
+    id: 'ksj_a29',
+    name: '用途地域 (国土数値情報 2019)',
+    tags: ['urbanplanning'],
+    adapter: 'maplibre',
+    attribution:
+      '出典: <a href="https://nlftp.mlit.go.jp/ksj/" target="_blank" rel="noopener">国土数値情報(用途地域)</a>',
+    vector: {
+      sources: {
+        a29: { type: 'vector', tiles: ['/api/tiles/a29/{z}/{x}/{y}.pbf'], minzoom: 4, maxzoom: 12 },
+      },
+      layers: [
+        {
+          id: 'a29-fill',
+          type: 'fill',
+          source: 'a29',
+          'source-layer': 'polygon',
+          paint: {
+            'fill-color': [
+              'match',
+              ['get', 'A29_004'],
+              1,
+              'rgb(0,180,0)',
+              2,
+              'rgb(60,190,90)',
+              3,
+              'rgb(100,200,100)',
+              4,
+              'rgb(150,220,150)',
+              5,
+              'rgb(200,240,200)',
+              6,
+              'rgb(200,240,200)',
+              7,
+              'rgb(255,230,180)',
+              8,
+              'rgb(255,180,180)',
+              9,
+              'rgb(255,100,100)',
+              10,
+              'rgb(200,150,255)',
+              11,
+              'rgb(150,150,200)',
+              12,
+              'rgb(100,100,180)',
+              'rgb(204,204,204)',
+            ],
+            'fill-opacity': 1,
+          },
+        },
+      ],
+    },
+    description:
+      '都市計画法に基づく用途地域の指定範囲(2019年・令和元年調査、全国結合)。住居系から工業専用まで12区分(A29_004)で色分け',
+    note: '生成: 2026-09-16 (scripts/ksj)',
+    defaultOpacity: 0.5,
+    legend: [
+      { color: 'rgb(0,180,0)', label: '第1種低層住居専用地域' },
+      { color: 'rgb(60,190,90)', label: '第2種低層住居専用地域' },
+      { color: 'rgb(100,200,100)', label: '第1種中高層住居専用地域' },
+      { color: 'rgb(150,220,150)', label: '第2種中高層住居専用地域' },
+      { color: 'rgb(200,240,200)', label: '第1種・第2種住居地域' },
+      { color: 'rgb(255,230,180)', label: '準住居地域' },
+      { color: 'rgb(255,180,180)', label: '近隣商業地域' },
+      { color: 'rgb(255,100,100)', label: '商業地域' },
+      { color: 'rgb(200,150,255)', label: '準工業地域' },
+      { color: 'rgb(150,150,200)', label: '工業地域' },
+      { color: 'rgb(100,100,180)', label: '工業専用地域' },
+    ],
+  },
+  {
+    id: 'ksj_a09',
+    name: '都市地域 (国土数値情報 2018)',
+    tags: ['urbanplanning'],
+    adapter: 'maplibre',
+    attribution:
+      '出典: <a href="https://nlftp.mlit.go.jp/ksj/" target="_blank" rel="noopener">国土数値情報(都市地域)</a>',
+    vector: {
+      sources: {
+        a09: { type: 'vector', tiles: ['/api/tiles/a09/{z}/{x}/{y}.pbf'], minzoom: 4, maxzoom: 12 },
+      },
+      layers: [
+        {
+          id: 'a09-fill',
+          type: 'fill',
+          source: 'a09',
+          'source-layer': 'polygon',
+          paint: {
+            'fill-color': [
+              'match',
+              ['get', 'layer_no'],
+              1,
+              'rgb(173,216,230)',
+              2,
+              'rgb(255,200,150)',
+              3,
+              'rgb(150,220,150)',
+              4,
+              'rgb(230,230,210)',
+              'rgb(204,204,204)',
+            ],
+            'fill-opacity': 1,
+          },
+        },
+      ],
+    },
+    description:
+      '都市計画区域の区域区分(線引き)。2018年(平成30年)調べ・全国結合。都市計画区域/市街化区域/市街化調整区域/区域区分未定を色分け',
+    note: '生成: 2026-09-16 (scripts/ksj)',
+    defaultOpacity: 0.5,
+    legend: [
+      { color: 'rgb(173,216,230)', label: '都市計画区域' },
+      { color: 'rgb(255,200,150)', label: '市街化区域' },
+      { color: 'rgb(150,220,150)', label: '市街化調整区域' },
+      { color: 'rgb(230,230,210)', label: '区域区分が定められていない都市計画区域' },
+    ],
+  },
+  {
+    id: 'ksj_n02',
+    name: '鉄道 (国土数値情報 2025)',
+    tags: ['transport'],
+    adapter: 'maplibre',
+    attribution:
+      '出典: <a href="https://nlftp.mlit.go.jp/ksj/" target="_blank" rel="noopener">国土数値情報(鉄道)</a>',
+    vector: {
+      sources: {
+        n02: { type: 'vector', tiles: ['/api/tiles/n02/{z}/{x}/{y}.pbf'], minzoom: 4, maxzoom: 10 },
+      },
+      layers: [
+        {
+          id: 'n02-line',
+          type: 'line',
+          source: 'n02',
+          'source-layer': 'line',
+          paint: {
+            'line-color': '#555555',
+            'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.8, 14, 2],
+            'line-opacity': 1,
+          },
+        },
+      ],
+    },
+    description:
+      '鉄道路線・駅構内のライン(2025年・令和7年版、全国)。路線名・事業者名(N02_003/N02_004)を属性に持つ',
+    note: '生成: 2026-09-16 (scripts/ksj)',
+    defaultOpacity: 0.9,
+  },
+  {
+    id: 'ksj_s12',
+    name: '駅別乗降客数 (国土数値情報 2024)',
+    tags: ['transport'],
+    adapter: 'maplibre',
+    attribution:
+      '出典: <a href="https://nlftp.mlit.go.jp/ksj/" target="_blank" rel="noopener">国土数値情報(駅別乗降客数)</a>',
+    vector: {
+      sources: {
+        s12: { type: 'vector', tiles: ['/api/tiles/s12/{z}/{x}/{y}.pbf'], minzoom: 4, maxzoom: 9 },
+      },
+      layers: [
+        {
+          id: 's12-line',
+          type: 'line',
+          source: 's12',
+          'source-layer': 'line',
+          paint: {
+            'line-color': [
+              'step',
+              ['get', 'S12_004'],
+              'hsl(240,100%,50%)',
+              100,
+              'hsl(230,100%,55%)',
+              300,
+              'hsl(220,100%,60%)',
+              500,
+              'hsl(210,100%,65%)',
+              1000,
+              'hsl(200,100%,70%)',
+              5000,
+              'hsl(180,100%,50%)',
+              20000,
+              'hsl(150,100%,50%)',
+              100000,
+              'hsl(120,100%,50%)',
+              500000,
+              'hsl(60,100%,50%)',
+              1200000,
+              'hsl(0,100%,50%)',
+            ],
+            'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.8, 14, 2],
+            'line-opacity': 1,
+          },
+        },
+      ],
+    },
+    description:
+      '駅ごとの1日平均乗降客数(2024年・令和6年、全国)。駅構内のラインを乗降客数10段階で色分け。駅名・路線名・事業者名を属性に持つ',
+    note: '生成: 2026-09-16 (scripts/ksj)',
+    defaultOpacity: 0.9,
+    legend: [
+      { color: 'hsl(240,100%,50%)', label: '0 - 99人' },
+      { color: 'hsl(230,100%,55%)', label: '100 - 299人' },
+      { color: 'hsl(220,100%,60%)', label: '300 - 499人' },
+      { color: 'hsl(210,100%,65%)', label: '500 - 999人' },
+      { color: 'hsl(200,100%,70%)', label: '1000 - 4999人' },
+      { color: 'hsl(180,100%,50%)', label: '5000 - 19999人' },
+      { color: 'hsl(150,100%,50%)', label: '20000 - 99999人' },
+      { color: 'hsl(120,100%,50%)', label: '100000 - 499999人' },
+      { color: 'hsl(60,100%,50%)', label: '500000 - 1199999人' },
+      { color: 'hsl(0,100%,50%)', label: '1200000人+' },
+    ],
+  },
 ];
 
 export const catalogById: ReadonlyMap<string, LayerCatalogEntry> = new Map(
   LAYER_CATALOG.map((entry) => [entry.id, entry]),
 );
 
-/** カタログのうち未有効のレイヤ(無効リスト表示用)。タグ→名前順 */
+/** タグ→LAYER_TAGS定義順のインデックス(未定義タグは最後尾にソート) */
+const TAG_ORDER: ReadonlyMap<LayerTag, number> = new Map(
+  LAYER_TAGS.map((t, i) => [t.id, i] as const),
+);
+
+/** カタログのうち未有効のレイヤ(無効リスト表示用)。タグ定義順→名前順 */
 export function disabledEntries(enabledIds: ReadonlySet<string>): LayerCatalogEntry[] {
+  const last = LAYER_TAGS.length;
+  const orderOf = (tag: LayerTag | undefined): number =>
+    tag != null ? (TAG_ORDER.get(tag) ?? last) : last;
   return LAYER_CATALOG.filter((entry) => !enabledIds.has(entry.id)).sort((a, b) => {
-    const tagA = a.tags[0] ?? 'zz';
-    const tagB = b.tags[0] ?? 'zz';
-    if (tagA !== tagB) return tagA < tagB ? -1 : 1;
+    const orderA = orderOf(a.tags[0]);
+    const orderB = orderOf(b.tags[0]);
+    if (orderA !== orderB) return orderA - orderB;
     return a.name.localeCompare(b.name, 'ja');
   });
 }

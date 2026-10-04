@@ -1,9 +1,9 @@
 import { useAgentContext } from "@copilotkit/react-core/v2";
-import { BoundsData, MapFilters, PropertyFeature } from "../types";
-import { calcStayDays } from "../lib/rentCalculator";
-import type { LayerConfigState } from "../lib/layers/types";
-import { flattenStack } from "../lib/layers/state";
-import { catalogById } from "../lib/layers/catalog";
+import { BoundsData, MapFilters, PropertyFeature } from "../types.ts";
+import { calcStayDays } from "../lib/rentCalculator.ts";
+import type { LayerConfigState } from "../lib/layers/types.ts";
+import { flattenStack } from "../lib/layers/state.ts";
+import { catalogById } from "../lib/layers/catalog.ts";
 
 interface MapState {
   center: [number, number] | null;
@@ -43,16 +43,17 @@ export function useCopilotMapContext(
     value: selectedFeature
       ? {
           id: selectedFeature.properties.id,
-          title: selectedFeature.properties.title,
-          address: selectedFeature.properties.address,
+          // 生成型では BE 応答キーが null/欠損を許すため、コンテキスト用に null へ正規化する
+          title: selectedFeature.properties.title ?? null,
+          address: selectedFeature.properties.address ?? null,
           prefecture: selectedFeature.properties.prefecture_name ?? null,
-          catalogMinPlanTotal: selectedFeature.properties.min_plan_total,
+          catalogMinPlanTotal: selectedFeature.properties.min_plan_total ?? null,
           stayTotalYen: selEst?.stayTotalYen ?? null,
           stayDays: selEst?.stayDays ?? null,
-          layout: selectedFeature.properties.layout,
-          area: selectedFeature.properties.area_m2,
-          walkMinutes: selectedFeature.properties.min_walk_minutes,
-          score: selectedFeature.properties.total_score,
+          layout: selectedFeature.properties.layout ?? null,
+          area: selectedFeature.properties.area_m2 ?? null,
+          walkMinutes: selectedFeature.properties.min_walk_minutes ?? null,
+          score: selectedFeature.properties.total_score ?? null,
           shortlistStatus: selectedFeature.properties.shortlist_status,
           isActive: selectedFeature.properties.is_active !== false,
         }
@@ -83,7 +84,8 @@ export function useCopilotMapContext(
       layout: filters.layout,
       status: filters.status,
       searchQuery: filters.searchQuery,
-      boundsEnabled: filters.boundsEnabled,
+      areaMode: filters.areaMode,
+      drawnShape: filters.drawnPolygon != null,
       maxWalkMinutes: filters.maxWalkMinutes,
       minScore: filters.minScore,
       prefecture: filters.prefecture,
@@ -96,20 +98,20 @@ export function useCopilotMapContext(
       visiblePropertyIds: filteredFeatures.slice(0, 15).map((f) => f.properties.id),
       topProperties: filteredFeatures.slice(0, 5).map((f) => ({
         id: f.properties.id,
-        title: f.properties.title,
-        score: f.properties.total_score,
+        title: f.properties.title ?? null,
+        score: f.properties.total_score ?? null,
         stayTotalYen: f.properties.stay_estimate?.stayTotalYen ?? null,
-        catalogMinPlanTotal: f.properties.min_plan_total,
-        catalogDailyYen: f.properties.min_daily_rent,
-        layout: f.properties.layout,
-        walk: f.properties.min_walk_minutes,
+        catalogMinPlanTotal: f.properties.min_plan_total ?? null,
+        catalogDailyYen: f.properties.min_daily_rent ?? null,
+        layout: f.properties.layout ?? null,
+        walk: f.properties.min_walk_minutes ?? null,
       })),
       savedProperties: savedList.slice(0, 10).map((f) => ({
         id: f.properties.id,
-        title: f.properties.title,
+        title: f.properties.title ?? null,
         stayTotalYen: f.properties.stay_estimate?.stayTotalYen ?? null,
-        catalogDailyYen: f.properties.min_daily_rent,
-        score: f.properties.total_score,
+        catalogDailyYen: f.properties.min_daily_rent ?? null,
+        score: f.properties.total_score ?? null,
         shortlistComment: f.properties.shortlist_comment ?? null,
         isActive: f.properties.is_active !== false,
       })),

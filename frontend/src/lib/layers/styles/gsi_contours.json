@@ -1,0 +1,161 @@
+{
+  "version": 8,
+  "metadata": {
+    "yadokari:source": "https://gsi-cyberjapan.github.io/optimal_bvmap/style/std.json",
+    "yadokari:repository": "https://github.com/gsi-cyberjapan/optimal_bvmap",
+    "yadokari:generatedAt": "2026-09-16",
+    "yadokari:note": "std.json から等高線(source-layer Cntr)のみ抽出"
+  },
+  "glyphs": "https://gsi-cyberjapan.github.io/optimal_bvmap/glyphs/{fontstack}/{range}.pbf",
+  "sources": {
+    "gsi-bvmap": {
+      "type": "vector",
+      "minzoom": 4,
+      "maxzoom": 16,
+      "tiles": [
+        "https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/{z}/{x}/{y}.pbf"
+      ],
+      "attribution": "国土地理院最適化ベクトルタイル(標準地図風スタイル)"
+    }
+  },
+  "layers": [
+    {
+      "id": "gsi-ctr:等高線",
+      "type": "line",
+      "source": "gsi-bvmap",
+      "source-layer": "Cntr",
+      "paint": {
+        "line-color": "rgb(200,160,60)",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          9,
+          0.7,
+          12,
+          0.7,
+          13,
+          [
+            "case",
+            [
+              "==",
+              [
+                "%",
+                [
+                  "get",
+                  "vt_alti"
+                ],
+                50
+              ],
+              0
+            ],
+            1.4,
+            0.7
+          ]
+        ],
+        "line-opacity": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          9,
+          0,
+          10,
+          [
+            "case",
+            [
+              "==",
+              [
+                "%",
+                [
+                  "get",
+                  "vt_alti"
+                ],
+                50
+              ],
+              0
+            ],
+            1,
+            0
+          ],
+          14,
+          [
+            "case",
+            [
+              "==",
+              [
+                "%",
+                [
+                  "get",
+                  "vt_alti"
+                ],
+                50
+              ],
+              0
+            ],
+            1,
+            0
+          ],
+          15,
+          1,
+          16,
+          [
+            "case",
+            [
+              "==",
+              [
+                "get",
+                "vt_code"
+              ],
+              7353
+            ],
+            0,
+            1
+          ]
+        ]
+      }
+    },
+    {
+      "id": "gsi-ctr:等高線数値部",
+      "type": "symbol",
+      "source": "gsi-bvmap",
+      "source-layer": "Cntr",
+      "filter": [
+        "==",
+        [
+          "get",
+          "vt_code"
+        ],
+        7352
+      ],
+      "layout": {
+        "text-allow-overlap": true,
+        "text-ignore-placement": true,
+        "symbol-placement": "line-center",
+        "text-pitch-alignment": "viewport",
+        "text-rotation-alignment": "map",
+        "text-size": 13,
+        "text-font": [
+          "NotoSansJP-Regular"
+        ],
+        "text-max-angle": 360,
+        "text-field": [
+          "get",
+          "vt_alti"
+        ]
+      },
+      "paint": {
+        "text-color": "rgba(200, 160, 60,1)",
+        "text-halo-color": "rgba(255,255,255,1)",
+        "text-halo-width": 1.5
+      }
+    }
+  ]
+}

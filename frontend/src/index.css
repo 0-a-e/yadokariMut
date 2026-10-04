@@ -35,6 +35,14 @@
   --text-9xl: calc(8rem * var(--font-scale));
 }
 
+/* ライトボックスのステージ幅/高さ計算に使うアスペクト比変数。
+   @property登録により数値として遷移可能になり、画像切替時に枠がモーフする */
+@property --lb-ar {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 1.5;
+}
+
 /* ── CSS Custom Properties ── */
 :root {
     --font-scale: 1.125;
@@ -206,6 +214,12 @@ body {
     box-shadow: -4px 4px 12px rgba(133, 77, 255, 0.6);
     border-color: var(--accent);
 }
+/* サイドバーホバー連動(.activeと区別しアクセントグロー) */
+.marker-pin.hovered {
+    transform: rotate(-45deg) scale(1.2);
+    box-shadow: -4px 4px 12px rgba(0, 242, 254, 0.6);
+    border-color: var(--accent);
+}
 .marker-label {
     position: absolute;
     color: #fff;
@@ -219,6 +233,39 @@ body {
     margin: -16px 0 0 -16px;
     line-height: 30px;
     pointer-events: none;
+}
+
+/* ── サイドバーホバー連動: クラスタ内ゴーストピン+親クラスタリング ── */
+.ghost-pin {
+    position: relative;
+    width: 12px;
+    height: 12px;
+    margin: 4px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid #fff;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+    animation: ghost-pin-blink 1.2s ease-in-out infinite;
+}
+.ghost-pin::before {
+    content: '';
+    position: absolute;
+    inset: -7px;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    animation: ghost-pin-pulse 1.2s ease-out infinite;
+}
+@keyframes ghost-pin-pulse {
+    0% { transform: scale(0.55); opacity: 0.9; }
+    100% { transform: scale(1.5); opacity: 0; }
+}
+@keyframes ghost-pin-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.75; }
+}
+.marker-cluster.marker-cluster--hover {
+    box-shadow: 0 0 0 3px var(--accent), 0 0 16px rgba(0, 242, 254, 0.65);
+    border-color: var(--accent) !important;
 }
 
 /* ── Detail Panel Mobile Handle ── */
@@ -473,22 +520,6 @@ body {
     color: var(--primary);
 }
 
-/* ── Lightbox Image Animation ── */
-.lightbox-img {
-    max-width: 100%;
-    max-height: 80vh;
-    max-height: 80dvh;
-    object-fit: contain;
-    border-radius: 8px;
-    box-shadow: 0 0 30px rgba(0, 0, 0, 0.8);
-    border: 1px solid var(--border-color);
-    animation: zoom 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-@keyframes zoom {
-    from { transform: scale(0.95); opacity: 0; }
-    to { transform: scale(1); opacity: 1; }
-}
-
 /* ── CopilotKit Additional Custom Overrides ── */
 
 /* Fix tool call status cards (dark background with readable text) */
@@ -741,5 +772,20 @@ body {
   html {
     @apply font-sans;
     font-size: calc(16px * var(--font-scale));
+  }
+}
+/* 囲み描画中はマーカーが地図クリックを奪わないようにする
+   (.leaflet-interactive が pointer-events: auto を明示持つため上書きが必要) */
+.leaflet-draw-active .leaflet-marker-icon.leaflet-interactive {
+  pointer-events: none;
+}
+
+/* 初期ロード進捗バーの非確定アニメーション(GeojsonLoadProgress) */
+@keyframes geojson-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
   }
 }

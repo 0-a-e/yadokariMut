@@ -1,5 +1,5 @@
-import type { BaseLayerId, LayerConfigState, LayerGroup, LayerRuntime, StackItem } from './types';
-import { catalogById } from './catalog';
+import type { BaseLayerId, LayerConfigState, LayerGroup, LayerRuntime, StackItem } from './types.ts';
+import { catalogById } from './catalog.ts';
 
 const STORAGE_KEY = 'yadokari:layers';
 
@@ -438,54 +438,13 @@ export function saveLayerConfig(config: LayerConfigState): void {
   }
 }
 
-function migrateV1(parsed: {
-  layers?: Array<{ id: string; visible?: unknown; opacity?: unknown; groupId?: unknown }>;
-  groups?: Array<{ id: string; name: string; visible?: unknown; opacity?: unknown; collapsed?: unknown }>;
-}): LayerConfigState {
-  const groups: LayerGroup[] = (Array.isArray(parsed.groups) ? parsed.groups : [])
-    .filter((g) => typeof g?.id === 'string' && typeof g?.name === 'string')
-    .map((g) => ({
-      id: g.id,
-      name: g.name,
-      visible: g.visible !== false,
-      opacity: clamp01(g.opacity),
-      collapsed: g.collapsed === true,
-    }));
-  const groupIds = new Set(groups.map((g) => g.id));
-
-  // v1の平坦配列を走査し、groupId持ちレイヤは「最初に現れた位置」にグループブロックを錨で作る
-  const stack: StackItem[] = [];
-  const blockOf = new Map<string, { kind: 'group'; groupId: string; members: LayerRuntime[] }>();
-  for (const l of Array.isArray(parsed.layers) ? parsed.layers : []) {
-    if (!l || typeof l.id !== 'string' || !catalogById.has(l.id)) continue;
-    const runtime: LayerRuntime = { id: l.id, visible: l.visible !== false, opacity: clamp01(l.opacity) };
-    const gid = typeof l.groupId === 'string' && groupIds.has(l.groupId) ? l.groupId : undefined;
-    if (!gid) {
-      stack.push({ kind: 'layer', ...runtime });
-      continue;
-    }
-    let block = blockOf.get(gid);
-    if (!block) {
-      block = { kind: 'group', groupId: gid, members: [] };
-      blockOf.set(gid, block);
-      stack.push(block);
-    }
-    block.members.push(runtime);
-  }
-  // メンバー0でメタデータだけあるグループも空ブロックとして末尾に置く
-  for (const g of groups) {
-    if (!blockOf.has(g.id)) stack.push({ kind: 'group', groupId: g.id, members: [] });
-  }
-  return { v: 2, stack, groups };
-}
-
 function normalizeLoadedConfig(parsed: unknown): LayerConfigState {
   if (!parsed || typeof parsed !== 'object') return createDefaultLayerConfig();
   const p = parsed as { v?: unknown; layers?: unknown; stack?: unknown; groups?: unknown };
 
-  // v1なら移行
+  // v2以外のペイロード(v1形式・破損含む)はデフォルト設定へフォールバック
   if (p.v !== 2 || !Array.isArray(p.stack)) {
-    return migrateV1(p as Parameters<typeof migrateV1>[0]);
+    return createDefaultLayerConfig();
   }
 
   const groups: LayerGroup[] = (Array.isArray(p.groups) ? p.groups : [])

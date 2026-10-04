@@ -1,118 +1,171 @@
-export interface RentPlan {
-  plan_code?: string | null;
-  plan_name: string;
-  duration_text?: string | null;
-  available: boolean;
-  discounted_daily_rent_yen: number | null;
-  original_daily_rent_yen: number | null;
-  campaign_label: string | null;
-  discounted_total_yen: number | null;
-  total_period_days: number | null;
-  management_fee_daily_yen: number | null;
-  cleaning_fee_yen: number | null;
-  /** Active-campaign-aware daily rent (falls back to original when expired) */
-  effective_daily_rent_yen?: number | null;
-  effective_total_yen?: number | null;
-  /** True when an active campaign justifies the discounted snapshot */
-  campaign_applied?: boolean;
-  campaign_expired?: boolean;
-  expired_campaign_label?: string | null;
-  effective_campaign_label?: string | null;
-  matched_campaign_type?: string | null;
-}
+/**
+ * FE 型サーフェス。
+ *
+ * BE 応答の契約正本は src/api_models.py (pydantic) であり、
+ * frontend/openapi.json (scripts/export_openapi.py が生成) を
+ * openapi-typescript で変換した src/lib/api/schema.d.ts に型として取り込む。
+ * このファイルは同名エイリアスで再輸出するため、呼び出し側は従来どおり
+ * types.ts から import すればよい。
+ *
+ * - BE 応答を直接受ける型 → 生成型のエイリアス(名前差はここで吸収)
+ * - POST ボディ(BE が意図的に未モデル化の部分マージ更新) → 引き続き手書き
+ * - FE 内部の型・定数(MapFilters 等) → 引き続きここで定義
+ */
+import type { components } from './lib/api/schema';
 
-export interface Campaign {
-  campaign_type: string;
-  title: string;
-  content: string;
-  target_period_text: string;
-  target_condition_text: string | null;
-  starts_on: string | null;
-  ends_on: string | null;
-  target_plan_code?: string;
-  is_active?: boolean;
-  /** ends_on is NULL (ongoing or unknown period) */
-  date_end_unknown?: boolean;
-  /** yen | percent | package | pokkiri | free_first_week | unknown */
-  discount_unit?: string | null;
-  discount_value?: number | null;
-  discount_max_yen?: number | null;
-  period_max_days?: number | null;
-  stay_min_days?: number | null;
-  stay_max_days?: number | null;
-  contract_within_days?: number | null;
-  package_rent_benefit_yen?: number | null;
-  package_cleaning_benefit_yen?: number | null;
-  package_fee_benefit_yen?: number | null;
-  package_total_benefit_yen?: number | null;
-  structure_source?: string | null;
-  parse_ok?: number | null;
-}
+type Schemas = components['schemas'];
 
-/** Snapshot row from property_snapshots (discounted, not effective). */
-export interface PriceHistoryPoint {
-  scraped_at: string;
-  min_discounted_daily_rent_yen: number | null;
-  min_discounted_monthly_total_yen?: number | null;
-}
+// ============================================================
+// BE 応答型(生成型のエイリアス)
+// ============================================================
 
-export interface PropertyProperties {
-  id: number;
-  room_id: string;
-  /** Multi-source site key (e.g. bratto, unionmonthly) */
-  source_site?: string | null;
-  /** Human-readable source label for badges */
-  source_display_name?: string | null;
-  title: string;
-  detail_url: string;
-  address: string;
-  prefecture_name?: string | null;
-  layout: string;
-  area_m2: number | null;
-  min_daily_rent: number | null;
-  min_plan_total: number | null;
-  min_plan_name: string | null;
-  min_walk_minutes: number | null;
-  thumbnail_url: string | null;
-  images: string[];
-  total_score: number;
-  shortlist_status: 'saved' | 'hide' | 'reject' | 'none';
-  /** false = 掲載終了（サイトから消えた物件。shortlist判定済みのみ表示される） */
-  is_active?: boolean;
-  /** 最終確認日時（掲載終了時に「最終取得時点」の参考値である旨を示す） */
-  last_seen_at?: string | null;
+export type RentPlan = Schemas['RentPlan'];
+
+export type Campaign = Schemas['Campaign'];
+
+/**
+ * Snapshot row from property_snapshots (discounted, not effective).
+ * BE は品質ガード(0.25x〜4x 参照値比)適用後の値のみ返すが、旧キャッシュ等の
+ * 欠損に備え parseDaily (lib/analysis/propertyHistory.ts) が null/NaN を
+ * 防御的に扱うため、このフィールドのみ nullable を許容する。
+ */
+export type PriceHistoryPoint = Omit<
+  Schemas['PriceHistoryPoint'],
+  'min_discounted_daily_rent_yen'
+> & { min_discounted_daily_rent_yen: number | null };
+
+/** 品質ガード(0.25x〜4x 参照値比)適用後の価格履歴メタ。破損値は BE が除外する */
+export type PriceHistoryMeta = Schemas['PriceHistoryMeta'];
+
+/** GET /api/analysis/price-trend の日次集計 1 点 */
+export type PriceTrendPoint = Schemas['PriceTrendPoint'];
+
+/** 価格変動タブの集計モード。carried=前進補完推計(既定) / scraped=当日取得分 */
+export type PriceTrendMode = 'carried' | 'scraped';
+
+/** GET /api/analysis/price-trend のレスポンス(全プロバイダ分を一括返却) */
+export type PriceTrendResponse = Schemas['PriceTrendResponse'];
+
+/** Response shape from GET /api/properties/{id}. */
+export type PropertyDetailResponse = Schemas['PropertyDetailResponse'];
+
+// ── 管理 API ──
+
+export type TransferBucket = Schemas['TransferBucket'];
+
+/** 1スクレイプrunのサマリ(GET /api/admin/status recent_runs — DB由来で再起動後も残る) */
+export type ScrapeRunSummary = Schemas['ScrapeRunSummary'];
+
+/** GET /api/admin/status */
+export type AdminStats = Schemas['AdminStatsResponse'];
+
+/** Per-prefecture (ListTarget) status under a source — GET /api/admin/sources */
+export type AdminTargetInfo = Schemas['AdminTargetInfo'];
+
+/** GET /api/admin/sources */
+export type AdminSourceInfo = Schemas['AdminSourceInfo'];
+
+export type AdminSourcesResponse = Schemas['AdminSourcesResponse'];
+
+/** 次回実行バッチのプレビュー — GET /api/admin/rotation */
+export type RotationBatchPreview = Schemas['RotationBatchPreview'];
+
+/** 県（ListTarget）ごとのローテーション状態 — GET /api/admin/rotation */
+export type RotationPrefStatus = Schemas['RotationPrefStatus'];
+
+/** ソースごとの県ローテーション状態 — GET /api/admin/rotation */
+export type RotationSourceStatus = Schemas['RotationSourceStatus'];
+
+/** GET /api/admin/rotation */
+export type RotationStatusResponse = Schemas['RotationStatusResponse'];
+
+/** ソース1件分のスクレイプ設定(実効値 + 保存済み上書き) — GET /api/admin/scrape-settings */
+export type ScrapeSourceSettings = Schemas['ScrapeSourceSettings'];
+
+/** GET /api/admin/scrape-settings */
+export type ScrapeSettingsResponse = Schemas['ScrapeSettingsResponse'];
+
+/** ソース1件分のローテーション設定(実効値 + 保存済み上書き) — GET /api/admin/rotation-settings */
+export type RotationSourceSettings = Schemas['RotationSourceSettings'];
+
+/** GET /api/admin/rotation-settings */
+export type RotationSettingsResponse = Schemas['RotationSettingsResponse'];
+
+// ── チャットスレッド API ──
+
+export type ChatThreadSummary = Schemas['ChatThreadSummary'];
+
+export type ChatThreadsResponse = Schemas['ChatThreadsResponse'];
+
+export type ChatThreadMessage = Schemas['ChatThreadMessage'];
+
+export type ChatThreadMessagesResponse = Schemas['ChatThreadMessagesResponse'];
+
+export type ChatThreadDeleteResponse = Schemas['ChatThreadDeleteResponse'];
+
+// ============================================================
+// GeoJSON
+// ============================================================
+
+/**
+ * GeoJSON Feature の properties。
+ * 生成型(= BE /api/geojson 応答)に、FE 側で付与する派生フィールドを
+ * 交差型で追加する(BE は返さない: Worker 計算値・詳細 API 由来の遅延値)。
+ */
+export type PropertyProperties = Schemas['PropertyProperties'] & {
+  /** stay モードのフィルタ結果に付与（Worker 内で計算。永続フィールドではない） */
+  stay_estimate?: StayEstimateSummary | null;
   /** Shortlist memo (from detail API; not on GeoJSON by default) */
   shortlist_comment?: string | null;
-  access_summary: string;
-  feature_summary: string;
-  station_summary: string;
-  /** 物件紹介文（POINT）。無い場合は null/空 */
-  point_text?: string | null;
-  rent_plans: RentPlan[];
-  campaigns?: Campaign[];
-  /** stay モードのフィルタ結果に付与（永続フィールドではない） */
-  stay_estimate?: StayEstimateSummary | null;
+  /**
+   * 契約事務手数料(円)。詳細API(properties 行)のみに含まれ、GeoJSON properties
+   * には無い(無い経路では計算側の既定値 5500 にフォールバック)。null = 未設定
+   */
+  contract_fee_yen?: number | null;
   /** Lazy-fetched from GET /api/properties/{id} */
   price_history?: PriceHistoryPoint[];
+};
+
+/** GeoJSON Feature 1 件 (Point)。geometry は生成型([lng, lat] の number[])をそのまま使う */
+export type PropertyFeature = Omit<Schemas['PropertyFeature'], 'properties'> & {
+  properties: PropertyProperties;
+};
+
+/** GET /api/geojson の FeatureCollection 応答(features は FE 内部契約の PropertyFeature) */
+export type PropertyGeoJSON = Omit<Schemas['PropertyGeoJSON'], 'features'> & {
+  features: PropertyFeature[];
+};
+
+// ============================================================
+// POST ボディ(BE が意図的に未モデル化の部分マージ更新。null = 既定へ戻す)
+// ============================================================
+
+/** POST /api/admin/rotation-settings (部分マージ。null で既定へ戻す) */
+export interface RotationSettingsUpdate {
+  sources: {
+    [sourceId: string]:
+      | Partial<{ daily_limit: number | null; default_est: number | null }>
+      | null;
+  };
 }
 
-/** Response shape from GET /api/properties/{id} (subset we use on FE). */
-export interface PropertyDetailResponse {
-  id: number;
-  shortlist?: {
-    status?: string | null;
-    comment?: string | null;
-    updated_at?: string | null;
-  } | null;
-  price_history?: PriceHistoryPoint[];
-  point_text?: string | null;
-  campaigns?: Campaign[];
-  rent_plans?: RentPlan[];
-  /** false = サイト掲載終了（価格等は最終取得時点の参考値） */
-  is_active?: boolean;
-  detail_scraped_at?: string | null;
-  last_seen_at?: string | null;
+/** POST /api/admin/scrape-settings のボディ。null で該当キーを既定へ戻す */
+export interface ScrapeSettingsUpdate {
+  sources: Record<
+    string,
+    | null
+    | Partial<{ delay_seconds: number | null; cooldown_seconds: number | null }>
+  >;
 }
+
+// ============================================================
+// FE 内部型( BE 応答を直接受けない )
+// ============================================================
+
+/** 分析モーダルの表示対象。market=市場全体(メニューから) / property=物件単位(詳細パネルから) */
+export type AnalysisTarget =
+  | { kind: 'market' }
+  | { kind: 'property'; propertyId: number };
 
 export type ShortlistStatusFilter = 'all' | 'saved' | 'unsaved' | 'hide' | 'reject';
 export type SortKey = 'score' | 'price_asc' | 'price_desc' | 'area_desc';
@@ -138,6 +191,9 @@ export interface StayEstimateSummary {
   planLabel: string | null;
 }
 
+/** 範囲絞り込みモード: 全件 / 地図表示範囲 / 囲った範囲 */
+export type AreaMode = 'all' | 'viewport' | 'drawn';
+
 export interface MapFilters {
   maxPrice: number;
   areaRange: [number, number];
@@ -145,7 +201,9 @@ export interface MapFilters {
   status: ShortlistStatusFilter;
   listingVisibility: ListingVisibilityFilter;
   searchQuery: string;
-  boundsEnabled: boolean;
+  areaMode: AreaMode;
+  /** areaMode='drawn' で使う閉多角形の頂点列 [lng, lat][]（矩形は4頂点） */
+  drawnPolygon: [number, number][] | null;
   maxWalkMinutes: number | null;
   minScore: number | null;
   prefecture: string | null;
@@ -167,7 +225,8 @@ export const DEFAULT_MAP_FILTERS: MapFilters = {
   status: 'all',
   listingVisibility: 'active',
   searchQuery: '',
-  boundsEnabled: false,
+  areaMode: 'all',
+  drawnPolygon: null,
   maxWalkMinutes: null,
   minScore: null,
   prefecture: null,
@@ -189,186 +248,7 @@ export const FEATURE_TOGGLE_OPTIONS = [
   'モニター付きインターホン',
 ] as const;
 
-export interface PropertyFeature {
-  type: 'Feature';
-  geometry: {
-    type: 'Point';
-    coordinates: [number, number]; // [lng, lat]
-  };
-  properties: PropertyProperties;
-}
-
-export interface PropertyGeoJSON {
-  type: 'FeatureCollection';
-  features: PropertyFeature[];
-}
-
 export interface BoundsData {
   southWest: [number, number]; // [lat, lng]
   northEast: [number, number]; // [lat, lng]
-}
-
-export interface TransferBucket {
-  requests: number;
-  bytes_downloaded: number;
-  bytes_uploaded: number;
-  bytes_downloaded_mb: number;
-  bytes_uploaded_mb: number;
-  direct_requests: number;
-  proxy_requests: number;
-  restricted_hits: number;
-  errors: number;
-}
-
-export interface TransferSnapshot {
-  lifetime: {
-    by_source: Record<string, TransferBucket>;
-    total: TransferBucket;
-  };
-  session?: {
-    by_source: Record<string, TransferBucket>;
-    total: TransferBucket;
-  };
-  session_label?: string | null;
-  session_started_at?: number | null;
-}
-
-/** 1スクレイプrunのサマリ(GET /api/admin/status recent_runs — DB由来で再起動後も残る) */
-export interface ScrapeRunSummary {
-  id: number;
-  source_site: string;
-  started_at: string | null;
-  finished_at: string | null;
-  status: string;
-  list_pages: number | null;
-  list_items: number | null;
-  detail_ok: number | null;
-  detail_fail: number | null;
-  error_summary: string | null;
-}
-
-export interface AdminStats {
-  task_status: {
-    status: 'idle' | 'running';
-    current_task: string | null;
-    last_run: string | null;
-    error: string | null;
-    /** 直前タスクの結果: ok / partial / error(未実行時 null) */
-    last_result?: 'ok' | 'partial' | 'error' | null;
-    logs: string[];
-    last_transfer?: TransferSnapshot | null;
-  };
-  data_layer?: 'v1' | 'v2';
-  recent_runs?: ScrapeRunSummary[];
-  http?: {
-    mode: string;
-    proxy_enabled: boolean;
-  };
-  transfer?: TransferSnapshot | null;
-  db_stats: {
-    total_properties: number;
-    missing_coordinates: number;
-    shortlist: {
-      saved?: number;
-      hide?: number;
-      reject?: number;
-    };
-    by_source?: Record<string, number>;
-  };
-}
-
-/** Per-prefecture (ListTarget) status under a source — GET /api/admin/sources */
-export interface AdminTargetInfo {
-  key: string;
-  slug: string;
-  name: string;
-  counts: {
-    total: number;
-    active: number;
-    missing_coords: number;
-  };
-  last_seen_at?: string | null;
-  last_detail_scraped_at?: string | null;
-  last_run_at?: string | null;
-  last_run_status?: string | null;
-  last_run_list_items?: number | null;
-  last_run_detail_ok?: number | null;
-  has_data: boolean;
-}
-
-/** GET /api/admin/sources */
-export interface AdminSourceInfo {
-  id: string;
-  display_name: string;
-  description?: string;
-  enabled: boolean;
-  registered: boolean;
-  available: boolean;
-  prefectures: string[];
-  /** Crawl targets (usually prefectures) with DB + run status */
-  targets?: AdminTargetInfo[];
-  default_pages?: number | null;
-  default_all_pages?: boolean;
-  supports_all_pages?: boolean;
-  default_mark_inactive?: boolean;
-  counts: {
-    total: number;
-    active: number;
-    missing_coords: number;
-  };
-}
-
-export interface AdminSourcesResponse {
-  data_layer: 'v1' | 'v2';
-  sources: AdminSourceInfo[];
-}
-
-/** 次回実行バッチのプレビュー — GET /api/admin/rotation */
-export interface RotationBatchPreview {
-  /** 対象県スラッグ（実行順） */
-  prefs: string[];
-  /** 予想取得件数 */
-  est_items: number;
-  /** 単独県なので 1 県あたりの予算上限を無視する */
-  unlimited: boolean;
-  /** バッチ内容の理由コード（空文字 = 通常バッチ） */
-  reason: string;
-}
-
-/** 県（ListTarget）ごとのローテーション状態 — GET /api/admin/rotation */
-export interface RotationPrefStatus {
-  slug: string;
-  name: string;
-  /** 既知物件数（未計測は null） */
-  known_total: number | null;
-  /** 前回フル取得成功時刻（未取得は null） */
-  last_full_ok_at: string | null;
-  last_run_at: string | null;
-  /** 連続スクレイプ失敗数（成功で 0 にリセット。旧 API では欠損） */
-  consecutive_failures?: number | null;
-  /** 連続失敗によりクールダウン中でローテーション選定から一時除外されているか */
-  suppressed?: boolean | null;
-  /** 現在スクレイプ実行中か（旧 API では欠損） */
-  is_running?: boolean | null;
-  /** 次回バッチの順番（昇順で実行） */
-  queue_position: number;
-}
-
-/** ソースごとの県ローテーション状態 — GET /api/admin/rotation */
-export interface RotationSourceStatus {
-  id: string;
-  display_name: string;
-  /** cron 式（実行時刻） */
-  cron: string;
-  daily_limit: number;
-  used_today: number;
-  /** 1 県あたりの既定取得件数（予算計算用） */
-  default_est: number;
-  next_batch: RotationBatchPreview;
-  prefs: RotationPrefStatus[];
-}
-
-/** GET /api/admin/rotation */
-export interface RotationStatusResponse {
-  sources: RotationSourceStatus[];
 }
