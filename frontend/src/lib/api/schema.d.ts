@@ -145,7 +145,7 @@ export interface paths {
         };
         /**
          * Get Map Viewer
-         * @description Serves the main map viewer application HTML (React index.html or fallback map_viewer.html).
+         * @description Serves the main map viewer application HTML (React index.html).
          */
         get: operations["get_map_viewer__get"];
         put?: never;
@@ -156,7 +156,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/geojson": {
+    "/api/buildings/geojson": {
         parameters: {
             query?: never;
             header?: never;
@@ -164,14 +164,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get Geojson Api
-         * @description Returns property search results directly formatted as a GeoJSON FeatureCollection.
-         *     If map_viewer.html falls back to map.geojson, this serves the same endpoint.
+         * Get Buildings Geojson Api
+         * @description 建物単位の検索結果を GeoJSON FeatureCollection (1 Feature = 1 建物 + units) で返す。
          *
-         *     このフィルタパラメータは CLI / MCP 用。FE は /api/geojson/stream で全件を
-         *     取得し client-side worker で完全フィルタする。
+         *     部屋条件 (required_features / max_monthly / max_walk / min_area 等) は
+         *     「条件を満たす部屋を 1 つ以上持つ建物」がヒットし、units には建物の
+         *     可視部屋全てを載せる (client-side worker が部屋単位で再フィルタする)。
+         *     limit の単位は建物数。契約の正本は docs/building-aggregation-design.md §6.1。
+         *
+         *     natural_query (PG移行 Phase 7): 自然文意味検索 (pgvector + gemini-embedding-2)。
+         *     指定時は意味距離の昇順に建物がソートされ、embedding 未カバー物件は除外される。
          */
-        get: operations["get_geojson_api_api_geojson_get"];
+        get: operations["get_buildings_geojson_api_api_buildings_geojson_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -180,7 +184,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/map.geojson": {
+    "/api/buildings/geojson/stream": {
         parameters: {
             query?: never;
             header?: never;
@@ -188,46 +192,47 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get Geojson Api
-         * @description Returns property search results directly formatted as a GeoJSON FeatureCollection.
-         *     If map_viewer.html falls back to map.geojson, this serves the same endpoint.
-         *
-         *     このフィルタパラメータは CLI / MCP 用。FE は /api/geojson/stream で全件を
-         *     取得し client-side worker で完全フィルタする。
-         */
-        get: operations["get_geojson_api_map_geojson_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/geojson/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Geojson Stream Api
-         * @description 物件GeoJSONを1行ずつ流すNDJSONストリーム。初期ロード進捗表示用。
+         * Get Buildings Geojson Stream Api
+         * @description 建物GeoJSONを1行ずつ流すNDJSONストリーム (1行 = 1建物Feature)。初期ロード進捗表示用。
          *
          *     行契約 (StreamingResponse のため response_model は持たない):
-         *     - 1行目: {"type": "meta", "total": <int>}
-         *     - 中間行: {"type": "feature", "feature": <PropertyFeature>}
-         *     - 末尾行: {"type": "end", "count": <int>}
-         *     feature の型は GET /api/geojson (PropertyGeoJSON) と同一。
+         *     - 1行目: {"type": "meta", "total": <int 建物数>}
+         *     - 中間行: {"type": "feature", "feature": <BuildingFeature>}
+         *     - 末尾行: {"type": "end", "count": <int 建物数>}
+         *     feature の型は GET /api/buildings/geojson (BuildingGeoJSON) と同一。
          *
-         *     注意: meta.total は上限概算値。post filter (max_walk_minutes /
-         *     required_features / max_monthly_total_yen) が未反映な上、座標欠落物件を
-         *     スキップするため end.count と一致する保証がない。
+         *     注意: meta.total は上限概算値。max_monthly_total_yen は post filter のため
+         *     未反映。加えて建物代表座標が欠落した建物をスキップするため end.count と
+         *     一致する保証がない (limit は建物数に効くため end.count ≤ meta.total)。
+         *     natural_query (PG移行 Phase 7・意味検索) の意味論は一括版と同一。
          */
-        get: operations["get_geojson_stream_api_api_geojson_stream_get"];
+        get: operations["get_buildings_geojson_stream_api_api_buildings_geojson_stream_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/buildings/{building_id}/shortlist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Update Building Shortlist Api
+         * @description 建物ショートリスト状態を更新する (status: saved / none)。
+         *
+         *     部屋の POST /api/properties/{id}/shortlist と対称。建物側は当面
+         *     saved(+メモ)のみ運用のため、hide/reject は 422 で拒否する。
+         *     buildings.id は数値一意のため by/source 解決は不要(未検出は 404)。
+         */
+        post: operations["update_building_shortlist_api_api_buildings__building_id__shortlist_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -508,6 +513,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/media/{media_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Media
+         * @description 保存済みメディア 1 件を配信する (?variant=thumb で 640px WebP)。
+         */
+        get: operations["get_media_api_media__media_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tiles/{code}/{z}/{x}/{y}.pbf": {
         parameters: {
             query?: never;
@@ -574,6 +599,14 @@ export interface components {
              * @default {}
              */
             shortlist: {
+                [key: string]: number;
+            };
+            /**
+             * Building Shortlist
+             * @description 建物ショートリストの状態→件数マップ
+             * @default {}
+             */
+            building_shortlist: {
                 [key: string]: number;
             };
             /**
@@ -735,6 +768,392 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * BuildingFeature
+         * @description 建物 GeoJSON Feature 1 件 (Point・建物代表座標)。
+         */
+        BuildingFeature: {
+            /**
+             * Type
+             * @constant
+             */
+            type: "Feature";
+            geometry: components["schemas"]["GeoJSONPoint"];
+            properties: components["schemas"]["BuildingProperties"];
+        };
+        /**
+         * BuildingGeoJSON
+         * @description GET /api/buildings/geojson の FeatureCollection 応答。
+         */
+        BuildingGeoJSON: {
+            /**
+             * Type
+             * @constant
+             */
+            type: "FeatureCollection";
+            /** Features */
+            features: components["schemas"]["BuildingFeature"][];
+        };
+        /**
+         * BuildingNameInfo
+         * @description ソース別建物名 1 件 (building_names 行・名寄せ監査の正本)。
+         */
+        BuildingNameInfo: {
+            /**
+             * Source Site
+             * @description ソース site id
+             */
+            source_site: string;
+            /**
+             * Name
+             * @description そのソースでの建物名
+             */
+            name: string;
+        };
+        /**
+         * BuildingProperties
+         * @description 建物 GeoJSON Feature の properties (検索結果 1 建物分)。
+         *
+         *     一括 /api/buildings/geojson と /api/buildings/geojson/stream の feature 行
+         *     で同一ペイロード。units は FE 向け GeoJSON では建物の可視部屋全て
+         *     (units="all"・worker が現行フィルタを部屋単位で再適用する構成を維持)。
+         */
+        BuildingProperties: {
+            /**
+             * Id
+             * @description buildings.id
+             */
+            id: number;
+            /**
+             * Kind
+             * @description 部屋単位 Feature (kind 無し) との識別子
+             * @default building
+             * @constant
+             */
+            kind: "building";
+            /**
+             * Name
+             * @description 建物代表名 (canonical_name)
+             */
+            name?: string | null;
+            /**
+             * Address
+             * @description 表示用代表住所
+             */
+            address?: string | null;
+            /** Prefecture Slug */
+            prefecture_slug?: string | null;
+            /** Prefecture Name */
+            prefecture_name?: string | null;
+            /** Municipality */
+            municipality?: string | null;
+            /**
+             * Built Year
+             * @description 築年 (建物内多数決の代表値)
+             */
+            built_year?: number | null;
+            /**
+             * Structure
+             * @description 構造 (建物内多数決の代表値)
+             */
+            structure?: string | null;
+            /**
+             * Building Floors
+             * @description 建物階数 (建物内多数決の代表値)
+             */
+            building_floors?: number | null;
+            /**
+             * Is Active
+             * @description false = active 部屋が 1 つも無い建物 (all_inactive)
+             * @default true
+             */
+            is_active: boolean;
+            /**
+             * Units Count
+             * @description 所属部屋数 (キャッシュ列)
+             */
+            units_count?: number | null;
+            /**
+             * Active Units Count
+             * @description active 部屋数 (キャッシュ列)
+             */
+            active_units_count?: number | null;
+            /**
+             * Source Sites
+             * @description 所属部屋の source_site 一覧 (重複除去・出現順)
+             * @default []
+             */
+            source_sites: string[];
+            /**
+             * Building Names
+             * @description ソース別建物名 (クロスソース名寄せ時の併記・監査用)
+             * @default []
+             */
+            building_names: components["schemas"]["BuildingNameInfo"][];
+            /**
+             * Feature Categories
+             * @description 建物レベル導出 code 集合 (所属部屋 code のうち sub='building' 語彙の union + 導出の親/横断 code・辞書順)
+             * @default []
+             */
+            feature_categories: string[];
+            /**
+             * Min Daily Rent
+             * @description 所属部屋の最安実効日額
+             */
+            min_daily_rent?: number | null;
+            /**
+             * Max Daily Rent
+             * @description 所属部屋の最高実効日額 (帯表示用)
+             */
+            max_daily_rent?: number | null;
+            /**
+             * Min Plan Total
+             * @description 最安部屋の 30 日換算総額
+             */
+            min_plan_total?: number | null;
+            /**
+             * Min Plan Label
+             * @description 最安部屋のプラン表示ラベル
+             */
+            min_plan_label?: string | null;
+            /**
+             * Min Walk Minutes
+             * @description 所属部屋の最小徒歩分数
+             */
+            min_walk_minutes?: number | null;
+            /**
+             * Thumbnail Url
+             * @description 代表写真 (現行 thumbnail 選別規則の建物内適用)
+             */
+            thumbnail_url?: string | null;
+            /**
+             * Has Campaign
+             * @description active なキャンペーンを 1 つ以上の所属部屋が持つ (建物レベル束ねなし)
+             * @default false
+             */
+            has_campaign: boolean;
+            /**
+             * Access Summary
+             * @description 部屋 accesses の union + 重複除去 ('JR 渋谷駅 徒歩5分' 等)
+             * @default []
+             */
+            access_summary: string[];
+            /**
+             * Station Summary
+             * @description カンマ区切りの駅名要約
+             * @default
+             */
+            station_summary: string;
+            /**
+             * Units
+             * @description 所属部屋一式 (id/title/layout/rent_plans/campaigns/...)
+             * @default []
+             */
+            units: components["schemas"]["BuildingUnitProperties"][];
+            /**
+             * Shortlist Status
+             * @description 建物ショートリスト状態 (saved / none・未登録は null)
+             */
+            shortlist_status?: ("saved" | "hide" | "reject" | "none") | null;
+            /**
+             * Shortlist Comment
+             * @description 建物ショートリストのメモ (未登録は null)
+             */
+            shortlist_comment?: string | null;
+            /**
+             * Shortlist Updated At
+             * @description 建物ショートリスト行の最終更新時刻 (ISO・行登録時のみ。FE 最終編集順ソートの建物側キー・未登録は null)
+             */
+            shortlist_updated_at?: string | null;
+        };
+        /** BuildingShortlistUpdateRequest */
+        BuildingShortlistUpdateRequest: {
+            /** Status */
+            status: string;
+            /** Comment */
+            comment?: string | null;
+        };
+        /** BuildingShortlistUpdateResponse */
+        BuildingShortlistUpdateResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "success";
+            /** Building Id */
+            building_id: number;
+            /**
+             * Shortlist Status
+             * @enum {string}
+             */
+            shortlist_status: "saved" | "none";
+        };
+        /**
+         * BuildingUnitProperties
+         * @description 建物 Feature の units 要素 = 建物に所属する部屋 1 件。
+         *
+         *     store.queries.buildings._assemble_rooms が載せる search 結果 1 物件の
+         *     dict (_property_row_to_result 出力 + feature_categories) をそのまま
+         *     搭載するため、部屋単位 /api/geojson の PropertyProperties (表示用に
+         *     文字列化・整形済み) とはキー構成が意図的に異なる:
+         *
+         *     - access_summary は文字列ではなく行リスト ("JR 渋谷駅 徒歩5分" 等)
+         *     - images は URL 文字列ではなく {image_url, image_type, sort_order} の行 dict
+         *     - source_property_id / external_id / prefecture_slug / built_year /
+         *       built_month / lat / lng など生列を追加で保持
+         *     - feature_summary は設備名カンマ結合(重複語除去済み・B2-ε で復旧:
+         *       詳細パネル・比較ボードの設備表示と searchHaystack が消費)
+         *     - station_summary は持たない (建物側 properties の station_summary に集約)
+         */
+        BuildingUnitProperties: {
+            /** Id */
+            id: number;
+            /** Source Site */
+            source_site?: string | null;
+            /** Source Display Name */
+            source_display_name?: string | null;
+            /**
+             * Source Property Id
+             * @description external_id のエイリアス (MCP 互換)
+             */
+            source_property_id?: string | null;
+            /**
+             * External Id
+             * @description 取得元サイトの物件 ID
+             */
+            external_id?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Detail Url */
+            detail_url?: string | null;
+            /** Address */
+            address?: string | null;
+            /** Prefecture Name */
+            prefecture_name?: string | null;
+            /** Prefecture Slug */
+            prefecture_slug?: string | null;
+            /** Municipality */
+            municipality?: string | null;
+            /** Layout */
+            layout?: string | null;
+            /** Area M2 */
+            area_m2?: number | null;
+            /** Built Year */
+            built_year?: number | null;
+            /** Built Month */
+            built_month?: number | null;
+            /**
+             * Floor Number
+             * @description 所在階 (min・地下は負数 / null = 取得元で非公開)
+             */
+            floor_number?: number | null;
+            /**
+             * Floor Number Max
+             * @description 所在階 (max・複数階「1・2階」のみ min と異なる)
+             */
+            floor_number_max?: number | null;
+            /**
+             * Orientation Deg
+             * @description 向きの角度 0-359 (北=0・不明は null / null ≠ 北=0。bratto は常に null)
+             */
+            orientation_deg?: number | null;
+            /**
+             * Total Score
+             * @description 総合スコア (スコアリング再活用予定のため維持・未スコアは 0)
+             * @default 0
+             */
+            total_score: number;
+            /**
+             * Lat
+             * @description 部屋行の緯度 (建物代表座標は親 Feature の geometry)
+             */
+            lat?: number | null;
+            /**
+             * Lng
+             * @description 部屋行の経度 (建物代表座標は親 Feature の geometry)
+             */
+            lng?: number | null;
+            /** Point Text */
+            point_text?: string | null;
+            /** Min Walk Minutes */
+            min_walk_minutes?: number | null;
+            /**
+             * Min Daily Rent
+             * @description 最安実効日額 (as-of-today)
+             */
+            min_daily_rent?: number | null;
+            /**
+             * Min Plan Total
+             * @description 最安プランの 30 日換算総額
+             */
+            min_plan_total?: number | null;
+            /** Min Plan Name */
+            min_plan_name?: string | null;
+            /**
+             * Min Plan Label
+             * @description 最安プランの表示ラベル (辞書解決・正本: domain.plan_catalog)
+             */
+            min_plan_label?: string | null;
+            /** Thumbnail Url */
+            thumbnail_url?: string | null;
+            /**
+             * Shortlist Status
+             * @description saved / hide / reject / none (ショートリスト未登録は null)
+             */
+            shortlist_status?: ("saved" | "hide" | "reject" | "none") | null;
+            /**
+             * Shortlist Updated At
+             * @description ショートリスト行の最終更新時刻 (ISO・行登録時のみ。FE 最終編集順ソート用・未登録は null)
+             */
+            shortlist_updated_at?: string | null;
+            /**
+             * Is Active
+             * @description false = サイト掲載終了
+             * @default true
+             */
+            is_active: boolean;
+            /** Last Seen At */
+            last_seen_at?: string | null;
+            /**
+             * Contract Fee Yen
+             * @description 契約事務手数料の実効値 (物件個別値 > サイト既定)。null = 算出不能
+             */
+            contract_fee_yen?: number | null;
+            /**
+             * Feature Summary
+             * @description 設備名のカンマ区切り要約(重複語除去済み)
+             * @default
+             */
+            feature_summary: string;
+            /**
+             * Access Summary
+             * @description アクセス行リスト ('JR 渋谷駅 徒歩5分' 等・文字列化前)
+             * @default []
+             */
+            access_summary: string[];
+            /**
+             * Images
+             * @description 画像行リスト (URL は image_url)
+             * @default []
+             */
+            images: components["schemas"]["PropertyImageInfo"][];
+            /**
+             * Feature Categories
+             * @description 部屋の充足可能カテゴリ code 集合 (単純/複合 code + 導出の親/横断 code)
+             * @default []
+             */
+            feature_categories: string[];
+            /**
+             * Rent Plans
+             * @default []
+             */
+            rent_plans: components["schemas"]["RentPlan"][];
+            /**
+             * Campaigns
+             * @default []
+             */
+            campaigns: components["schemas"]["Campaign"][];
+        };
+        /**
          * Campaign
          * @description 物件に紐づくキャンペーン 1 件 (campaigns テーブル行 + legacy エイリアス)。
          *
@@ -791,6 +1210,12 @@ export interface components {
              * @description target_plan_key のエイリアス (legacy 同義キー。現状維持)
              */
             target_plan_code?: string | null;
+            /**
+             * Target Plan Label
+             * @description 対象プランの表示ラベル (BE 辞書解決・正本: domain.plan_catalog)。all / 空 = すべてのプラン。未知コードは生値
+             * @default
+             */
+            target_plan_label: string;
             /**
              * Discount Unit
              * @description 割引単位 (yen / percent / package / pokkiri 等)
@@ -853,9 +1278,9 @@ export interface components {
             structure_source?: string | null;
             /**
              * Parse Ok
-             * @description 構造化成功フラグ (0/1)
+             * @description 構造化成功フラグ
              */
-            parse_ok?: number | null;
+            parse_ok?: boolean | null;
             /**
              * Parse Warnings
              * @description 構造化時の警告 (JSON)
@@ -863,9 +1288,11 @@ export interface components {
             parse_warnings?: string | null;
             /**
              * Raw Json
-             * @description 抽出元の生 JSON
+             * @description 抽出元の生 JSON (jsonb)
              */
-            raw_json?: string | null;
+            raw_json?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Scraped At
              * @description 取得日時
@@ -1018,6 +1445,16 @@ export interface components {
              * @description 物件ピンのクラスタリング (未指定/null = true)
              */
             pinClustering?: boolean | null;
+            /**
+             * Pinballoonpermanent
+             * @description 物件バルーン(tooltip)の常時表示 (クラスタリング無効時のみ実効。未指定/null = false)
+             */
+            pinBalloonPermanent?: boolean | null;
+            /**
+             * Mapbackground
+             * @description 最下レイヤ(基本地図)下に見える地図コンテナの背景色 (未指定/null = 'black' = 従来色)
+             */
+            mapBackground?: ("black" | "white") | null;
         };
         /**
          * FeLayerOverrides
@@ -1090,7 +1527,8 @@ export interface components {
         };
         /**
          * GeoJSONPoint
-         * @description Point ジオメトリ。coordinates は [lng, lat]。
+         * @description Point ジオメトリ。coordinates は [lng, lat]。(旧部屋GeoJSONと共用の形状・
+         *     B2-ε で旧側モデル削除後は建物 Feature 専用)
          */
         GeoJSONPoint: {
             /**
@@ -1163,7 +1601,10 @@ export interface components {
          * @description 価格履歴 1 点 (品質ガード適用後の割引日額)。
          */
         PriceHistoryPoint: {
-            /** Scraped At */
+            /**
+             * Scraped At
+             * Format: date-time
+             */
             scraped_at: string;
             /** Min Discounted Daily Rent Yen */
             min_discounted_daily_rent_yen: number;
@@ -1189,6 +1630,7 @@ export interface components {
         PriceTrendPoint: {
             /**
              * Date
+             * Format: date
              * @description YYYY-MM-DD
              */
             date: string;
@@ -1240,7 +1682,10 @@ export interface components {
              * @description 前進補完で既知値とみなす窓 (日数)
              */
             carried_window_days: number;
-            /** Generated At */
+            /**
+             * Generated At
+             * Format: date-time
+             */
             generated_at: string;
             /** Providers */
             providers: components["schemas"]["PriceTrendProvider"][];
@@ -1357,10 +1802,41 @@ export interface components {
             capacity_text?: string | null;
             /** Structure */
             structure?: string | null;
-            /** Floors Text */
+            /**
+             * Floors Text
+             * @description 階数まわりの原文キャッシュ (bratto=階建セル / unionmonthly=所在階セル)
+             */
             floors_text?: string | null;
-            /** Floor Number */
-            floor_number?: string | null;
+            /**
+             * Floor Number
+             * @description 所在階 (min・地下は負数)
+             */
+            floor_number?: number | null;
+            /**
+             * Floor Number Max
+             * @description 所在階 (max・複数階「1・2階」のみ min と異なる)
+             */
+            floor_number_max?: number | null;
+            /**
+             * Building Floors
+             * @description 建物階数 (bratto のみ取得可)
+             */
+            building_floors?: number | null;
+            /**
+             * Orientation Text
+             * @description 向きのパース原文 ('南東' 等。bratto は非公開のため常に null)
+             */
+            orientation_text?: string | null;
+            /**
+             * Orientation Deg
+             * @description 向きの角度 0-359 (北=0・不明は null / null ≠ 北=0)
+             */
+            orientation_deg?: number | null;
+            /**
+             * Orientation Source
+             * @description 向きの取得経路 ('spec_parse' 等)。精度はこの値から導出
+             */
+            orientation_source?: string | null;
             /**
              * Point Text
              * @description 物件紹介文 (POINT)
@@ -1370,7 +1846,10 @@ export interface components {
             availability_text?: string | null;
             /** Min Stay Days */
             min_stay_days?: number | null;
-            /** Contract Fee Yen */
+            /**
+             * Contract Fee Yen
+             * @description 契約事務手数料の実効値 (物件個別値 > サイト既定)。null = 取得元サイトの既定が未登録で算出不能
+             */
             contract_fee_yen?: number | null;
             /**
              * First Seen At
@@ -1459,47 +1938,20 @@ export interface components {
             price_history_meta?: components["schemas"]["PriceHistoryMeta"] | null;
         };
         /**
-         * PropertyFeature
-         * @description GeoJSON Feature 1 件 (Point)。
-         */
-        PropertyFeature: {
-            /**
-             * Type
-             * @constant
-             */
-            type: "Feature";
-            geometry: components["schemas"]["GeoJSONPoint"];
-            properties: components["schemas"]["PropertyProperties"];
-        };
-        /**
          * PropertyFeatureInfo
          * @description 設備 1 件。
          */
         PropertyFeatureInfo: {
             /** Feature Name */
             feature_name: string;
-            /**
-             * Feature Category
-             * @description building / room 等の分類
-             */
-            feature_category?: string | null;
-        };
-        /**
-         * PropertyGeoJSON
-         * @description GET /api/geojson の FeatureCollection 応答。
-         */
-        PropertyGeoJSON: {
-            /**
-             * Type
-             * @constant
-             */
-            type: "FeatureCollection";
-            /** Features */
-            features: components["schemas"]["PropertyFeature"][];
         };
         /**
          * PropertyImageInfo
          * @description 画像 1 枚。
+         *
+         *     media_id は rustfs クラスタ代表ストアの格納済みメディアID
+         *     (docs/media-storage-rustfs-plan.md §2.8)。未取得・機能無効時は null で、
+         *     その場合は従来どおり image_url(元サイトURL)を直接参照する。
          */
         PropertyImageInfo: {
             /** Image Url */
@@ -1513,6 +1965,21 @@ export interface components {
             alt_text?: string | null;
             /** Sort Order */
             sort_order?: number | null;
+            /**
+             * Media Id
+             * @description 保存メディアのID (GET /api/media/{media_id})
+             */
+            media_id?: number | null;
+            /**
+             * Dhash
+             * @description 知覚ハッシュ 16進16桁 (クラスタ代表・近重複判定用)
+             */
+            dhash?: string | null;
+            /**
+             * Has Thumb
+             * @description 640px WebP サムネイルの有無 (?variant=thumb が有効)
+             */
+            has_thumb?: boolean | null;
         };
         /**
          * PropertyLinkInfo
@@ -1525,110 +1992,6 @@ export interface components {
             url: string;
             /** Label */
             label?: string | null;
-        };
-        /**
-         * PropertyProperties
-         * @description GeoJSON Feature の properties (検索結果 1 物件分)。
-         *
-         *     一括 /api/geojson と /api/geojson/stream の feature 行で同一ペイロード。
-         */
-        PropertyProperties: {
-            /** Id */
-            id: number;
-            /**
-             * Room Id
-             * @description external_id のエイリアス (legacy)
-             */
-            room_id?: string | null;
-            /** Source Site */
-            source_site?: string | null;
-            /** Source Display Name */
-            source_display_name?: string | null;
-            /** Title */
-            title?: string | null;
-            /** Detail Url */
-            detail_url?: string | null;
-            /** Address */
-            address?: string | null;
-            /** Prefecture Name */
-            prefecture_name?: string | null;
-            /** Municipality */
-            municipality?: string | null;
-            /** Layout */
-            layout?: string | null;
-            /** Area M2 */
-            area_m2?: number | null;
-            /**
-             * Min Daily Rent
-             * @description 最安実効日額 (as-of-today)
-             */
-            min_daily_rent?: number | null;
-            /**
-             * Min Plan Total
-             * @description 最安プランの 30 日換算総額
-             */
-            min_plan_total?: number | null;
-            /** Min Plan Name */
-            min_plan_name?: string | null;
-            /** Min Walk Minutes */
-            min_walk_minutes?: number | null;
-            /** Thumbnail Url */
-            thumbnail_url?: string | null;
-            /**
-             * Images
-             * @description 画像 URL のリスト
-             * @default []
-             */
-            images: string[];
-            /**
-             * Total Score
-             * @description 総合スコア (スコアリング再活用予定のため維持)
-             */
-            total_score?: number | null;
-            /**
-             * Shortlist Status
-             * @description saved / hide / reject / none
-             * @default none
-             */
-            shortlist_status: string;
-            /**
-             * Is Active
-             * @description false = サイト掲載終了
-             * @default true
-             */
-            is_active: boolean;
-            /** Last Seen At */
-            last_seen_at?: string | null;
-            /**
-             * Access Summary
-             * @description カンマ区切りのアクセス要約
-             * @default
-             */
-            access_summary: string;
-            /**
-             * Feature Summary
-             * @description カンマ区切りの設備要約
-             * @default
-             */
-            feature_summary: string;
-            /**
-             * Station Summary
-             * @description カンマ区切りの駅名要約
-             * @default
-             */
-            station_summary: string;
-            /** Point Text */
-            point_text?: string | null;
-            /**
-             * Rent Plans
-             * @default []
-             */
-            rent_plans: components["schemas"]["RentPlan"][];
-            /**
-             * Campaigns
-             * @default []
-             */
-            campaigns: components["schemas"]["Campaign"][];
         };
         /**
          * ReasoningMessage
@@ -1693,6 +2056,12 @@ export interface components {
              */
             duration_text?: string | null;
             /**
+             * Plan Label
+             * @description 表示ラベル (BE 辞書解決・正本: domain.plan_catalog)。帯レンジを含まない名称のみ。未知コードは plan_name (生値) フォールバック
+             * @default
+             */
+            plan_label: string;
+            /**
              * Duration Min Days
              * @description 最短滞在日数
              */
@@ -1717,8 +2086,9 @@ export interface components {
              * Presentation Unit
              * @description 金額の原単位 (per_day / per_month)
              * @default per_day
+             * @enum {string}
              */
-            presentation_unit: string;
+            presentation_unit: "per_day" | "per_month";
             /**
              * Rent Original Yen
              * @description 定価 (presentation_unit 原単位)
@@ -1762,10 +2132,9 @@ export interface components {
             discounted_daily_rent_yen?: number | null;
             /**
              * Management Fee Daily Yen
-             * @description 共益費の日額換算 (無ければ 0)
-             * @default 0
+             * @description 共益費の日額換算 (換算不能なら null — 決定 11)
              */
-            management_fee_daily_yen: number;
+            management_fee_daily_yen?: number | null;
             /**
              * Cleaning Fee Yen
              * @description cleaning_yen のエイリアス
@@ -1788,7 +2157,7 @@ export interface components {
             discounted_total_yen?: number | null;
             /**
              * Total Period Days
-             * @description 総額換算の基準日数 (固定 30)
+             * @description 総額換算の基準日数 (固定 30。正本: domain.pricing.MONTH_DAYS)
              * @default 30
              */
             total_period_days: number;
@@ -2259,7 +2628,10 @@ export interface components {
             status: string;
             /** Comment */
             comment?: string | null;
-            /** Updated At */
+            /**
+             * Updated At
+             * Format: date-time
+             */
             updated_at: string;
         };
         /** ShortlistUpdateRequest */
@@ -2278,8 +2650,11 @@ export interface components {
             status: "success";
             /** Property Id */
             property_id?: number | null;
-            /** Shortlist Status */
-            shortlist_status: string;
+            /**
+             * Shortlist Status
+             * @enum {string}
+             */
+            shortlist_status: "saved" | "hide" | "reject" | "none";
         };
         /**
          * SystemMessage
@@ -2794,7 +3169,7 @@ export interface operations {
             };
         };
     };
-    get_geojson_api_api_geojson_get: {
+    get_buildings_geojson_api_api_buildings_geojson_get: {
         parameters: {
             query?: {
                 prefecture_name?: string | null;
@@ -2804,6 +3179,7 @@ export interface operations {
                 required_features?: string | null;
                 saved_only?: boolean;
                 exclude_hidden?: boolean;
+                natural_query?: string | null;
                 limit?: number;
             };
             header?: never;
@@ -2818,7 +3194,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PropertyGeoJSON"];
+                    "application/json": components["schemas"]["BuildingGeoJSON"];
                 };
             };
             /** @description Validation Error */
@@ -2832,7 +3208,7 @@ export interface operations {
             };
         };
     };
-    get_geojson_api_map_geojson_get: {
+    get_buildings_geojson_stream_api_api_buildings_geojson_stream_get: {
         parameters: {
             query?: {
                 prefecture_name?: string | null;
@@ -2842,44 +3218,7 @@ export interface operations {
                 required_features?: string | null;
                 saved_only?: boolean;
                 exclude_hidden?: boolean;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PropertyGeoJSON"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_geojson_stream_api_api_geojson_stream_get: {
-        parameters: {
-            query?: {
-                prefecture_name?: string | null;
-                max_monthly_total_yen?: number | null;
-                max_walk_minutes?: number | null;
-                min_area_m2?: number | null;
-                required_features?: string | null;
-                saved_only?: boolean;
-                exclude_hidden?: boolean;
+                natural_query?: string | null;
                 limit?: number;
             };
             header?: never;
@@ -2895,6 +3234,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_building_shortlist_api_api_buildings__building_id__shortlist_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                building_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuildingShortlistUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuildingShortlistUpdateResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3311,6 +3685,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskStartResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_media_api_media__media_id__get: {
+        parameters: {
+            query?: {
+                variant?: string | null;
+            };
+            header?: never;
+            path: {
+                media_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

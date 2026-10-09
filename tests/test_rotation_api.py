@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 import web_server
 from web.routers import rotation as rotation_router
+from web.rotation_jobs import DEFAULT_ROTATION_SOURCES
 from web_server import app, run_scrape_task, run_rotation_job
 
 
@@ -26,7 +27,7 @@ class TestRotationSourceConfig(unittest.TestCase):
         with mock.patch.dict(os.environ):
             _clear_rotation_env()
             cfg = web_server._rotation_source_config()
-        self.assertEqual([c["id"] for c in cfg], ["bratto", "unionmonthly"])
+        self.assertEqual([c["id"] for c in cfg], list(DEFAULT_ROTATION_SOURCES))
         by_id = {c["id"]: c for c in cfg}
         self.assertEqual(by_id["bratto"]["cron"], "0 2,14 * * *")
         self.assertEqual(by_id["unionmonthly"]["cron"], "0 5,17 * * *")

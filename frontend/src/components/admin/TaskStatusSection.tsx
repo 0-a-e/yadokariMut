@@ -11,7 +11,7 @@ import { runStatusBadgeClass } from './adminHelpers.ts';
 interface TaskStatusSectionProps {
   stats: AdminStats | null;
   isRunning: boolean;
-  consoleRef: React.RefObject<HTMLPreElement>;
+  consoleRef: React.RefObject<HTMLPreElement | null>;
 }
 
 export const TaskStatusSection: React.FC<TaskStatusSectionProps> = ({
@@ -50,7 +50,7 @@ export const TaskStatusSection: React.FC<TaskStatusSectionProps> = ({
               : taskResult === 'partial'
                 ? '一部失敗 (partial)'
                 : '待機中 (Idle)'
-          : '読み込み中...'}
+          : '読み込み中…'}
       </Badge>
       {!isRunning && taskError && (
         <p className="mb-2 text-xs leading-snug text-danger/90 break-all">

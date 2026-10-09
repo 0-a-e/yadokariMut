@@ -84,4 +84,42 @@ function ToggleGroupItem({
   )
 }
 
-export { ToggleGroup, ToggleGroupItem }
+/**
+ * 単一選択用の薄ラッパー。base-uiの配列API(value={[x]} / vals[0]アンラップ)を
+ * 単一値APIに変換し、各呼び出し側の手書き変換ボイラープレートを吸収する。
+ */
+function SingleToggleGroup<T extends string>({
+  options,
+  value,
+  onChange,
+  className,
+  itemClassName,
+  ...groupProps
+}: Omit<VariantProps<typeof toggleVariants>, "multiple"> & {
+  options: readonly { value: T; label: React.ReactNode }[];
+  value: T;
+  onChange: (value: T) => void;
+  className?: string;
+  itemClassName?: string;
+}) {
+  return (
+    <ToggleGroup
+      multiple={false}
+      value={[value]}
+      onValueChange={(vals) => {
+        const next = (vals as T[])[0]
+        if (next) onChange(next)
+      }}
+      className={className}
+      {...groupProps}
+    >
+      {options.map((opt) => (
+        <ToggleGroupItem key={opt.value} value={opt.value} className={itemClassName}>
+          {opt.label}
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  )
+}
+
+export { ToggleGroup, ToggleGroupItem, SingleToggleGroup }

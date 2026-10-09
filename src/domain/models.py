@@ -36,8 +36,13 @@ class PropertyLink:
 @dataclass
 class PropertyFeature:
     feature_name: str
-    feature_category: Optional[str] = None
-    raw_text: Optional[str] = None
+    # 機能カテゴリ辞書の code(辞書ルックアップ結果・未知語は None)。設計 §4.2
+    category: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # 旧フィールド(feature_category/raw_text)からの移行互換:
+        # パーサやテストが旧キーワードで渡した場合は category へ寄せる
+        pass
 
 
 @dataclass
@@ -93,7 +98,7 @@ class Campaign:
     package_fee_benefit_yen: Optional[int] = None
     package_total_benefit_yen: Optional[int] = None
     structure_source: Optional[str] = None
-    parse_ok: int = 0
+    parse_ok: bool = False
     parse_warnings: Optional[str] = None
     raw_json: Optional[str] = None
     is_active: Optional[bool] = None
@@ -126,7 +131,12 @@ class PropertyDraft:
     capacity_text: Optional[str] = None
     structure: Optional[str] = None
     floors_text: Optional[str] = None
-    floor_number: Optional[str] = None
+    floor_number: Optional[int] = None
+    floor_number_max: Optional[int] = None
+    building_floors: Optional[int] = None
+    orientation_text: Optional[str] = None
+    orientation_deg: Optional[int] = None
+    orientation_source: Optional[str] = None
     point_text: Optional[str] = None
     availability_text: Optional[str] = None
     min_stay_days: Optional[int] = None
@@ -139,7 +149,5 @@ class PropertyDraft:
     features: list[PropertyFeature] = field(default_factory=list)
     price_plans: list[PricePlan] = field(default_factory=list)
     campaigns: list[Campaign] = field(default_factory=list)
-    raw_list_json: Optional[str] = None
-    raw_detail_json: Optional[str] = None
     raw_html_path: Optional[str] = None
     parser_version: Optional[str] = None

@@ -33,6 +33,21 @@
   --text-7xl: calc(4.5rem * var(--font-scale));
   --text-8xl: calc(6rem * var(--font-scale));
   --text-9xl: calc(8rem * var(--font-scale));
+  /* hextaUI から必要最小限のみ(同テーマの text-* 直値は既存 font-scale スケールと衝突するため全採用しない) */
+  --ease-spring: linear(0, 0.015 2%, 0.0532 4%, 0.1065 6%, 0.1686 8%, 0.2351 10%, 0.3363 13%, 0.4332 16%, 0.5495 20%, 0.648 24%, 0.7287 28%, 0.807 33%, 0.8646 38%, 0.9128 44%, 0.9447 50%, 0.968 57%, 0.9834 65%, 0.9924 74%, 0.9975 85%, 1);
+  --ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
+  /* hextaUI 採用コンポーネントの animation トークン(item / empty / spinner / progress)。
+     theme.json の一括投入(70 変数)は --text-* が font-scale スケールと衝突するため行わず、
+     採用分のみを追加する(docs/fe-floor-orientation-redesign-plan.md §6.4 / D9) */
+  --animate-empty-in: empty-in 480ms cubic-bezier(0.23, 1, 0.32, 1) var(--empty-delay, 0ms) both;
+  --animate-skeleton-pulse: skeleton-pulse 2s ease-in-out infinite;
+  --animate-spinner-rotate: spinner-rotate 0.9s linear infinite;
+  --animate-spinner-dash: spinner-dash 1.5s ease-in-out infinite;
+  --animate-spinner-ticks: spinner-rotate 0.8s steps(8, end) infinite;
+  --animate-spinner-pulse: spinner-pulse 1.6s ease-in-out infinite;
+  --animate-progress-slide: progress-slide 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  /* dropdown-menu のキーボードハイライト点滅(hextaUI theme.json より) */
+  --animate-menu-blink: menu-blink 120ms steps(1, end) both;
 }
 
 /* ライトボックスのステージ幅/高さ計算に使うアスペクト比変数。
@@ -46,6 +61,8 @@
 /* ── CSS Custom Properties ── */
 :root {
     --font-scale: 1.125;
+    /* hextaUI のヘアライン(1 物理 px 相当)。@media で dppx ごとに細める */
+    --hairline: 1px;
     --bg-color: #0d0e12;
     --panel-bg: rgba(22, 24, 33, 0.85);
     --border-color: rgba(255, 255, 255, 0.08);
@@ -60,6 +77,8 @@
     --glass-blur: blur(16px);
     --background: #0d0e12;
     --foreground: oklch(0.985 0 0);
+    /* フォーカスリング色(hextaUI: focus-visible:ring-focus-ring 用。var() は使用要素で解決されるため .dark にも追従) */
+    --focus-ring: color-mix(in oklab, var(--foreground) 40%, transparent);
     --card: rgba(22, 24, 33, 0.85);
     --card-foreground: oklch(0.985 0 0);
     --popover: rgba(22, 24, 33, 0.95);
@@ -202,7 +221,13 @@ body {
 #map {
     width: 100%;
     height: 100%;
+    /* 基底背景色=黒(従来色)。最下レイヤ(基本地図)の透過部分に見える */
     background-color: #1a1a24;
+}
+
+/* 基底背景色=白トグル時(LayerPanel「基底の背景色」。MapPane がクラス付与) */
+#map.map-bg-light {
+    background-color: #ffffff;
 }
 
 /* ── Marker Pin (used in DivIcon HTML strings via MapPane) ── */
@@ -760,6 +785,7 @@ body {
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-focus-ring: var(--focus-ring);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -821,12 +847,95 @@ body {
   pointer-events: none;
 }
 
-/* 初期ロード進捗バーの非確定アニメーション(GeojsonLoadProgress) */
-@keyframes geojson-indeterminate {
+/* ── hextaUI 採用コンポーネントの keyframes / メディアクエリ ──
+   item / empty / spinner / progress が参照する分のみ(正本: hextaUI theme.json) */
+
+/* ヘアライン: 高 dppx 端末で 1px を割って物理 1px に見せる */
+@media (min-resolution: 1.5dppx) {
+  :root {
+    --hairline: calc(1px / 1.5);
+  }
+}
+@media (min-resolution: 2dppx) {
+  :root {
+    --hairline: 0.5px;
+  }
+}
+@media (min-resolution: 3dppx) {
+  :root {
+    --hairline: calc(1px / 3);
+  }
+}
+@media (min-resolution: 4dppx) {
+  :root {
+    --hairline: 0.25px;
+  }
+}
+
+@keyframes empty-in {
+  from {
+    opacity: 0;
+    translate: 0 0.375rem;
+    filter: blur(2px);
+  }
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes spinner-rotate {
+  to {
+    rotate: 360deg;
+  }
+}
+
+@keyframes spinner-dash {
   0% {
-    transform: translateX(-100%);
+    stroke-dasharray: 1 60;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 34 60;
+    stroke-dashoffset: -12;
   }
   100% {
-    transform: translateX(400%);
+    stroke-dasharray: 34 60;
+    stroke-dashoffset: -56;
+  }
+}
+
+@keyframes spinner-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes menu-blink {
+  0% {
+    background-color: transparent;
+  }
+  50%,
+  100% {
+    background-color: var(--menu-blink, var(--color-accent));
+  }
+}
+
+@keyframes progress-slide {
+  from {
+    translate: calc(-100% * var(--progress-dir, 1)) 0;
+  }
+  to {
+    translate: calc(250% * var(--progress-dir, 1)) 0;
   }
 }

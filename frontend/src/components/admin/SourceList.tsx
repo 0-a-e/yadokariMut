@@ -17,6 +17,7 @@ import { FaArrowRotateLeft } from 'react-icons/fa6';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip.tsx';
 import { Checkbox } from '@/components/ui/checkbox.tsx';
 import type { SourceSettingsController } from '../../hooks/useSourceSettings.ts';
+import { LoadingState } from '@/components/shared/LoadingState.tsx';
 import { formatAdminTs, runStatusBadgeClass } from './adminHelpers.ts';
 
 type ScrapeCtl = SourceSettingsController<'delay_seconds' | 'cooldown_seconds'>;
@@ -48,9 +49,7 @@ export const SourceList: React.FC<SourceListProps> = ({
 }) => {
   return (
     <div className="border border-border rounded-lg overflow-hidden">
-      {sources.length === 0 && (
-        <div className="p-3 text-xs text-text-muted">ソース情報を読み込み中…</div>
-      )}
+      {sources.length === 0 && <LoadingState className="p-3 text-xs" label="ソース情報を読み込み中…" />}
       <Accordion>
         {sources.map((src) => {
           const targets = src.targets || [];

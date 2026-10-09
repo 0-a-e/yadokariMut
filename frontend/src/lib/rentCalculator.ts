@@ -19,66 +19,92 @@
  * - onDate は必須引数。既定値は存在しないので基準日の無自覚な流用はコンパイルエラーになる
  */
 
-export const CONTRACT_FEE_YEN = 5500;
+import type { Campaign, RentPlan } from '../types';
+import { formatYen } from './format';
 
-/** Plan bands ordered short → long (BraTTo official thresholds). */
-export const PLAN_BAND_ORDER = ['s_short', 'short', 'middle', 'long'] as const;
-export type PlanCode = (typeof PLAN_BAND_ORDER)[number];
+/**
+ * プランコード(wire 語彙)。実語彙は開集合(新サイトでコードが増える)のため
+ * string で開放する。表示ラベルの正は BE 解決の plan_label(設計 §3.6)。
+ */
+export type PlanCode = string;
 
-export const PLAN_LABELS: Record<PlanCode, string> = {
-  s_short: 'Sショート（1ヶ月未満）',
-  short: 'ショート（1〜3ヶ月）',
-  middle: 'ミドル（3〜6ヶ月）',
-  long: 'ロング（6ヶ月以上）',
-};
+/**
+ * プラン表示ラベル(設計 §3.6)。BE 解決の plan_label(レンジなし)を正とし、
+ * 帯レンジは wire の duration_text と合成して既存表示と同等に保つ(2026-10-08 承認)。
+ * plan_label が無い(旧キャッシュ・未知コードの生名フォールバック)場合は
+ * plan_name 生値をそのまま返す。
+ */
+export function planDisplayLabel(plan: CalculatorPlan): string {
+  const label = plan.plan_label ?? plan.plan_name ?? '';
+  const range = plan.duration_text;
+  if (!label || !range || label.includes(range)) return label;
+  return `${label}（${range}）`;
+}
 
-export interface CalculatorPlan {
-  plan_key?: string | null;
-  plan_code?: string | null;
+/**
+ * GeoJSON / 詳細API の rent_plans 要素 (生成型 RentPlan) から計算に使う
+ * フィールドのみを Partial<Pick> 派生した型。BE 契約 (api_models.py) と
+ * 名前・型が連動し、フィールドの改名・削除は Pick のキーでコンパイル検知される。
+ * 呼び出し側は生成型 RentPlan[] をそのまま渡せる (構造的部分型)。
+ */
+export type CalculatorPlan = Partial<Pick<
+  RentPlan,
+  | 'plan_key'
+  | 'plan_code'
+  /** BE 解決済み表示ラベル(設計 §3.6・レンジなし)。欠損時は plan_name フォールバック */
+  | 'plan_label'
   /** BE RentPlan では Optional(nullable)。欠損時の表示は呼び出し側でフォールバック */
-  plan_name?: string | null;
-  duration_text?: string | null;
+  | 'plan_name'
+  | 'duration_text'
   /**
    * 滞在帯(日数)。BE price_plans.duration_min_days / duration_max_days のミラー。
    * 両方(またはmin)が有効な物件はデータ駆動でプラン選択する(乖離1修復)。
    */
-  duration_min_days?: number | null;
-  duration_max_days?: number | null;
-  available: boolean;
+  | 'duration_min_days'
+  | 'duration_max_days'
+  | 'available'
   /** utilities_yen の提示単位。"per_month" なら 30 で割って日額化(BE to_per_day 準拠) */
-  presentation_unit?: string | null;
-  utilities_yen?: number | null;
-  utilities_included?: boolean | null;
-  discounted_daily_rent_yen?: number | null;
-  original_daily_rent_yen?: number | null;
-  campaign_label?: string | null;
-  management_fee_daily_yen?: number | null;
-  cleaning_fee_yen?: number | null;
+  | 'presentation_unit'
+  | 'utilities_yen'
+  | 'utilities_included'
+  | 'discounted_daily_rent_yen'
+  | 'original_daily_rent_yen'
+  | 'campaign_label'
+  | 'management_fee_daily_yen'
+  | 'cleaning_fee_yen'
   /** Backend-resolved effective daily (expired campaigns → original) */
-  effective_daily_rent_yen?: number | null;
-  campaign_applied?: boolean;
-  campaign_expired?: boolean;
-  effective_campaign_label?: string | null;
-  expired_campaign_label?: string | null;
-}
+  | 'effective_daily_rent_yen'
+  | 'campaign_applied'
+  | 'campaign_expired'
+  | 'effective_campaign_label'
+  | 'expired_campaign_label'
+>>;
 
-export interface CalculatorCampaign {
-  campaign_type?: string | null;
-  title?: string | null;
-  is_active?: boolean;
-  target_plan_code?: string | null;
-  discount_unit?: string | null;
-  discount_value?: number | null;
-  discount_max_yen?: number | null;
-  period_max_days?: number | null;
-  stay_min_days?: number | null;
-  stay_max_days?: number | null;
-  package_rent_benefit_yen?: number | null;
-  package_cleaning_benefit_yen?: number | null;
-  package_fee_benefit_yen?: number | null;
-  starts_on?: string | null;
-  ends_on?: string | null;
-}
+/**
+ * 生成型 Campaign から構造化キャンペーン判定に使うフィールドのみを派生した型。
+ * is_active は BE 契約に存在しないため含めない (書くとコンパイルエラーになる)。
+ * 有効判定は starts_on / ends_on の日付比較 (isCampaignActiveOnDate) のみで行う。
+ * 対象プランキーは target_plan_key が正で、target_plan_code は同値のエイリアスとして
+ * 常に併載される (BE campaign_targets_plan_key ミラー)。
+ */
+export type CalculatorCampaign = Partial<Pick<
+  Campaign,
+  | 'campaign_type'
+  | 'title'
+  | 'target_plan_key'
+  | 'target_plan_code'
+  | 'discount_unit'
+  | 'discount_value'
+  | 'discount_max_yen'
+  | 'period_max_days'
+  | 'stay_min_days'
+  | 'stay_max_days'
+  | 'package_rent_benefit_yen'
+  | 'package_cleaning_benefit_yen'
+  | 'package_fee_benefit_yen'
+  | 'starts_on'
+  | 'ends_on'
+>>;
 
 export interface CalcInput {
   checkIn: string; // YYYY-MM-DD
@@ -86,8 +112,9 @@ export interface CalcInput {
   plans: CalculatorPlan[];
   campaigns?: CalculatorCampaign[];
   /**
-   * 契約事務手数料(円)。物件の contract_fee_yen(詳細APIのみ)を渡す。
-   * null/undefined は既定値 CONTRACT_FEE_YEN にフォールバック(BE pricing 準拠)。
+   * 契約事務手数料(円)。物件の contract_fee_yen(BE 解決済み実効値)を渡す。
+   * null/undefined は算出不能として総額から除外し、breakdown.contractFee = null
+   * + warnings で明示される(BE pricing 準拠。数値への補完は行わない)。
    */
   contractFeeYen?: number | null;
   /** Prefer structured recalculation when campaigns available (default true) */
@@ -99,8 +126,9 @@ export interface CalcByDaysInput {
   plans: CalculatorPlan[];
   campaigns?: CalculatorCampaign[];
   /**
-   * 契約事務手数料(円)。物件の contract_fee_yen(詳細APIのみ)を渡す。
-   * null/undefined は既定値 CONTRACT_FEE_YEN にフォールバック(BE pricing 準拠)。
+   * 契約事務手数料(円)。物件の contract_fee_yen(BE 解決済み実効値)を渡す。
+   * null/undefined は算出不能として総額から除外し、breakdown.contractFee = null
+   * + warnings で明示される。
    */
   contractFeeYen?: number | null;
   useStructuredCampaigns?: boolean;
@@ -119,7 +147,8 @@ export interface CalcBreakdown {
   managementTotal: number;
   utilitiesTotal: number;
   cleaningFee: number;
-  contractFee: number;
+  /** null = 取得元サイトの既定が未登録で算出不能(総額から除外) */
+  contractFee: number | null;
 }
 
 export interface CalcResult {
@@ -163,17 +192,6 @@ export function calcStayDays(checkIn: string, checkOut: string): number | null {
   return Math.floor(ms / 86_400_000) + 1;
 }
 
-/**
- * Official band: <30 s_short, <91 short, <181 middle, else long.
- * レガシーフォールバック用(BraTTo固定バンド)。durationデータがある物件では使わない。
- */
-export function preferredPlanCodeForDays(stayDays: number): PlanCode {
-  if (stayDays < 30) return 's_short';
-  if (stayDays < 91) return 'short';
-  if (stayDays < 181) return 'middle';
-  return 'long';
-}
-
 /** プランの滞在帯(日数)。duration_min_days が無い/不正なプランは null(データ駆動対象外) */
 export function planDurationBand(
   plan: CalculatorPlan
@@ -186,17 +204,17 @@ export function planDurationBand(
 }
 
 /**
- * 金額を提示単位から日額へ変換(BE to_per_day ミラー)。
- * per_month は 30 で整数除算(floor)、未知の単位は per_day 扱い。
+ * 金額を提示単位から日額へ変換(BE to_per_day ミラー・決定 11 厳格版)。
+ * 正式単位は per_day / per_month のみで、per_month は 30 で整数除算(floor)。
+ * エイリアス(monthly 等)と未知の単位(per_week 等)は null(算出不能)を返す。
  */
 function toPerDay(amount: number, unit: string | null | undefined): number | null {
   const n = Math.trunc(Number(amount));
   if (!Number.isFinite(n)) return null;
-  const u = (unit || 'per_day').toLowerCase().trim();
-  if (u === 'per_month' || u === 'monthly' || u === 'month') {
-    return Math.floor(n / 30);
-  }
-  return n;
+  const u = (unit || '').toLowerCase().trim();
+  if (u === 'per_day') return n;
+  if (u === 'per_month') return Math.floor(n / 30);
+  return null;
 }
 
 /**
@@ -208,29 +226,6 @@ export function planUtilitiesPerDay(plan: CalculatorPlan): number {
   const util = plan.utilities_yen;
   if (util == null) return 0;
   return toPerDay(util, plan.presentation_unit) ?? 0;
-}
-
-function normalizePlanCode(plan: CalculatorPlan): PlanCode | null {
-  const raw = (plan.plan_code || '').toLowerCase().trim();
-  if ((PLAN_BAND_ORDER as readonly string[]).includes(raw)) {
-    return raw as PlanCode;
-  }
-  // Fallback from plan_name when plan_code is missing
-  const name = (plan.plan_name || '').toLowerCase();
-  if (name.includes('sショート') || name.includes('s-short') || name.includes('1ヶ月未満')) {
-    return 's_short';
-  }
-  if (name.includes('ショート') || name.includes('1ヶ月') || name.includes('1～3') || name.includes('1~3')) {
-    // avoid matching s_short again
-    if (!name.includes('sショート') && !name.includes('s-short')) return 'short';
-  }
-  if (name.includes('ミドル') || name.includes('3ヶ月') || name.includes('3～6') || name.includes('3~6')) {
-    return 'middle';
-  }
-  if (name.includes('ロング') || name.includes('6ヶ月')) {
-    return 'long';
-  }
-  return null;
 }
 
 /** Daily rent used for calculation (effective → discounted → original). */
@@ -246,16 +241,18 @@ function isPlanUsable(plan: CalculatorPlan): boolean {
   const daily = planDailyRent(plan);
   if (daily == null) return false;
   if (daily < 0) return false;
+  // 算出不能な単位(未知単位の光熱費/管理料)のプランは計算対象から除外する
+  // (決定 11・2026-10-09 承認「計算対象除外」— 0 円や過大値に黙認畳み込みしない)
+  if (
+    plan.utilities_included === false &&
+    plan.utilities_yen != null &&
+    toPerDay(plan.utilities_yen, plan.presentation_unit) == null
+  ) {
+    return false;
+  }
+  // management_fee_daily_yen が null(BE の算出不能)は対象外。未記載は BE が 0 を返す
+  if (plan.management_fee_daily_yen === null) return false;
   return true;
-}
-
-/**
- * プラン表示用コード。normalizePlanCode で解決できない帯(独自 plan_key 等)は
- * plan_code をそのまま表示キーとして使う(PLAN_LABELS 未登録コードは
- * 呼び出し側が plan_name にフォールバックする)。
- */
-function displayPlanCode(plan: CalculatorPlan): PlanCode {
-  return normalizePlanCode(plan) ?? ((plan.plan_code || plan.plan_name) as PlanCode);
 }
 
 /**
@@ -282,92 +279,68 @@ export function selectPlanByDays(
   const usable = plans.filter(isPlanUsable);
   if (usable.length === 0) return null;
 
+  // データ駆動経路(BE select_plan_for_stay ミラー)のみ。duration データのない
+  // プランは本番に存在しない(BE が duration なしデータを生産不能・実測 0 件)のため、
+  // レガシーの文字列バンド推定経路は 2026-10-08 に削除した(設計 §3.6)。
   const banded = usable
     .map((plan) => ({ plan, band: planDurationBand(plan) }))
     .filter((x): x is { plan: CalculatorPlan; band: { min: number; max: number | null } } =>
       x.band != null
     );
+  if (banded.length === 0) return null;
 
-  if (banded.length > 0) {
-    // データ駆動経路(BE select_plan_for_stay ミラー): duration_min_days 昇順
-    const ordered = [...banded].sort((a, b) => a.band.min - b.band.min);
-    const toResult = (
-      c: { plan: CalculatorPlan; band: { min: number; max: number | null } },
-      usedFallback: boolean
-    ) => {
-      const selectedCode = displayPlanCode(c.plan);
-      const preferred = usedFallback ? preferredPlanCodeForDays(stayDays) : selectedCode;
-      const fallbackNote = usedFallback
-        ? `この物件に${stayDays}日の滞在に対応する料金プラン帯がないため、` +
-          `${c.plan.plan_name ?? ''}の料金で試算しています。`
-        : null;
-      return {
-        preferred,
-        selected: c.plan,
-        selectedCode,
-        usedFallback,
-        fallbackNote,
-      };
+  // duration_min_days 昇順
+  const ordered = [...banded].sort((a, b) => a.band.min - b.band.min);
+  const toResult = (
+    c: { plan: CalculatorPlan; band: { min: number; max: number | null } },
+    usedFallback: boolean
+  ) => {
+    const selectedCode = (c.plan.plan_code || c.plan.plan_name || '') as PlanCode;
+    const fallbackNote = usedFallback
+      ? `この物件に${stayDays}日の滞在に対応する料金プラン帯がないため、` +
+        `${planDisplayLabel(c.plan)}の料金で試算しています。`
+      : null;
+    return {
+      preferred: selectedCode,
+      selected: c.plan,
+      selectedCode,
+      usedFallback,
+      fallbackNote,
     };
+  };
 
-    const exact = ordered.find(
-      (c) => stayDays >= c.band.min && (c.band.max == null || stayDays <= c.band.max)
-    );
-    if (exact) return toResult(exact, false);
+  const exact = ordered.find(
+    (c) => stayDays >= c.band.min && (c.band.max == null || stayDays <= c.band.max)
+  );
+  if (exact) return toResult(exact, false);
 
-    // より長い帯(min > stay のうち最小min)で代替
-    const longer = ordered.find((c) => c.band.min > stayDays);
-    if (longer) return toResult(longer, true);
+  // より長い帯(min > stay のうち最小min)で代替
+  const longer = ordered.find((c) => c.band.min > stayDays);
+  if (longer) return toResult(longer, true);
 
-    // 短い帯(min <= stay のうち最大min)で代替
-    const shorter = [...ordered].reverse().find((c) => c.band.min <= stayDays);
-    if (shorter) return toResult(shorter, true);
+  // 短い帯(min <= stay のうち最大min)で代替
+  const shorter = [...ordered].reverse().find((c) => c.band.min <= stayDays);
+  if (shorter) return toResult(shorter, true);
 
-    return toResult(ordered[0], true);
-  }
-
-  // レガシー経路: plan_code/plan_name 文字列から BraTTo 固定バンドを推定
-  const preferred = preferredPlanCodeForDays(stayDays);
-  const byCode = new Map<PlanCode, CalculatorPlan>();
-  for (const plan of usable) {
-    const code = normalizePlanCode(plan);
-    if (code != null && !byCode.has(code)) byCode.set(code, plan);
-  }
-
-  const prefIdx = PLAN_BAND_ORDER.indexOf(preferred);
-  // Longer bands first (official-style upgrade), then shorter
-  const searchOrder: PlanCode[] = [
-    ...PLAN_BAND_ORDER.slice(prefIdx),
-    ...PLAN_BAND_ORDER.slice(0, prefIdx).reverse(),
-  ];
-
-  for (const code of searchOrder) {
-    const plan = byCode.get(code);
-    if (plan) {
-      return {
-        preferred,
-        selected: plan,
-        selectedCode: code,
-        usedFallback: code !== preferred,
-        fallbackNote:
-          code !== preferred
-            ? `この物件に${PLAN_LABELS[preferred]}がないため、` +
-              `${PLAN_LABELS[code]}の料金で試算しています。`
-            : null,
-      };
-    }
-  }
-  return null;
+  return toResult(ordered[0], true);
 }
 
-function campaignTargetsPlan(cam: CalculatorCampaign, planCode: PlanCode): boolean {
-  const target = (cam.target_plan_code || '').toLowerCase().trim();
+/**
+ * キャンペーン対象判定の照合キー。wire の plan_code(= BE plan_key)をそのまま使い、
+ * normalizePlanCode による帯の再導出は行わない(BE campaign_targets_plan_key ミラー。
+ * 再導出だと plan_key=other 等のプランに対象外キャンペーンが誤適用される)。
+ */
+function campaignMatchCode(plan: CalculatorPlan): string {
+  return (plan.plan_code || '').toLowerCase().trim();
+}
+
+function campaignTargetsPlan(cam: CalculatorCampaign, matchCode: string): boolean {
+  const target = (cam.target_plan_key || cam.target_plan_code || '').toLowerCase().trim();
   if (!target || target === 'all') return true;
-  return target === planCode;
+  return target === matchCode;
 }
 
 function isCampaignActiveOnDate(cam: CalculatorCampaign, isoDate: string): boolean {
-  if (cam.is_active === false) return false;
   const d = isoDate;
   if (cam.starts_on && cam.starts_on > d) return false;
   if (cam.ends_on && cam.ends_on < d) return false;
@@ -376,14 +349,14 @@ function isCampaignActiveOnDate(cam: CalculatorCampaign, isoDate: string): boole
 
 function filterApplicableCampaigns(
   campaigns: CalculatorCampaign[] | undefined,
-  planCode: PlanCode,
+  matchCode: string,
   stayDays: number,
   onDate: string
 ): CalculatorCampaign[] {
   if (!campaigns?.length) return [];
   return campaigns.filter((c) => {
     if (!isCampaignActiveOnDate(c, onDate)) return false;
-    if (!campaignTargetsPlan(c, planCode)) return false;
+    if (!campaignTargetsPlan(c, matchCode)) return false;
     if (c.stay_min_days != null && stayDays < c.stay_min_days) return false;
     if (c.stay_max_days != null && stayDays > c.stay_max_days) return false;
     return true;
@@ -396,15 +369,14 @@ function filterApplicableCampaigns(
  */
 function applyStructuredCampaigns(
   selected: CalculatorPlan,
-  planCode: PlanCode,
   stayDays: number,
   onDate: string,
   campaigns: CalculatorCampaign[] | undefined,
-  baseContractFee: number
+  baseContractFee: number | null
 ): {
   rentDaily: number;
   cleaningFee: number;
-  contractFee: number;
+  contractFee: number | null;
   notes: string[];
   usedStructure: boolean;
 } {
@@ -418,7 +390,7 @@ function applyStructuredCampaigns(
   let contractFee = baseContractFee;
   const notes: string[] = [];
 
-  const applicable = filterApplicableCampaigns(campaigns, planCode, stayDays, onDate);
+  const applicable = filterApplicableCampaigns(campaigns, campaignMatchCode(selected), stayDays, onDate);
   if (applicable.length === 0) {
     return {
       rentDaily: fallbackDaily,
@@ -449,7 +421,7 @@ function applyStructuredCampaigns(
     if (dmax != null && totalOff > dmax) totalOff = dmax;
     rentDaily = stayDays > 0 ? Math.max(0, original - Math.floor(totalOff / stayDays)) : original;
     const label = c.campaign_type || c.title || '割引';
-    notes.push(`${label}: 日額${value.toLocaleString()}円×${applyDays}日分を反映`);
+    notes.push(`${label}: 日額${formatYen(value)}×${applyDays}日分を反映`);
     usedStructure = true;
   } else if (pctCams.length > 0) {
     const c = pctCams[0];
@@ -479,7 +451,8 @@ function applyStructuredCampaigns(
       rentDaily = Math.max(0, rentDaily - Math.floor(rentBen / stayDays));
     }
     if (cleanBen) cleaningFee = Math.max(0, cleaningFee - cleanBen);
-    if (feeBen) contractFee = Math.max(0, contractFee - feeBen);
+    // 手数料が不明のまま減額すると誤表示になるため、null は null を維持
+    if (feeBen && contractFee != null) contractFee = Math.max(0, contractFee - feeBen);
     notes.push(`${label}: パッケージお得を反映`);
     usedStructure = true;
   }
@@ -542,18 +515,18 @@ export function calculateRentTotalByDays(input: CalcByDaysInput): CalcOutcome {
   }
 
   const { preferred, selected, selectedCode, usedFallback, fallbackNote } = selection;
-  const baseContractFee = input.contractFeeYen ?? CONTRACT_FEE_YEN;
+  // null = 算出不能(総額から除外し warnings で明示)。数値への補完はしない
+  const baseContractFee = input.contractFeeYen ?? null;
   const useStructure = input.useStructuredCampaigns !== false;
 
   let rentDaily: number;
   let cleaningFee: number;
-  let contractFee: number;
+  let contractFee: number | null;
   const structureNotes: string[] = [];
 
   if (useStructure && input.campaigns && input.campaigns.length > 0) {
     const applied = applyStructuredCampaigns(
       selected,
-      selectedCode,
       stayDays,
       onDate,
       input.campaigns,
@@ -575,18 +548,22 @@ export function calculateRentTotalByDays(input: CalcByDaysInput): CalcOutcome {
   const managementTotal = managementDaily * stayDays;
   const utilitiesTotal = utilitiesDaily * stayDays;
   const grandTotal =
-    rentTotal + managementTotal + utilitiesTotal + cleaningFee + contractFee;
+    rentTotal + managementTotal + utilitiesTotal + cleaningFee + (contractFee ?? 0);
 
   const warnings: string[] = [];
   if (usedFallback && fallbackNote) {
     warnings.push(fallbackNote);
   }
 
+  if (contractFee == null) {
+    warnings.push('契約事務手数料が不明(取得元サイトの既定が未登録)のため、総額から除外しています。');
+  }
+
   if (utilitiesDaily > 0) {
     warnings.push(
-      `光熱費（${selected.utilities_yen?.toLocaleString()}円/${
+      `光熱費（${formatYen(selected.utilities_yen)}/${
         (selected.presentation_unit || 'per_day') === 'per_month' ? '月' : '日'
-      }）を日額${utilitiesDaily.toLocaleString()}円で加算しています。`
+      }）を日額${formatYen(utilitiesDaily)}で加算しています。`
     );
   }
 

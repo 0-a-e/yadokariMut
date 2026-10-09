@@ -18,19 +18,60 @@ from domain.models import (
     PropertyImage,
     PropertyLink,
 )
-from domain.pricing import (
+from domain.pricing import MONTH_DAYS
+from sources.base import ListCard
+from sources.parsing import (
+    parse_floor_text,
+    parse_japanese_era,
+    parse_money,
+    parse_orientation_text,
+    split_access,
+)
+from sources.unionmonthly.plans import (
     UNION_DURATION_BANDS,
     UNION_PLAN_CODE_MAP,
     parse_union_duration_text,
 )
-from sources.base import ListCard
-from sources.parsing import parse_japanese_era, parse_money, split_access
+from store.pref_master import PREF_DISPLAY_NAMES
 
 BASE = "https://www.unionmonthly.jp"
-PARSER_VERSION = "unionmonthly-detail-1.1"
+PARSER_VERSION = "unionmonthly-detail-1.3"
+
+# 住所走査用の県名リスト。正本 (store.pref_master) から派生させる。
+# gunma/gumma 別名で値が重複するため set 化し、長い県名 (4文字) を先に照合する。
+_PREF_NAMES = sorted(set(PREF_DISPLAY_NAMES.values()), key=len, reverse=True)
 
 # 全物件共通で掲載されるバナー（物件固有のキャンペーンではないため登録対象外）
 SITE_WIDE_CAMPAIGN_TITLES = {"嬉しい3大特典キャンペーン"}
+
+# スタッフのおすすめコメント(comment-box)のブロック見出し行。実データ 5,315 件全走査の
+# 先頭マーカー分布(■路線情報 4,789 / ＜路線情報(最寄駅→主要駅)＞ 442 / ＜物件の特徴＞ 21 /
+# ＜○○駅おすすめコメント＞ 等・2026-10-09)に基づく。この行以前は
+# 「○○県○○市の○○駅の…」「ユニオンマンスリー○○です」のボイラープレート 2 行のみ。
+_POINT_MARKER_RE = re.compile(r"^(?:■|＜|【).*(?:コメント|特徴|情報)")
+
+
+def _parse_point_text(soup: BeautifulSoup) -> str | None:
+    """スタッフのおすすめコメントを point_text 向けテキストへ整形する。
+
+    section.comment が無ければ None。comment-box 本文を行正規化したのち、
+    最初のブロック見出し行以前のボイラープレートのみ落とし、以降
+    (■路線情報・■周辺情報・自由文コメント)は原文どおり保持する。
+    見出しが 1 行も無い変種は全文フォールバック(情報欠落を避ける)。
+    """
+    section = soup.select_one("section.comment")
+    if section is None:
+        return None
+    box = section.select_one("div.comment-box") or section
+    lines = [ln.strip() for ln in box.get_text("\n").split("\n")]
+    text = "\n".join(ln for ln in lines if ln)
+    if not text:
+        return None
+    all_lines = text.split("\n")
+    for i, ln in enumerate(all_lines):
+        if _POINT_MARKER_RE.match(ln):
+            return "\n".join(all_lines[i:]).strip() or None
+    return text
 
 
 def parse_detail_html(
@@ -53,6 +94,16 @@ def parse_detail_html(
     built_year, built_month, year_text = _parse_built(specs.get("築年") or specs.get("築年月"))
     structure = specs.get("構造")
     capacity = specs.get("入居可能人数")
+    # 所在階は floors_text に原文を保存し、整数階数は parse_floor_text で導出する
+    # (SSOT: sources.parsing.parse_floor_text / docs/floor-number-ssot-plan.md §3.4)。
+    shozokai_text = specs.get("所在階")
+    floor_spec = parse_floor_text(shozokai_text)
+    # 向きは原文+角度+取得経路の 3 列。角度が取れたときのみ source を設定し
+    # 取れない場合は 3 列とも NULL (docs/orientation-model-plan.md §6.1)。
+    muki_raw = specs.get("向き")
+    orientation = parse_orientation_text(muki_raw)
+    orientation_text = muki_raw if orientation.deg is not None else None
+    orientation_source = "spec_parse" if orientation.deg is not None else None
     lat, lng = _parse_geo(html, soup)
     pref_name, municipality = _split_pref_muni(address)
     prefecture_slug = card.prefecture_slug or _pref_slug_from_url(detail_url or card.detail_url)
@@ -63,13 +114,14 @@ def parse_detail_html(
     campaigns = _parse_campaigns(soup)
     images = _parse_images(soup, base_url=base_url)
     links = _parse_links(soup, base_url=base_url)
+    point_text = _parse_point_text(soup)
 
     min_stay = None
     if "最低契約" in soup.get_text():
         m = re.search(r"最低契約日数[^\d]*(\d+)\s*([かヶヵカ]月|日)", soup.get_text())
         if m:
             n = int(m.group(1))
-            min_stay = n * 30 if "月" in m.group(2) else n
+            min_stay = n * MONTH_DAYS if "月" in m.group(2) else n
 
     return PropertyDraft(
         source_site="unionmonthly",
@@ -92,7 +144,15 @@ def parse_detail_html(
         construction_year_text=year_text,
         capacity_text=capacity,
         structure=structure,
+        floors_text=shozokai_text,
+        floor_number=floor_spec.floor_min,
+        floor_number_max=floor_spec.floor_max,
+        building_floors=floor_spec.building_floors,
+        orientation_text=orientation_text,
+        orientation_deg=orientation.deg,
+        orientation_source=orientation_source,
         min_stay_days=min_stay,
+        point_text=point_text,
         detail_scraped_at=datetime.now().isoformat(),
         accesses=accesses,
         images=images,
@@ -199,17 +259,7 @@ def _parse_geo(html: str, soup: BeautifulSoup) -> tuple[Optional[float], Optiona
 def _split_pref_muni(address: str | None) -> tuple[Optional[str], Optional[str]]:
     if not address:
         return None, None
-    prefs = [
-        "北海道", "東京都", "大阪府", "京都府",
-        "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
-        "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "神奈川県",
-        "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県",
-        "岐阜県", "静岡県", "愛知県", "三重県", "滋賀県", "兵庫県",
-        "奈良県", "和歌山県", "鳥取県", "島根県", "岡山県", "広島県",
-        "山口県", "徳島県", "香川県", "愛媛県", "高知県", "福岡県",
-        "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
-    ]
-    for p in prefs:
+    for p in _PREF_NAMES:
         if address.startswith(p):
             rest = address[len(p) :].strip()
             m = re.match(r"(.+?[市区町村])", rest)
@@ -270,40 +320,48 @@ def _parse_accesses(soup: BeautifulSoup, html: str) -> list[PropertyAccess]:
 
 
 def _parse_features(soup: BeautifulSoup) -> list[PropertyFeature]:
+    """生値 + 辞書ルックアップした category のみを書く(設計 §4.2・決定 1/20)。
+
+    サイト見出し(cat_map)と list_tag 出自マーカーは廃止。facility_list の
+    <li class="-active"> が物件事実のマーカー(非 active は未達成のグレーアウト
+    表示)のため active のみ、entry_tag / tagList はサイト運営バッジとして採る。
+    """
+    from domain.feature_categories import lookup_feature_category
+
+    def _append(features: list[PropertyFeature], name: str) -> None:
+        cat = lookup_feature_category(name)
+        features.append(
+            PropertyFeature(feature_name=name, category=cat.code if cat else None)
+        )
+
     features: list[PropertyFeature] = []
-    cat_map = {
-        "建物設備": "building",
-        "室内設備": "room",
-        "家具家電": "appliance",
-        "アメニティ": "supplies",
-        "その他": "other",
-    }
     for table in soup.select("table.facility_table"):
         for tr in table.select("tr"):
             th = tr.select_one("th")
             td = tr.select_one("td")
             if not th or not td:
                 continue
-            cat_label = th.get_text(strip=True)
-            cat = cat_map.get(cat_label, "other")
             parts = re.split(r"[、,，]", td.get_text("、", strip=True))
             for p in parts:
                 name = p.strip()
                 if name:
-                    features.append(PropertyFeature(feature_name=name, feature_category=cat, raw_text=name))
-    # tag chips
-    for el in soup.select(".facility_list li, .entry_tag li, .tagList li"):
+                    _append(features, name)
+    chips = list(soup.select(".entry_tag li, .tagList li"))
+    chips += [
+        li for li in soup.select(".facility_list li")
+        if "-active" in (li.get("class") or [])
+    ]
+    for el in chips:
         name = el.get_text(strip=True)
         if name:
-            features.append(PropertyFeature(feature_name=name, feature_category="list_tag", raw_text=name))
-    # dedupe
-    seen: set[tuple[str, str | None]] = set()
+            _append(features, name)
+    # dedupe(feature_name 単位 — UNIQUE(property_id, feature_name) と同じ鍵)
+    seen: set[str] = set()
     out: list[PropertyFeature] = []
     for f in features:
-        key = (f.feature_name, f.feature_category)
-        if key in seen:
+        if f.feature_name in seen:
             continue
-        seen.add(key)
+        seen.add(f.feature_name)
         out.append(f)
     return out
 

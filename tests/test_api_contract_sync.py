@@ -14,6 +14,10 @@ BE 契約を変えた後に schema.d.ts の再生成を忘れることを防ぐ�
    コミット済み schema.d.ts が byte 同値であること。
    node / pnpm / frontend/node_modules が無い環境では skip する
    (公開リポジトリや CI 最小環境での誤失敗を防ぐ)。
+4. 語彙同期検証 (H5-BE): api_models.ShortlistStatus の Literal 値集合と
+   FE 正本 frontend/src/types.ts SHORTLIST_STATUS_VALUES が一致すること。
+   Literal 化だけでは生成型経由で語彙追加が FE に通知されないため、
+   正規表現パースによる直接比較で検知する。
 """
 
 from __future__ import annotations
@@ -24,21 +28,25 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
+from api_models import RentPlan, ShortlistStatus
 from web_server import app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_DTS_PATH = REPO_ROOT / "frontend" / "src" / "lib" / "api" / "schema.d.ts"
+TYPES_TS_PATH = REPO_ROOT / "frontend" / "src" / "types.ts"
 
 # 200 応答が $ref を持たないことが既知のエンドポイント(Response 系・行契約)。
 # 新たに response_model を持てる JSON API を足した場合はここに載せず型付けること。
 UNTYPED_EXEMPT_PATHS: set[str] = {
     "/",  # FileResponse (index.html) / StaticFiles マウント
     "/api/copilotkit",  # AG-UI の StreamingResponse (SSE 行契約)
-    "/api/geojson/stream",  # NDJSON StreamingResponse (行契約)
+    "/api/buildings/geojson/stream",  # 同上 (建物単位 NDJSON・行契約)
     "/api/export/kml",  # KML ファイルダウンロード (Response 系)
+    "/api/media/{media_id}",  # rustfs プロキシの画像バイナリ配信 (Response 系)
 }
 UNTYPED_EXEMPT_PATH_PREFIXES = (
     "/api/tiles/",  # PMTiles/MVT バイナリ配信 (Response 系)
@@ -199,3 +207,135 @@ def test_schema_dts_matches_fresh_codegen():
             "openapi-typescript の生成物とコミット済み schema.d.ts が一致しません。"
             "BE 契約変更後に再生成を忘れています (cd frontend && pnpm generate:api)"
         )
+
+
+# ============================================================
+# 段階 4: 語彙同期 — api_models.ShortlistStatus vs FE 正本 SHORTLIST_STATUS_VALUES
+# ============================================================
+# types.ts の正本定義形式:
+#   export const SHORTLIST_STATUS_VALUES = ['saved', 'hide', 'reject', 'none'] as const;
+#   export type ShortlistStatus = (typeof SHORTLIST_STATUS_VALUES)[number];
+_SHORTLIST_VALUES_RE = re.compile(r"SHORTLIST_STATUS_VALUES\s*=\s*\[([^\]]*)\]")
+_TS_SINGLE_QUOTED_RE = re.compile(r"'([^']+)'")
+
+
+def _fe_shortlist_status_values() -> list[str]:
+    """types.ts の SHORTLIST_STATUS_VALUES ('... as const' 配列) から値を抽出する."""
+    m = _SHORTLIST_VALUES_RE.search(TYPES_TS_PATH.read_text(encoding="utf-8"))
+    assert m is not None, (
+        f"{TYPES_TS_PATH} に SHORTLIST_STATUS_VALUES 定義が見つかりません"
+        "(types.ts の正本形式を想定しています)"
+    )
+    values = _TS_SINGLE_QUOTED_RE.findall(m.group(1))
+    assert values, "SHORTLIST_STATUS_VALUES から値を抽出できませんでした"
+    return values
+
+
+def test_shortlist_status_literal_matches_fe_canonical():
+    """BE (api_models.ShortlistStatus) と FE 正本の語彙が過不足なく一致する.
+
+    FE の union 型 (ShortlistStatus / SHORTLIST_STATUS_VALUES 参照) と BE の
+    Literal は文字列レベルでしか連動しないため、片側だけの語彙追加をここで検知する。
+    """
+    be_values = list(get_args(ShortlistStatus))
+    assert be_values, "api_models.ShortlistStatus に Literal 値が無い"
+    fe_values = _fe_shortlist_status_values()
+
+    assert set(be_values) == set(fe_values), (
+        "shortlist_status の語彙が BE / FE で不一致です。\n"
+        f"  BE (api_models.ShortlistStatus): {be_values}\n"
+        f"  FE (types.ts SHORTLIST_STATUS_VALUES): {fe_values}\n"
+        "正本 (FE) に合わせて両側を更新してください。"
+    )
+
+
+# ============================================================
+# 段階 5: presentation_unit 語彙 — domain.models.PresentationUnit 統一 (決定 11)
+# ============================================================
+def test_rent_plan_presentation_unit_is_literal_enum():
+    """RentPlan.presentation_unit が Literal (2 値) で openapi に enum として出ること.
+
+    語彙正本は domain.models.PresentationUnit。str 欄のままだと openapi 生成型が
+    string になり、DB CHECK 制約 (決定 11) と契約語彙の二重真実が残る。
+    """
+    from typing import get_args
+
+    from domain.models import PresentationUnit
+
+    assert set(get_args(PresentationUnit)) == {"per_day", "per_month"}
+
+    annotation = RentPlan.model_fields["presentation_unit"].annotation
+    assert set(get_args(annotation)) == {"per_day", "per_month"}, annotation
+
+    schema = RentPlan.model_json_schema()
+    prop = schema["properties"]["presentation_unit"]
+    assert sorted(prop.get("enum") or []) == ["per_day", "per_month"], prop
+
+    # FastAPI 経由の応答スキーマ (openapi.json 正本) でも enum 化されていること
+    openapi_prop = (
+        app.openapi()["components"]["schemas"]["RentPlan"]["properties"]["presentation_unit"]
+    )
+    assert sorted(openapi_prop.get("enum") or []) == ["per_day", "per_month"], openapi_prop
+
+
+def _fe_feature_toggle_values() -> list[str]:
+    """types.ts の FEATURE_TOGGLE_OPTIONS から value(code)を抽出する."""
+    src = TYPES_TS_PATH.read_text(encoding="utf-8")
+    m = re.search(
+        r"FEATURE_TOGGLE_OPTIONS[^=]*=\s*\[(.*?)\]\s*;", src, re.DOTALL
+    )
+    assert m is not None, (
+        f"{TYPES_TS_PATH} に FEATURE_TOGGLE_OPTIONS 定義が見つかりません"
+        "(形式変更の場合は抽出正規表現の更新が必要)"
+    )
+    values = re.findall(r"value:\s*'([^']+)'", m.group(1))
+    assert values, "FEATURE_TOGGLE_OPTIONS から value を抽出できませんでした"
+    return values
+
+
+def test_feature_toggle_options_subset_of_dictionary_codes():
+    """FE 設備トグルの value ⊆ 機能カテゴリ辞書の code(単純/複合/親 — 決定 3・18).
+
+    横断 code(単独佃用可・トグル非掲載)は許容しない。判定は code 一致のみの
+    ため、辞書に無い value は恒常 0 件トグルになる(ここで検知する)。
+    """
+    from domain.feature_categories import PARENT_CODES, cross_codes, feature_unit_codes
+
+    values = _fe_feature_toggle_values()
+    assert len(values) == len(set(values)), "FEATURE_TOGGLE_OPTIONS に value の重複がある"
+
+    allowed = set(feature_unit_codes()) | set(PARENT_CODES)
+    cross = set(cross_codes())
+    unknown = set(values) - allowed
+    assert not unknown, (
+        "辞書に無いトグル value が存在します(恒常 0 件トグルになる):\n"
+        f"  unknown: {sorted(unknown)}\n"
+        f"  cross(トグル非掲載の横断 code)を使っている場合は除外: {sorted(cross)}"
+    )
+
+
+def test_plan_colors_keys_subset_of_plan_catalog():
+    """FE PLAN_COLORS のキー ⊆ plan_catalog 辞書コード(設計 §3.6・開集合のため逆方向は書かない).
+
+    未知コードの色は予備パレット(assignPlanColors)で割り当てられるため、
+    PLAN_COLORS に辞書外コードが残っていると辞書語彙の改名・廃止を検知できない。
+    """
+    import re
+
+    from domain.plan_catalog import PLAN_CATALOG
+
+    chart_path = REPO_ROOT / "frontend" / "src" / "components" / "shared" / "charts" / "chartTheme.tsx"
+    m = re.search(
+        r"export const PLAN_COLORS[^=]*=\s*\{(.*?)\};", chart_path.read_text(encoding="utf-8"), re.DOTALL
+    )
+    assert m is not None, "chartTheme.tsx に PLAN_COLORS 定義が見つかりません"
+    keys = re.findall(r"^\s*([a-zA-Z_][a-zA-Z0-9_]*|'[^']+')\s*:", m.group(1), re.MULTILINE)
+    keys = [k.strip("'") for k in keys]
+    assert keys, "PLAN_COLORS からキーを抽出できませんでした"
+
+    unknown = set(keys) - set(PLAN_CATALOG)
+    assert not unknown, (
+        "PLAN_COLORS に plan_catalog 辞書外のコードがあります(改名・廃止の残留の疑い):\n"
+        f"  unknown: {sorted(unknown)}\n"
+        f"  catalog: {sorted(PLAN_CATALOG)}"
+    )

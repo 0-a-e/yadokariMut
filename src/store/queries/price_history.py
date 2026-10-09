@@ -2,34 +2,71 @@
 
 from __future__ import annotations
 
+import psycopg
 import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Iterable
 
-from store.queries._common import _repo
+from domain.tz import JST
+
+from store.pg import open_connection
 from store.source_catalog import SOURCE_CATALOG, SOURCE_DISPLAY
+
+
+# 価格破損値ガードの比帯域 (SSOT)。Python 側 _guard_price_history と
+# SQL 側 _trend_ctes の guarded CTE の双方がこの定数を参照する。
+# unionmonthly parser v1.0 低値破損の検証結果に基づく (0.25x〜4x 参照値比)。
+PRICE_GUARD_MIN_RATIO = 0.25
+PRICE_GUARD_MAX_RATIO = 4.0
+
+
+def fallback_ref(values: Iterable[Any]) -> float | None:
+    """ref 無効時の代替参照値 = 系列の正値中央値 (ガード規則の唯一の実装).
+
+    母集団は対象物件の全期間の正値スナップ値 (詳細APIの履歴窓と同一)。
+    statistics.median と同じ扱い (奇数件は中央1件、偶数件は中央2件の平均)。
+    正値が1件も無い場合は None を返し、参照値を根拠にできないため
+    呼び出し側は系列全体を除外する。
+    """
+    positive = [v for v in values if isinstance(v, (int, float)) and v > 0]
+    return statistics.median(positive) if positive else None
+
+
+def _guard_condition_sql(expr_v: str, expr_ref: str) -> str:
+    """guarded CTE 用の破損値除外条件 (_guard_price_history と同一規則).
+
+    帯域は PRICE_GUARD_MIN_RATIO / PRICE_GUARD_MAX_RATIO を SSOT とする。
+    expr_ref のフォールバック (COALESCE の第2項) は temp table guard_fallback
+    の ref 列 (fb.ref) を参照する。同テーブルの値は get_price_trend が
+    fallback_ref() (中央値規則の唯一実装) で Python 側から算出して投入する
+    ため、この条件は _trend_ctes の guarded CTE 専用。
+    """
+    ref = f"COALESCE(NULLIF({expr_ref}, 0), fb.ref)"
+    return (
+        f"WHERE {ref} IS NOT NULL\n"
+        f"      AND {expr_v} > 0\n"
+        f"      AND {expr_v} >= {PRICE_GUARD_MIN_RATIO} * {ref}\n"
+        f"      AND {expr_v} <= {PRICE_GUARD_MAX_RATIO} * {ref}"
+    )
 
 
 def _guard_price_history(
     snap_rows: list[dict[str, Any]],
     ref: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """価格履歴から破損値を除外する(検証済みガード: v > 0 かつ 0.25*ref <= v <= 4*ref).
+    """価格履歴から破損値を除外する(検証済みガード: v > 0 かつ
+    PRICE_GUARD_MIN_RATIO*ref <= v <= PRICE_GUARD_MAX_RATIO*ref。帯域定数は
+    本モジュール上部の SSOT を参照).
 
     ref は properties.catalog_rent_per_day_yen(現行値)。無効( NULL / 0 以下 )の
-    場合は系列自身の正値中央値にフォールバックする。unionmonthly parser v1.0 の
+    場合は fallback_ref()(系列自身の正値中央値)にフォールバックする。
+    unionmonthly parser v1.0 の
     低値破損(~2万行)が価格履歴UIに混入するのを防ぐのが目的で、除外件数は
     price_history_meta として FE に開示する。
     """
     if not isinstance(ref, (int, float)) or ref <= 0:
-        positive = [
-            r["catalog_rent_per_day_yen"]
-            for r in snap_rows
-            if isinstance(r.get("catalog_rent_per_day_yen"), (int, float))
-            and r["catalog_rent_per_day_yen"] > 0
-        ]
-        ref = statistics.median(positive) if positive else None
+        ref = fallback_ref(r.get("catalog_rent_per_day_yen") for r in snap_rows)
 
     guarded: list[dict[str, Any]] = []
     dropped = 0
@@ -39,7 +76,7 @@ def _guard_price_history(
             not isinstance(v, (int, float))
             or v <= 0
             or ref is None
-            or not (0.25 * ref <= v <= 4.0 * ref)
+            or not (PRICE_GUARD_MIN_RATIO * ref <= v <= PRICE_GUARD_MAX_RATIO * ref)
         ):
             dropped += 1
             continue
@@ -61,18 +98,23 @@ def _guard_price_history(
 
 # 価格変動推移の共通CTE: 品質ガード(_guard_price_history と同じ規則)適用後、
 # 同日は最新行を代表値とする。
+#
+# ref フォールバックの中身 (中央値の計算) は SQL 側に置かず、
+# _load_guard_fallbacks が Python 側 fallback_ref() で算出した値を
+# temp table 経由で渡す (規則の SSOT は Python のみ)。
 def _trend_ctes(prefecture: bool) -> str:
     """価格変動推移の共通 CTE を組み立てる.
 
-    prefecture=True のとき base の WHERE に県絞り込み (AND p.prefecture_name = ?)
+    prefecture=True のとき base の WHERE に県絞り込み (AND p.prefecture_name = %s)
     を追加する。プレースホルダは cutoff の直後に都道府県名が続くため、この CTE を
     使う全クエリ (rows / counts / carried_rows) で同じ params タプルを渡すこと。
+    guard_fallback は同一接続内で _load_guard_fallbacks を先に呼んでおくこと。
     """
-    pref_clause = "\n      AND p.prefecture_name = ?" if prefecture else ""
+    pref_clause = "\n      AND p.prefecture_name = %s" if prefecture else ""
     return f"""
 WITH base AS (
     SELECT s.property_id AS property_id,
-           date(s.scraped_at) AS d,
+           (s.scraped_at AT TIME ZONE 'Asia/Tokyo')::date AS d,
            s.scraped_at AS scraped_at,
            s.catalog_rent_per_day_yen AS v,
            s.is_active AS is_active,
@@ -80,24 +122,51 @@ WITH base AS (
            p.catalog_rent_per_day_yen AS ref
     FROM property_snapshots s
     JOIN properties p ON p.id = s.property_id
-    WHERE s.scraped_at >= ?{pref_clause}
-),
-own_avg AS (
-    SELECT property_id, AVG(catalog_rent_per_day_yen) AS a
-    FROM property_snapshots
-    WHERE catalog_rent_per_day_yen > 0
-    GROUP BY property_id
+    WHERE s.scraped_at >= %s{pref_clause}
 ),
 guarded AS (
     SELECT b.property_id, b.d, b.scraped_at, b.v, b.source_site, b.is_active
     FROM base b
-    LEFT JOIN own_avg o ON o.property_id = b.property_id
-    WHERE COALESCE(NULLIF(b.ref, 0), o.a) IS NOT NULL
-      AND b.v > 0
-      AND b.v >= 0.25 * COALESCE(NULLIF(b.ref, 0), o.a)
-      AND b.v <= 4.0 * COALESCE(NULLIF(b.ref, 0), o.a)
+    LEFT JOIN guard_fallback fb ON fb.property_id = b.property_id
+    {_guard_condition_sql("b.v", "b.ref")}
 )
 """
+
+
+def _load_guard_fallbacks(conn: psycopg.Connection) -> None:
+    """ref 無効物件の代替参照値 (fallback_ref) を temp table へ投入する.
+
+    guarded CTE は ref が無効 (NULL / 0) の物件だけ guard_fallback.ref に
+    フォールバックする。該当物件が無ければ現在の本番常態どおり空のまま
+    (JOIN は NULL を返し、参照値を根拠にできない行は除外される)。
+    中央値の母集団は「その物件の全期間の正値スナップ行」で、詳細APIの
+    _guard_price_history と同一窓。temp table は接続単位なので呼び出し毎に
+    作り直す。
+    """
+    conn.execute("DROP TABLE IF EXISTS pg_temp.guard_fallback")
+    conn.execute(
+        "CREATE TEMP TABLE guard_fallback ("
+        "property_id INTEGER PRIMARY KEY, ref REAL)"
+    )
+    rows = conn.execute(
+        """
+        SELECT s.property_id AS property_id, s.catalog_rent_per_day_yen AS v
+        FROM properties p
+        JOIN property_snapshots s ON s.property_id = p.id
+        WHERE (p.catalog_rent_per_day_yen IS NULL OR p.catalog_rent_per_day_yen <= 0)
+          AND s.catalog_rent_per_day_yen > 0
+        """
+    ).fetchall()
+    if not rows:
+        return
+    by_pid: dict[int, list[Any]] = defaultdict(list)
+    for r in rows:
+        by_pid[r["property_id"]].append(r["v"])
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO guard_fallback (property_id, ref) VALUES (%s, %s)",
+            [(pid, fallback_ref(vals)) for pid, vals in by_pid.items()],
+        )
 
 # 前進補完(キャリーフォワード)の鮮度窓(日)。ローテーションは直近7日でほぼ全物件を
 # 巡回するため、7日以内の取得値を「その日時点での既知値」とみなす。
@@ -114,7 +183,7 @@ _TREND_DAILY_CTES = """
 daily AS (
     SELECT property_id, d, source_site, v
     FROM latest
-    WHERE rn = 1 AND COALESCE(is_active, 1) = 1
+    WHERE rn = 1 AND COALESCE(is_active, TRUE)
 )
 """
 
@@ -137,19 +206,19 @@ _offs_values = ",".join(f"({i})" for i in range(_CARRY_FORWARD_WINDOW_DAYS))
 _TREND_CARRIED_SQL = _TREND_DAILY_CTES + f"""
 , seg AS (
     SELECT property_id, source_site, v, d AS src_d,
-           MIN(
-             COALESCE(date(LEAD(d) OVER (PARTITION BY property_id ORDER BY d), '-1 day'), '9999-12-31'),
-             date(d, '+{_CARRY_FORWARD_WINDOW_DAYS - 1} day'),
-             date('now', 'localtime')
+           LEAST(
+             COALESCE((LEAD(d) OVER (PARTITION BY property_id ORDER BY d))::date - 1, DATE '9999-12-31'),
+             (d::date + {_CARRY_FORWARD_WINDOW_DAYS - 1}),
+             (now() AT TIME ZONE 'Asia/Tokyo')::date
            ) AS seg_end
     FROM daily
 ),
 dates(off) AS (VALUES {_offs_values}),
 carried AS (
-    SELECT date(s.src_d, '+' || x.off || ' day') AS d,
+    SELECT (s.src_d::date + x.off)::text AS d,
            s.property_id, s.source_site, s.v
     FROM seg s CROSS JOIN dates x
-    WHERE date(s.src_d, '+' || x.off || ' day') <= s.seg_end
+    WHERE (s.src_d::date + x.off) <= s.seg_end
 )
 SELECT d, g, v, COUNT(*) AS n
 FROM (
@@ -164,7 +233,7 @@ GROUP BY d, g, v
 def _hist_median_avg(hist: dict[int, int]) -> tuple[int, int, int]:
     """値→件数のヒストグラムから (中央値, 平均, 総件数) を算出する.
 
-    sqlite の AVG(v) FILTER(rk = cnt/2+1 ...) と同じ順位の値を採用する
+    SQLite 移行前の AVG(v) FILTER(rk = cnt/2+1 ...) と同じ順位の値を採用する
     (奇数は中央1件、偶数は中央2件の平均)。ヒストグラムは空でないこと。
     """
     total = sum(hist.values())
@@ -201,15 +270,12 @@ def get_price_trend(days: int = 90, prefecture_name: str | None = None) -> dict[
     prefecture_name を指定すると物件分析モーダルの「同都道府県の市場中央値」用に
     その県の物件のみで集計する。空文字列は未指定(全県)と同じ扱い。
     """
-    repo = _repo()
-    conn = repo.connect()
-    try:
-        # 前進補完の中間結果(数十万行規模)が temp b-tree に載るため、
-        # ディスクへ溢れないようにこの接続内でのみメモリを優先する
-        conn.execute("PRAGMA temp_store = MEMORY")
+    with open_connection() as conn:
         cutoff_date = (datetime.now() - timedelta(days=days)).date().isoformat()
         # 空文字列も全県扱いへ正規化する
         pref = (prefecture_name or "").strip() or None
+        # ref 無効物件のフォールバック参照値を先に解決してから CTE を実行する
+        _load_guard_fallbacks(conn)
         ctes = _trend_ctes(pref is not None)
         params = (cutoff_date, pref) if pref else (cutoff_date,)
 
@@ -223,13 +289,14 @@ def get_price_trend(days: int = 90, prefecture_name: str | None = None) -> dict[
             params,
         ).fetchone()
         carried_rows = conn.execute(ctes + _TREND_CARRIED_SQL, params).fetchall()
-    finally:
-        conn.close()
 
-    # (日付, プロバイダ) ごとに値と変動を集約(当日取得分)
+    # (日付, プロバイダ) ごとに値と変動を集約(当日取得分)。
+    # d は base CTE の date (Phase 6c) なので carried 側 (::text) とキーを
+    # 揃えるため isoformat へ正規化する
     cells: dict[tuple[str, str], dict[str, Any]] = {}
     for r in rows:
-        key = (r["d"], r["source_site"] or "?")
+        key = (r["d"].isoformat() if hasattr(r["d"], "isoformat") else str(r["d"]),
+               r["source_site"] or "?")
         cell = cells.setdefault(key, {"values": [], "down": 0, "up": 0})
         cell["values"].append(r["v"])
         pv = r["prev_v"]
@@ -299,7 +366,7 @@ def get_price_trend(days: int = 90, prefecture_name: str | None = None) -> dict[
     return {
         "days": days,
         "carried_window_days": _CARRY_FORWARD_WINDOW_DAYS,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": datetime.now(JST),
         "providers": [
             {"id": sid, "display_name": SOURCE_DISPLAY.get(sid, sid)}
             for sid in present_sites

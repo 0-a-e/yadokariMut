@@ -4,8 +4,8 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 
 **多ソース収集**、各種追加費用やキャンペーンを適用した **滞在期間ベースの実質総額**、比較ボード、LLM / MCP 連携を統合しています。
 
-> **status:** 開発先端ベースのスナップショット（2026-10-04 時点）です。安定後はバージョンごとにスナップショットを反映します。 プルリク大歓迎です！</br>
-> **データ層:** 現行仕様は **v2**（`yadokari_mut_v2.db`）のみです。旧 v1 レガシー経路は削除済みです。
+> **status:** 開発先端ベースのスナップショット（2026-10-10 時点）です。安定後はバージョンごとにスナップショットを反映します。 プルリク大歓迎です！</br>
+> **データ層:** 物件 DB は **PostgreSQL**（PostGIS + pgvector イメージ）へ移行済みです。スキーマは **Alembic** で管理します。旧 SQLite 経路は削除済みです。
 
 ---
 
@@ -46,11 +46,14 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 - **マップ連動ビュー**: Leaflet およびクラスタリング。地図の移動・ズームに合わせて表示物件が更新されます。
 - **地図レイヤ**: 国土地理院の災害リスク情報（洪水浸水想定区域・土砂災害警戒区域・活断層図など）や標高・陰影図・衛星写真を重ねて表示。並べ替え・透明度・グループ化に対応し、既定構成はサーバー側（`/api/fe-settings`）に保存されます。
 - **クライアントサイド高速フィルタ**: 都道府県、**データソース**、価格帯、間取り、築年数、最寄り駅徒歩分数、設備条件などを即座に絞り込み。大量データでも Web Worker により UI をブロックしません。
+- **建物集約**: 同一建物の部屋（号室）を名寄せして建物単位で閲覧。地図ピン・詳細パネル・「まとめて非表示」・URL 状態（`?b=`）が建物単位で動作します。
+- **部屋スペックの可視化**: 所在階・向き（角度）のパース結果を部屋カードに表示し、価格 / 階数 × 昇順・降順の並び替えに対応します。
 
 ### 2. 多ソース対応のデータ収集
 
 - **SourceAdapter + Registry**: サイトごとに一覧・詳細の取得と正規化を実装（現状: **BraTTo** / **Union Monthly**）。
-- **v2 スキーマ**: 掲載 identity は `(source_site, external_id)`。料金は期間帯 + 提示単位（日額/月額）の `price_plans`。
+- **PostgreSQL 永続化**: 物件 DB は PostgreSQL（PostGIS + pgvector）。掲載 identity は `(source_site, external_id)`。スキーマは Alembic で管理します。
+- **メディアストレージ**: 物件画像を S3 互換の **rustfs** に dhash による重複排除付きで保存（同梱 compose で rustfs を起動。未設定時はメディア機能のみ無効で起動）。
 - **県ローテーション収集**: cron ごとに各都道府県を 1 バッチずつ順番に取得。日次上限・失敗バックオフ・飽和防止を備え、サイト負荷を抑えつつ全県を巡回します（`src/ingest/rotation.py`）。
 - **設定ボード / API**: ソース別・都道府県単位の再取得、県ローテーションの進捗・実行ログ（`scrape_runs` / `scrape_run_targets`）を画面から確認できます。
 
@@ -69,7 +72,8 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 ### 5. AI アシスタント & MCP
 
 - **CopilotKit / AG-UI**: 画面チャットからフィルタ適用・比較・地図操作などを連動。
-- **MCP**: `src/cli.py run-mcp` で外部 LLM クライアントから検索・詳細・比較・ショートリスト・GeoJSON 出力が可能。
+- **意味検索**: Gemini embedding × **pgvector** による自然文検索（「南向きでペット可の角部屋」等）に対応。ベクトルの生成は `backfill-embeddings` CLI（Gemini Batch API / sync フォールバック）。
+- **MCP**: `src/cli.py run-mcp` で外部 LLM クライアントから検索・詳細・比較・建物・ショートリスト・GeoJSON 出力が可能。
 
 ### 6. URL 状態再現 & PWA
 
@@ -84,31 +88,28 @@ YadokariMut はマンスリーマンションを効率的に比較・探索す�
 
 ```bash
 cp .env.example .env
-# DEEPSEEK_API_KEY 等を設定（.env.example 参照）
+# DEEPSEEK_API_KEY と rustfs の鍵 (YADOKARIMUT_RUSTFS_ACCESS_KEY / SECRET_KEY) を設定
+# （.env.example 参照。rustfs の鍵は openssl rand -hex 16 などで生成した任意の文字列で可）
+mkdir -p data
+
+docker compose up --build -d   # db (PostgreSQL) + rustfs + app が起動
+docker compose logs -f
 ```
 
 > **Note**: `DEEPSEEK_API_KEY` なしでも動くかもしれません(動作未確認)
 
-```bash
-# バインドマウント用に空dbを作成
-touch yadokari_mut_v2.db
-mkdir -p data
-
-docker compose up --build -d
-docker compose logs -f
-```
-
 | 項目 | 内容 |
 |------|------|
-| 公開ポート | `127.0.0.1:8000`（API + 静的 UI） |
-| データ層 | v2（`yadokari_mut_v2.db`。`YADOKARIMUT_V2_DB_PATH` で変更可） |
-| 永続化 | `./yadokari_mut_v2.db`, `./data`, `./config.json`, `./.env` |
+| 公開ポート | `127.0.0.1:8000`（API + 静的 UI）。db は `127.0.0.1:5433`、rustfs は `127.0.0.1:9000` にループバック公開 |
+| データ層 | **PostgreSQL**（PostGIS + pgvector イメージを `deploy/postgres/` からビルド）。`YADOKARIMUT_PG_*` で変更可 |
+| メディア | rustfs（S3 互換）。app は鍵未設定でもメディア機能が無効になるだけで起動します |
+| 永続化 | `./data`（PGDATA・rustfs データ・生 HTML・タイル等）, `./config.json`, `./.env` |
 | 定期収集 | `ENABLE_SCHEDULER=true`（**県ローテーション**で cron ごとに各県を 1 バッチずつ取得）。収集設定は管理画面から変更 |
 
-初回のデータ投入例（コンテナ内）:
+初回のスキーマ適用とデータ投入例（コンテナ内）:
 
 ```bash
-docker compose exec yadokari-mut python3 src/cli.py db-init
+docker compose exec yadokari-mut python3 src/cli.py db-init      # Alembic upgrade head
 docker compose exec yadokari-mut python3 src/cli.py scrape --source unionmonthly --pref osaka --pages 1 --delay 2.0
 ```
 
@@ -154,20 +155,21 @@ python3 src/cli.py run-mcp
 
 ```mermaid
 graph TD
-    subgraph Ingest ["データ収集パイプライン (v2)"]
+    subgraph Ingest ["データ収集パイプライン"]
         Config["config.json\nsources.*"] --> Registry["SourceRegistry\nsrc/sources/registry.py"]
         Registry --> Adapters["SourceAdapter\nbratto / unionmonthly / …"]
         Adapters --> Pipeline["IngestPipeline\nsrc/ingest/pipeline.py"]
         Pipeline --> Raw["raw_pages + HTML 保存"]
         Pipeline --> Repo["Repository\nsrc/store/repository.py"]
-        Repo --> DBv2[("SQLite v2\nyadokari_mut_v2.db")]
-        DBv2 --> Pricing["PricingEngine SSOT\nsrc/domain/pricing.py"]
-        DBv2 --> Geo["geocode_v2\nsrc/store/"]
-        DBv2 --> Campaign["campaign_structurer\nsrc/sources/bratto/"]
+        Repo --> PG[("PostgreSQL\nPostGIS + pgvector")]
+        Repo --> Media[("rustfs\nメディアストア")]
+        PG --> Pricing["PricingEngine SSOT\nsrc/domain/pricing.py"]
+        PG --> Geo["geocode_v2\nsrc/store/"]
+        PG --> Campaign["campaign_structurer\nsrc/sources/bratto/"]
     end
 
     subgraph Server ["サーバー・配信層"]
-        DBv2 --> ApiQ["store/queries\n(FE 互換 rent_plans マップ)"]
+        PG --> ApiQ["store/queries\n(FE 互換 rent_plans マップ)"]
         ApiQ --> API["FastAPI\nsrc/web/ (create_app + routers)"]
         API --> Agent["agent_service.py\nAG-UI"]
         API -.->|APScheduler\n県ローテーション収集| Pipeline
@@ -182,19 +184,21 @@ graph TD
         ReactApp --> Worker["Web Worker\nfilter.worker.ts"]
     end
 
-    style DBv2 fill:#1e1b4b,stroke:#818cf8,stroke-width:2px,color:#fff
+    style PG fill:#1e1b4b,stroke:#818cf8,stroke-width:2px,color:#fff
     style Pricing fill:#312e81,stroke:#a5b4fc,stroke-width:1px,color:#fff
     style ReactApp fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#fff
     style API fill:#1e293b,stroke:#854dff,stroke-width:2px,color:#fff
 ```
 
-**データベースパス**: 既定はプロジェクト直下の `yadokari_mut_v2.db`。環境変数 `YADOKARIMUT_V2_DB_PATH` で変更できます。
+**データベース**: 物件ドメインは PostgreSQL（PostGIS + pgvector イメージ）。接続先は環境変数 `YADOKARIMUT_PG_DSN`（未設定時は compose 既定 `postgresql://yadokari:yadokari-mut@127.0.0.1:5433/property`）。
 
 ---
 
 ### データベース構造
 
-正本 DDL は **`src/store/schema.py`**（`schema_version = 2`）。DB ファイル既定は **`yadokari_mut_v2.db`**（環境変数 `YADOKARIMUT_V2_DB_PATH`）。
+スキーマの正本は **Alembic マイグレーション**（`src/alembic/versions/`、ベースライン `0001_pg_baseline` 以降）。`db-init` が `alembic upgrade head` 相当を適用します。
+
+主要なテーブル構成（概要）:
 
 ```mermaid
 erDiagram
@@ -205,181 +209,36 @@ erDiagram
     properties ||--o{ property_links : "1:N リンク"
     properties ||--o{ property_features : "1:N 設備"
     properties ||--o{ property_snapshots : "1:N スナップショット"
-    properties ||--o| shortlists : "1:0..1 ショートリスト"
-    properties ||--o{ properties : "1:N parent_property_id"
+    properties ||--o{ property_embeddings : "1:N 意味検索ベクトル"
+    properties ||--o| property_shortlists : "1:0..1 検討状態"
+    properties }o--o| buildings : "N:1 建物名寄せ"
+    buildings ||--o{ building_names : "1:N 名称"
+    buildings ||--o{ building_shortlists : "1:N 建物検討状態"
     scrape_runs ||--o{ scrape_run_targets : "1:N ターゲット"
-
-    properties {
-        int id PK
-        string source_site
-        string external_id
-        string entity_type
-        int parent_property_id FK
-        string title
-        string detail_url
-        string prefecture_slug
-        string prefecture_name
-        string address
-        float lat
-        float lng
-        string layout
-        float area_m2
-        float area_m2_max
-        int built_year
-        int min_stay_days
-        int contract_fee_yen
-        int catalog_rent_per_day_yen
-        int catalog_total_hint_yen
-        float total_score
-        int is_active
-    }
-
-    price_plans {
-        int id PK
-        int property_id FK
-        string plan_key
-        string plan_name
-        int duration_min_days
-        int duration_max_days
-        int available
-        string presentation_unit
-        int rent_original_yen
-        int rent_current_yen
-        int management_yen
-        int utilities_yen
-        int utilities_included
-        int cleaning_yen
-        string campaign_label
-    }
-
-    campaigns {
-        int id PK
-        int property_id FK
-        string campaign_type
-        string title
-        string target_plan_key
-        string starts_on
-        string ends_on
-        string discount_unit
-        int discount_value
-        int stay_min_days
-        int stay_max_days
-        int parse_ok
-    }
-
-    property_accesses {
-        int id PK
-        int property_id FK
-        string line_name
-        string station_name
-        int walk_minutes
-        string raw_text
-        int sort_order
-    }
-
-    property_images {
-        int id PK
-        int property_id FK
-        string image_url
-        string image_type
-        string alt_text
-        int sort_order
-    }
-
-    property_links {
-        int id PK
-        int property_id FK
-        string link_type
-        string url
-        string label
-    }
-
-    property_features {
-        int id PK
-        int property_id FK
-        string feature_name
-        string feature_category
-        string raw_text
-    }
-
-    property_snapshots {
-        int id PK
-        int property_id FK
-        string scraped_at
-        int is_active
-        int catalog_rent_per_day_yen
-        int min_discounted_monthly_total_yen
-        string raw_html_path
-        string parser_version
-    }
-
-    shortlists {
-        int id PK
-        int property_id FK
-        string status
-        string comment
-        string updated_at
-    }
-
-    scrape_runs {
-        int id PK
-        string source_site
-        string started_at
-        string finished_at
-        string status
-        int list_pages
-        int list_items
-        int detail_ok
-        int detail_fail
-    }
-
-    scrape_run_targets {
-        int id PK
-        int run_id FK
-        string source_site
-        string target_key
-        string status
-        int list_pages
-        int list_items
-        int detail_ok
-        int detail_fail
-    }
-
-    schema_meta {
-        string key PK
-        string value
-    }
-
-    raw_pages {
-        int id PK
-        string source_site
-        string url
-        string page_type
-        string fetched_at
-        int status_code
-        string content_hash
-        string storage_path
-    }
 ```
 
 #### 主要テーブル解説
 
-- **`properties`**: 多ソース物件の現在値。identity は `UNIQUE(source_site, external_id)`。`entity_type`（room / building / plan 等）と `parent_property_id` で階層を表現可能。検索用キャッシュとして `catalog_rent_per_day_yen` 等を保持。
-- **`price_plans`**: v2 料金テーブル（v1 の `rent_plans` 後継）。帯判定は **`duration_min_days` / `duration_max_days`**。`presentation_unit` は `per_day` | `per_month`（月額は PricingEngine が 30 日換算で日額化）。
-- **`campaigns`**: 条件付き割引・特典。対象プランは **`target_plan_key`**（v1 の `target_plan_code` ではない）。
-- **`property_accesses` / `property_images` / `property_links` / `property_features`**: 交通・画像・外部リンク・設備タグ。
-- **`property_snapshots`**: 取得時点の履歴（カタログ賃料・raw 参照など）。
-- **`shortlists`**: ユーザーの検討状態（`property_id` は UNIQUE → 物件あたり 0..1 行）。
-- **`scrape_runs` / `scrape_run_targets`**: ソース単位の実行と、県などターゲット単位の進捗。
-- **`schema_meta`**: `schema_version = 2`。
+- **`properties`**: 多ソース物件（部屋）の現在値。identity は `UNIQUE(source_site, external_id)`。検索用キャッシュ（`catalog_rent_per_day_yen`・階数 `floor_number`・向き `orientation_deg` 等）を保持。
+- **`price_plans`**: 料金テーブル。帯判定は **`duration_min_days` / `duration_max_days`**。`presentation_unit` は `per_day` | `per_month`（月額は PricingEngine が 30 日換算で日額化）。プラン語彙は `plan_catalog`（`plan_label` 配信）。
+- **`campaigns`**: 条件付き割引・特典。対象プランは **`target_plan_key`**。
+- **`property_features`**: 設備。フィルタ用の正規化カテゴリ **`category`**（`feature_categories` 辞書で解決）を持つ。
+- **`property_accesses` / `property_images` / `property_links`**: 交通・画像・外部リンク。
+- **`property_snapshots`**: 取得時点の履歴（カタログ賃料など）。
+- **`property_embeddings`**: 意味検索用の埋め込みベクトル（pgvector）。`embedded_sha256` で元テキストの差し替えを検知。
+- **`buildings` / `building_names`**: 部屋の建物名寄せ結果（`building_identity` バッチ + 手動 merge/split CLI）。
+- **`property_shortlists` / `building_shortlists`**: 物件 / 建物単位の検討状態（status + メモ）。
+- **`media_assets` / `media_variants`**: rustfs に保存した画像と派生サイズ（dhash 重複排除）。
+- **`scrape_runs` / `scrape_run_targets` / `rotation_state`**: ソース単位の実行、ターゲット単位の進捗、県ローテーション状態。
 - **`raw_pages`**: 生 HTML メタデータ（再パース・差分用。物件への FK は持たない）。
+- **`app_settings`**: 収集設定などの JSON 設定ストア（管理画面から編集）。
 
 ---
 
 ### データパイプラインと処理フロー
 
 ```text
-[1. discover/list] → [2. detail parse] → [3. persist v2] → [4. enrich]
+[1. discover/list] → [2. detail parse] → [3. persist] → [4. enrich]
  SourceAdapter        Adapter + Domain      Repository         geocode / campaign
  config sources.*     models               price_plans 等      feature / score
         └──────── IngestPipeline (src/ingest/pipeline.py) ────────┘
@@ -394,12 +253,12 @@ erDiagram
    - 一覧ページング → 詳細 HTML 取得 → Domain DTO へ正規化 → `Repository` で upsert。  
    - 生 HTML は `raw_pages` / ストレージに保存可能（`--no-raw` で省略可）。
 2. **永続化 (`src/store/`)**  
-   - DDL は `schema.py`。読み取り API 形への変換は `store/queries/`（search / detail / price_history / geojson / export。`price_plans` → FE 互換 `rent_plans`）。
+   - DDL 正本は Alembic（`src/alembic/`）。読み取り API 形への変換は `store/queries/`（search / detail / price_history / buildings / geojson / export。`price_plans` → FE 互換 `rent_plans`）。
 3. **料金計算 (`src/domain/pricing.py`)**  
    - stay 日数 inclusive、帯は duration マッチ、月額は `MONTH_DAYS=30` で日額化。  
    - 総額 ≈ (賃料日額 + 管理日額 + 光熱日額*) × 日数 + 清掃 + 契約手数料。
 4. **ジオコーディング**  
-   - v2: `store/geocode_v2.py` 等。住所 → lat/lng（Nominatim / Google 等）。
+   - `store/geocode_v2.py` 等。住所 → lat/lng（Nominatim / Google 等）。
 5. **キャンペーン**  
    - 構造化は `src/sources/bratto/campaign_structurer.py`。指定期間での有効割引の反映は `domain/pricing.py`。
 
@@ -407,8 +266,12 @@ CLI 対応表:
 
 | 目的 | コマンド |
 |------|----------|
-| v2 スキーマ初期化 | `python3 src/cli.py db-init` |
+| スキーマ適用 (Alembic upgrade head) | `python3 src/cli.py db-init` |
 | 多ソース収集 | `python3 src/cli.py scrape --source unionmonthly --pref osaka --pages 1` |
+| 意味検索ベクトル生成 | `python3 src/cli.py backfill-embeddings`（`--dry-run` で対象件数確認） |
+| 物件画像のメディア投入 | `python3 src/cli.py media-backfill` |
+| 建物名寄せ | `python3 src/cli.py building-identity --dry-run` |
+| 座標欠損のジオコード | `python3 src/cli.py geocode --limit 50` |
 
 ---
 
@@ -416,18 +279,21 @@ CLI 対応表:
 
 | 領域 | 技術・ライブラリ | 概要・用途 |
 |------|------------------|------------|
-| **Back-end Core** | Python 3.10+, SQLite3 | 言語基盤・DB（v2 既定） |
+| **Back-end Core** | Python 3.10+, PostgreSQL 17（PostGIS + pgvector） | 言語基盤・物件 DB |
+| **Schema Mgmt** | Alembic | DDL 移行の正本（`db-init`） |
 | **Ingest** | SourceAdapter / Registry / IngestPipeline | 多ソース収集・正規化 |
-| **Domain** | `domain/pricing.py`, `domain/models.py` | 料金・DTO の SSOT |
-| **Store** | `store/schema.py`, `repository.py`, `store/queries/` | v2 DDL・永続化・読取 |
+| **Domain** | `domain/pricing.py`, `domain/models.py`, `domain/building_identity.py` | 料金・DTO・建物名寄せの SSOT |
+| **Store** | `store/pg.py`, `repository.py`, `store/queries/` | 接続・永続化・読取 |
+| **Media** | rustfs（S3 互換）+ dhash | 物件画像の重複排除付き保存 |
 | **Web Server API** | FastAPI, Uvicorn, Pydantic | REST / GeoJSON / Admin / AG-UI |
 | **Agent / AI** | CopilotKit v2, AG-UI Protocol | UI 連動エージェント |
 | **LLM Integration** | MCP | 外部 LLM ツール |
+| **Semantic Search** | Gemini embedding × pgvector | 自然文による物件検索 |
 | **Task Schedule** | APScheduler | 定期 scrape（Compose 既定） |
 | **Front-end Core** | React 18, TypeScript, Vite, **pnpm** | UI |
 | **Routing / State** | TanStack Router | URL search 同期 |
 | **Map & Visual** | Leaflet, MarkerCluster | 地図 |
-| **UI** | Tailwind CSS, shadcn/ui, Lucide | コンポーネント |
+| **UI** | Tailwind CSS, shadcn/ui / hextaUI, Lucide | コンポーネント |
 | **Performance** | Web Worker (`filter.worker.ts`) | 大量フィルタ |
 
 ---
@@ -448,16 +314,22 @@ yadokariMut/
 │   └── rotation_sim.py        県ローテーション シミュレータ
 ├── tests/                     pytest スイート (実サイト fixtures は非同梱・該当テストは skip)
 ├── src/
-│   ├── cli.py                 db-init / scrape / geocode / run-mcp 等
+│   ├── cli.py                 db-init / scrape / backfill-embeddings / media-backfill / building-identity / geocode / run-mcp 等
 │   ├── mcp_server.py          MCP サーバー
 │   ├── web_server.py          FastAPI 起動シム (uvicorn web_server:app)
 │   ├── web/                   FastAPI 本体
 │   │   ├── app.py             create_app + ルータ登録
-│   │   └── routers/           properties / geojson / analysis / admin / …
-│   ├── store/                 ★ v2 データ層
-│   │   ├── schema.py          v2 DDL (schema_version=2)
+│   │   └── routers/           properties / buildings / geojson / analysis / media / admin / …
+│   ├── alembic/               スキーマ移行の正本 (alembic.ini + versions/)
+│   ├── store/                 ★ データ層 (PostgreSQL)
+│   │   ├── pg.py              接続 (DSN 解決・プール) + sqlite3.Row 互換行
+│   │   ├── migrations.py      Alembic ラッパ (db-init)
 │   │   ├── repository.py      永続化
-│   │   ├── queries/           読取 (search / detail / price_history / geojson / …)
+│   │   ├── queries/           読取 (search / detail / buildings / price_history / geojson / …)
+│   │   ├── embeddings.py / embeddings_batch.py
+│   │   │                      意味検索ベクトル (sync / Gemini Batch API)
+│   │   ├── media.py           rustfs メディアストア (dhash 重複排除)
+│   │   ├── building_identity.py 建物名寄せ
 │   │   ├── app_settings.py    収集設定などの JSON 設定ストア
 │   │   ├── source_catalog.py  ソース一覧・管理 API 用
 │   │   └── geocode_v2.py
@@ -472,7 +344,10 @@ yadokariMut/
 │   │   └── raw_store.py
 │   ├── domain/
 │   │   ├── pricing.py         料金 SSOT
-│   │   └── models.py
+│   │   ├── models.py
+│   │   ├── building_identity.py / embedding_text.py
+│   │   ├── feature_categories.py / feature_resolution.py
+│   │   └── plan_catalog.py    プラン表示語彙の SSOT
 │   ├── agent_service.py       画面内 AI (AG-UI)
 │   ├── api_models.py          OpenAPI 正本モデル
 │   ├── fe_settings.py         フロント既定設定（レイヤ構成など）の保存 API
@@ -518,20 +393,32 @@ cp .env.example .env
 
 テンプレート:  **`.env.example`**
 
-#### データパス
+#### データベース (PostgreSQL)
 
-| 変数 | 必須? | 説明 |
-|------|--------|------|
-| `YADOKARIMUT_V2_DB_PATH` | 任意 | v2 SQLite のパス。未設定時はプロジェクト直下の `yadokari_mut_v2.db` |
+| 変数 | 既定 | 説明 |
+|------|------|------|
+| `YADOKARIMUT_PG_USER` / `YADOKARIMUT_PG_PASSWORD` / `YADOKARIMUT_PG_DB` | `yadokari` / `yadokari-mut` / `property` | compose db サービスの認証情報。app コンテナ内の DSN もここから組み立て |
+| `YADOKARIMUT_PG_DSN` | （compose 内で自動設定） | app が接続する DSN。ホスト実行時の未設定時は `postgresql://yadokari:yadokari-mut@127.0.0.1:5433/property` |
+| `YADOKARIMUT_PG_PORT` | `5433` | db サービスのホスト側ポート（ループバックのみ） |
+| `YADOKARIMUT_PGDATA_DIR` | `./data/postgres-property` | PGDATA の配置先（任意ディレクトリへ外出し可） |
 
 #### API キー
 
 | 変数 | 役割 | 説明 |
 |------|------|------|
 | `DEEPSEEK_API_KEY` | 推奨 | [DeepSeek](https://platform.deepseek.com/) の API キー。画面内 AI チャット機能やキャンペーン・設備の LLM 分類で使用。無くても動くかもだが動作未確認 |
+| `GEMINI_API_KEY` | 意味検索を使う場合 | Gemini embedding による意味検索（pgvector）のベクトル生成で使用。`backfill-embeddings` CLI でバックフィル |
 | `GOOGLE_MAPS_API_KEY` | Google ジオコード時 | 未設定時は Nominatim 経路のみで動作 |
 | `DEEPSEEK_BASE_URL` | 任意 | 既定 `https://api.deepseek.com` |
 | `DEEPSEEK_MODEL` | 任意 | 既定 `deepseek-flash` |
+
+#### メディアストレージ (rustfs)
+
+| 変数 | 必須? | 説明 |
+|------|--------|------|
+| `YADOKARIMUT_RUSTFS_ACCESS_KEY` / `YADOKARIMUT_RUSTFS_SECRET_KEY` | compose 起動に必須 | rustfs サービスの認証情報。値は任意（`openssl rand -hex 16` 等で生成）。app へ未設定のままでもメディア機能が無効になるだけで起動します |
+| `YADOKARIMUT_RUSTFS_BUCKET` | 任意 | 既定 `yadokari-media` |
+| `YADOKARIMUT_RUSTFS_DATA_DIR` | 任意 | 既定 `./data/rustfs` |
 
 
 ```bash
@@ -562,22 +449,21 @@ DEEPSEEK_API_KEY=...
 
 ## ローカル開発手順
 
-### 1. Python 環境と v2 DB
+### 1. Python 環境と PostgreSQL
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 多ソース v2 スキーマ（現行）
+# 物件 DB 用 PostgreSQL を起動 (compose の db サービス。ホストの 127.0.0.1:5433 で待受)
+docker compose up -d db
+
+# スキーマ適用 (Alembic upgrade head)
 python3 src/cli.py db-init
 ```
 
-DB パスは既定でプロジェクト直下の `yadokari_mut_v2.db`。シェルで明示する場合:
-
-```bash
-export YADOKARIMUT_V2_DB_PATH="$(pwd)/yadokari_mut_v2.db"
-```
+接続先は `YADOKARIMUT_PG_DSN` で変更できます（未設定時は `postgresql://yadokari:yadokari-mut@127.0.0.1:5433/property`）。rustfs を含む全体を起動する場合は `docker compose up -d` を使用してください。
 
 ### 2. データ投入
 
@@ -627,7 +513,7 @@ pnpm dev
 
 ## テストの実行
 
-> **Note**: バックエンドのテストスイートは `tests/` 配下にあります（`pyproject.toml` の設定で収集）。実サイトのスクレイプ HTML フィクスチャ（`tests/fixtures/`）はリポジトリに同梱していないため、該当テストは自動的に skip されます。フロントの生成型を検証するテストも node / pnpm 環境が無い場合に skip されます。
+> **Note**: バックエンドのテストスイートは `tests/` 配下にあります（`pyproject.toml` の設定で収集）。**テストは PostgreSQL を使用します**（テンプレート DB からの複製で隔離するため、事前に `docker compose up -d db` を実行してください）。実サイトのスクレイプ HTML フィクスチャ（`tests/fixtures/`）はリポジトリに同梱していないため、該当テストは自動的に skip されます。フロントの生成型を検証するテストも node / pnpm 環境が無い場合に skip されます。
 
 ### バックエンド
 

@@ -1,322 +1,100 @@
-"""SQLite schema v2 for multi-source properties."""
+"""スキーマ関連: 起動時の辞書データ同期(PG移行後の残存職責)。
+
+SQLite 時代の DDL 一括再実行(init_schema)・SCHEMA_VERSION 管理・
+db-migrate チェイン(v3→v5)は PostgreSQL + Alembic 移行に伴い廃止
+(docs/sqlite-pg-migration-plan.md D2)。スキーマ変更の正本は
+``src/alembic/versions/`` 配下のリビジョン(適用は ``python3 src/cli.py
+db-init`` = ``alembic upgrade head``)。本モジュールの残存職責は:
+
+- ``sync_feature_dictionary``: 機能カテゴリ辞書(feature_categories 正本)と
+  property_features.category 列の内容の起動時差分同期(データ同期であり
+  スキーマ変更ではないため Alembic の管轄外)。辞書ハッシュの格納先は
+  schema_meta テーブル(feature_dict_hash キーのみ。schema_version キーは
+  alembic_version への一元化により廃止)。
+"""
 
 from __future__ import annotations
 
-import sqlite3
+import sys
+import time
 
-SCHEMA_VERSION = 2
-
-DDL_STATEMENTS = [
-    """
-    CREATE TABLE IF NOT EXISTS schema_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS properties (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_site TEXT NOT NULL,
-        external_id TEXT NOT NULL,
-        entity_type TEXT NOT NULL DEFAULT 'room',
-        parent_property_id INTEGER,
-        title TEXT,
-        detail_url TEXT,
-        prefecture_slug TEXT,
-        prefecture_name TEXT,
-        municipality TEXT,
-        address TEXT,
-        lat REAL,
-        lng REAL,
-        geocode_source TEXT,
-        geocode_confidence REAL,
-        layout TEXT,
-        area_m2 REAL,
-        area_m2_max REAL,
-        built_year INTEGER,
-        built_month INTEGER,
-        construction_year_text TEXT,
-        capacity_text TEXT,
-        structure TEXT,
-        floors_text TEXT,
-        floor_number TEXT,
-        point_text TEXT,
-        availability_text TEXT,
-        min_stay_days INTEGER,
-        contract_fee_yen INTEGER,
-        first_seen_at TEXT,
-        last_seen_at TEXT,
-        detail_scraped_at TEXT,
-        is_active INTEGER NOT NULL DEFAULT 1,
-        catalog_rent_per_day_yen INTEGER,
-        catalog_total_hint_yen INTEGER,
-        total_score REAL DEFAULT 0.0,
-        rent_score REAL DEFAULT 0.0,
-        walk_score REAL DEFAULT 0.0,
-        area_score REAL DEFAULT 0.0,
-        age_score REAL DEFAULT 0.0,
-        commute_score REAL DEFAULT 0.0,
-        UNIQUE(source_site, external_id),
-        FOREIGN KEY(parent_property_id) REFERENCES properties(id) ON DELETE SET NULL
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS property_accesses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        property_id INTEGER NOT NULL,
-        line_name TEXT,
-        station_name TEXT,
-        walk_minutes INTEGER,
-        raw_text TEXT,
-        sort_order INTEGER,
-        FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS property_images (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        property_id INTEGER NOT NULL,
-        image_url TEXT NOT NULL,
-        image_type TEXT,
-        alt_text TEXT,
-        sort_order INTEGER,
-        scraped_at TEXT,
-        UNIQUE(property_id, image_url),
-        FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS property_links (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        property_id INTEGER NOT NULL,
-        link_type TEXT NOT NULL,
-        url TEXT NOT NULL,
-        label TEXT,
-        scraped_at TEXT,
-        UNIQUE(property_id, link_type, url),
-        FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS property_features (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        property_id INTEGER NOT NULL,
-        feature_name TEXT NOT NULL,
-        feature_category TEXT,
-        raw_text TEXT,
-        UNIQUE(property_id, feature_category, feature_name),
-        FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS price_plans (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        property_id INTEGER NOT NULL,
-        plan_key TEXT NOT NULL,
-        plan_name TEXT,
-        duration_min_days INTEGER NOT NULL DEFAULT 1,
-        duration_max_days INTEGER,
-        available INTEGER NOT NULL DEFAULT 1,
-        presentation_unit TEXT NOT NULL DEFAULT 'per_day',
-        rent_original_yen INTEGER,
-        rent_current_yen INTEGER,
-        management_yen INTEGER,
-        utilities_yen INTEGER,
-        utilities_included INTEGER NOT NULL DEFAULT 1,
-        cleaning_yen INTEGER,
-        campaign_label TEXT,
-        raw_text TEXT,
-        scraped_at TEXT,
-        UNIQUE(property_id, plan_key),
-        FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS campaigns (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        property_id INTEGER NOT NULL,
-        campaign_type TEXT,
-        title TEXT,
-        content TEXT,
-        target_period_text TEXT,
-        target_condition_text TEXT,
-        starts_on TEXT,
-        ends_on TEXT,
-        target_plan_key TEXT,
-        discount_unit TEXT,
-        discount_value INTEGER,
-        discount_max_yen INTEGER,
-        period_max_days INTEGER,
-        stay_min_days INTEGER,
-        stay_max_days INTEGER,
-        contract_within_days INTEGER,
-        package_rent_benefit_yen INTEGER,
-        package_cleaning_benefit_yen INTEGER,
-        package_fee_benefit_yen INTEGER,
-        package_total_benefit_yen INTEGER,
-        structure_source TEXT,
-        parse_ok INTEGER DEFAULT 0,
-        parse_warnings TEXT,
-        raw_json TEXT,
-        scraped_at TEXT,
-        FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS property_snapshots (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        property_id INTEGER NOT NULL,
-        scraped_at TEXT NOT NULL,
-        is_active INTEGER,
-        catalog_rent_per_day_yen INTEGER,
-        min_discounted_monthly_total_yen INTEGER,
-        raw_list_json TEXT,
-        raw_detail_json TEXT,
-        raw_html_path TEXT,
-        parser_version TEXT,
-        FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS raw_pages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_site TEXT NOT NULL,
-        url TEXT NOT NULL,
-        page_type TEXT NOT NULL,
-        fetched_at TEXT NOT NULL,
-        status_code INTEGER,
-        content_hash TEXT,
-        storage_path TEXT,
-        parser_version TEXT
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS shortlists (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        property_id INTEGER NOT NULL UNIQUE,
-        status TEXT NOT NULL,
-        comment TEXT,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS scrape_runs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_site TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        finished_at TEXT,
-        status TEXT NOT NULL DEFAULT 'running',
-        list_pages INTEGER DEFAULT 0,
-        list_items INTEGER DEFAULT 0,
-        detail_ok INTEGER DEFAULT 0,
-        detail_fail INTEGER DEFAULT 0,
-        error_summary TEXT,
-        meta_json TEXT
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS scrape_run_targets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        run_id INTEGER NOT NULL,
-        source_site TEXT NOT NULL,
-        target_key TEXT NOT NULL,
-        started_at TEXT,
-        finished_at TEXT,
-        status TEXT NOT NULL DEFAULT 'running',
-        list_pages INTEGER DEFAULT 0,
-        list_items INTEGER DEFAULT 0,
-        detail_ok INTEGER DEFAULT 0,
-        detail_fail INTEGER DEFAULT 0,
-        error_summary TEXT,
-        list_completed INTEGER DEFAULT 0,
-        FOREIGN KEY(run_id) REFERENCES scrape_runs(id) ON DELETE CASCADE
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS rotation_state (
-        source_site TEXT NOT NULL,
-        prefecture_slug TEXT NOT NULL,
-        known_total INTEGER,
-        last_full_ok_at TEXT,
-        last_run_at TEXT,
-        consecutive_failures INTEGER DEFAULT 0,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (source_site, prefecture_slug)
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS app_settings (
-        key TEXT PRIMARY KEY,
-        value_json TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_v2_properties_site_id ON properties(source_site, external_id);",
-    "CREATE INDEX IF NOT EXISTS idx_v2_properties_prefecture ON properties(prefecture_name);",
-    "CREATE INDEX IF NOT EXISTS idx_v2_properties_pref_slug ON properties(source_site, prefecture_slug);",
-    "CREATE INDEX IF NOT EXISTS idx_v2_properties_active ON properties(is_active);",
-    "CREATE INDEX IF NOT EXISTS idx_v2_properties_source ON properties(source_site);",
-    "CREATE INDEX IF NOT EXISTS idx_v2_price_plans_prop ON price_plans(property_id);",
-    "CREATE INDEX IF NOT EXISTS idx_v2_campaigns_prop ON campaigns(property_id);",
-    "CREATE INDEX IF NOT EXISTS idx_v2_accesses_prop ON property_accesses(property_id);",
-    "CREATE INDEX IF NOT EXISTS idx_v2_snapshots_prop ON property_snapshots(property_id);",
-    "CREATE INDEX IF NOT EXISTS idx_v2_scrape_runs_source ON scrape_runs(source_site, started_at);",
-    "CREATE INDEX IF NOT EXISTS idx_srt_source_target ON scrape_run_targets(source_site, target_key, finished_at);",
-    "CREATE INDEX IF NOT EXISTS idx_rotation_state_site ON rotation_state(source_site);",
-]
+import psycopg
 
 
-def init_schema(conn: sqlite3.Connection) -> None:
-    """Create v2 tables if missing and record schema version."""
-    conn.execute("PRAGMA foreign_keys = ON;")
-    cur = conn.cursor()
-    for stmt in DDL_STATEMENTS:
-        cur.execute(stmt)
-    _migrate_scrape_run_targets(cur)
-    _migrate_rotation_state(cur)
-    cur.execute(
-        """
-        INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """,
-        (str(SCHEMA_VERSION),),
+def feature_dict_hash() -> str:
+    """辞書の内容ハッシュ(feature_categories の正本から計算)。"""
+    import hashlib
+
+    from domain.feature_categories import (
+        FEATURE_CATEGORIES,
+        NON_FILTER_FEATURES,
+        PARENT_CODES,
     )
-    conn.commit()
 
-
-def _migrate_scrape_run_targets(cur: sqlite3.Cursor) -> None:
-    """Add list_completed to pre-existing scrape_run_targets (idempotent)."""
-    cols = {row[1] for row in cur.execute("PRAGMA table_info(scrape_run_targets)")}
-    if not cols:
-        return
-    if "list_completed" not in cols:
-        cur.execute(
-            "ALTER TABLE scrape_run_targets ADD COLUMN list_completed INTEGER DEFAULT 0"
+    payload = repr(
+        (
+            sorted((c.code, c.label, c.include) for c in FEATURE_CATEGORIES),
+            sorted(NON_FILTER_FEATURES),
+            sorted(PARENT_CODES.items()),
         )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _migrate_rotation_state(cur: sqlite3.Cursor) -> None:
-    """Add consecutive_failures to pre-existing rotation_state (idempotent)."""
-    cols = {row[1] for row in cur.execute("PRAGMA table_info(rotation_state)")}
-    if not cols:
-        return
-    if "consecutive_failures" not in cols:
-        cur.execute(
-            "ALTER TABLE rotation_state ADD COLUMN consecutive_failures INTEGER DEFAULT 0"
-        )
+def sync_feature_dictionary(conn: psycopg.Connection) -> None:
+    """起動時の辞書差分同期(決定 4 — 機能カテゴリ統一設計)。
 
+    schema_meta の辞書ハッシュが不変ならスキップ。変更時は語彙ごとの
+    category を再設定し、辞書から消えた code の行を NULL へ戻す。
+    失敗方針は構造と分離(§4.2): ロック系エラーは 3 回リトライ →
+    超過は警告ログで起動を継続し次回起動で再適用(同期スキップは検索が
+    旧語彙へ戻るのみ)。
+    """
+    from domain.feature_categories import FEATURE_CATEGORIES
 
-def get_schema_version(conn: sqlite3.Connection) -> int | None:
+    h = feature_dict_hash()
     try:
         row = conn.execute(
-            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+            "SELECT value FROM schema_meta WHERE key = 'feature_dict_hash'"
         ).fetchone()
-    except sqlite3.OperationalError:
-        return None
-    if not row:
-        return None
-    try:
-        return int(row[0] if not isinstance(row, sqlite3.Row) else row["value"])
-    except (TypeError, ValueError):
-        return None
+    except psycopg.errors.UndefinedTable:
+        return  # 未マイグレーション DB(db-init 未実行)—起動を妨げない
+    if row and row[0] == h:
+        return
+
+    valid_codes = {c.code for c in FEATURE_CATEGORIES}
+    for attempt in range(3):
+        try:
+            with conn.transaction():
+                for cat in FEATURE_CATEGORIES:
+                    ph = ",".join("%s" for _ in cat.include)
+                    conn.execute(
+                        "UPDATE property_features SET category = %s"
+                        f" WHERE feature_name IN ({ph})"
+                        " AND category IS DISTINCT FROM %s",
+                        (cat.code, *cat.include, cat.code),
+                    )
+                ph = ",".join("%s" for _ in valid_codes)
+                conn.execute(
+                    "UPDATE property_features SET category = NULL"
+                    f" WHERE category IS NOT NULL AND category NOT IN ({ph})",
+                    tuple(valid_codes),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO schema_meta(key, value) VALUES('feature_dict_hash', %s)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """,
+                    (h,),
+                )
+            conn.commit()
+            return
+        except psycopg.errors.DeadlockDetected:
+            time.sleep(0.5)
+        except psycopg.errors.LockNotAvailable:
+            time.sleep(0.5)
+    print(
+        "warning: feature dictionary sync skipped (database busy) — "
+        "will retry on next startup",
+        file=sys.stderr,
+    )

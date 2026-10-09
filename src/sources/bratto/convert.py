@@ -13,9 +13,10 @@ from domain.models import (
     PropertyImage,
     PropertyLink,
 )
-from domain.pricing import BRATTO_DURATION_BANDS
+from domain.pricing import campaign_with_plan_key
+from sources.bratto.plans import BRATTO_DURATION_BANDS
 
-PARSER_VERSION = "bratto-normalize-v2"
+PARSER_VERSION = "bratto-normalize-v3"
 
 
 def draft_from_normalized(normalized: dict[str, Any]) -> PropertyDraft:
@@ -49,6 +50,8 @@ def draft_from_normalized(normalized: dict[str, Any]) -> PropertyDraft:
 
     campaigns: list[Campaign] = []
     for c in normalized.get("campaigns") or []:
+        # legacy target_plan_code → key 正規化 (SSOT: domain.pricing, key 優先)
+        c = campaign_with_plan_key(c)
         campaigns.append(
             Campaign(
                 campaign_type=c.get("campaign_type") or c.get("type"),
@@ -58,7 +61,7 @@ def draft_from_normalized(normalized: dict[str, Any]) -> PropertyDraft:
                 target_condition_text=c.get("target_condition_text"),
                 starts_on=c.get("starts_on"),
                 ends_on=c.get("ends_on"),
-                target_plan_key=c.get("target_plan_code") or c.get("target_plan_key"),
+                target_plan_key=c.get("target_plan_key"),
                 discount_unit=c.get("discount_unit"),
                 discount_value=_i(c.get("discount_value")),
                 discount_max_yen=_i(c.get("discount_max_yen")),
@@ -71,7 +74,7 @@ def draft_from_normalized(normalized: dict[str, Any]) -> PropertyDraft:
                 package_fee_benefit_yen=_i(c.get("package_fee_benefit_yen")),
                 package_total_benefit_yen=_i(c.get("package_total_benefit_yen")),
                 structure_source=c.get("structure_source"),
-                parse_ok=int(c.get("parse_ok") or 0),
+                parse_ok=bool(c.get("parse_ok")),
                 parse_warnings=c.get("parse_warnings"),
                 raw_json=c.get("raw_json"),
             )
@@ -109,8 +112,7 @@ def draft_from_normalized(normalized: dict[str, Any]) -> PropertyDraft:
     features = [
         PropertyFeature(
             feature_name=f["feature_name"],
-            feature_category=f.get("feature_category"),
-            raw_text=f.get("raw_text"),
+            category=f.get("category"),
         )
         for f in (normalized.get("features") or [])
         if f.get("feature_name")
@@ -138,6 +140,9 @@ def draft_from_normalized(normalized: dict[str, Any]) -> PropertyDraft:
         capacity_text=normalized.get("capacity_text"),
         structure=normalized.get("structure"),
         floors_text=normalized.get("floors_text"),
+        floor_number=_i(normalized.get("floor_number")),
+        floor_number_max=_i(normalized.get("floor_number_max")),
+        building_floors=_i(normalized.get("building_floors")),
         point_text=normalized.get("point_text"),
         availability_text=normalized.get("availability_text"),
         detail_scraped_at=normalized.get("detail_scraped_at"),

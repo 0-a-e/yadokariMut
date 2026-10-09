@@ -3,6 +3,7 @@ import { Badge } from '@/components/ui/badge.tsx';
 import { KpiCard } from '@/components/analysis/charts/KpiCard.tsx';
 import { FaArrowRightLong } from 'react-icons/fa6';
 import { priceDeltaFromHistory } from '@/lib/analysis/propertyHistory.ts';
+import { formatYen } from '../../lib/format.ts';
 import type { PropertyFeature } from '../../types.ts';
 
 interface PropertyHeaderProps {
@@ -56,7 +57,7 @@ export const PropertyHeader: React.FC<PropertyHeaderProps> = ({
       <div className="grid grid-cols-3 gap-2 shrink-0">
         <KpiCard
           label="現在日額"
-          value={p.min_daily_rent ? `${p.min_daily_rent.toLocaleString()}円` : '-'}
+          value={p.min_daily_rent ? formatYen(p.min_daily_rent) : '-'}
           accent
         />
         {delta ? (
@@ -64,7 +65,7 @@ export const PropertyHeader: React.FC<PropertyHeaderProps> = ({
             label="前回比"
             value={
               <span className={delta.delta < 0 ? 'text-success' : delta.delta > 0 ? 'text-danger' : ''}>
-                {delta.delta === 0 ? '変動なし' : `${delta.delta > 0 ? '+' : ''}${delta.delta.toLocaleString()}円`}
+                {delta.delta === 0 ? '変動なし' : `${delta.delta > 0 ? '+' : ''}${formatYen(delta.delta)}`}
               </span>
             }
           />

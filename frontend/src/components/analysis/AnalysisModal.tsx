@@ -14,6 +14,7 @@ import { PropertyHeader } from './PropertyHeader.tsx';
 import { PropertyPriceTab } from './PropertyPriceTab.tsx';
 import { PlanCostTab } from './PlanCostTab.tsx';
 import { MarketTab } from './MarketTab.tsx';
+import { EmptyState } from '../shared/EmptyState.tsx';
 import { SettingsModalShell } from '../shared/SettingsModalShell.tsx';
 import type { AnalysisTarget, PropertyFeature } from '../../types.ts';
 
@@ -113,9 +114,7 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
       <div className="p-5 flex flex-col gap-5">
         {!isPropertyMode && marketTab === 'price-trend' && <PriceTrendTab />}
         {isPropertyMode && !feature && (
-          <p className="text-sm text-text-muted italic">
-            この物件のデータが見つかりません(再取得中の可能性があります)。
-          </p>
+          <EmptyState message="この物件のデータが見つかりません(再取得中の可能性があります)。" />
         )}
         {isPropertyMode && feature && propertyTab === 'price' && (
           <PropertyPriceTab feature={feature} />

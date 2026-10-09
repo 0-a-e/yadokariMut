@@ -1,5 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group.tsx';
+import React, { useMemo, useState } from 'react';
+import { SingleToggleGroup } from '@/components/ui/toggle-group.tsx';
+import { EmptyState } from '@/components/shared/EmptyState.tsx';
+import { LoadingState } from '@/components/shared/LoadingState.tsx';
 import {
   Table,
   TableBody,
@@ -9,16 +11,16 @@ import {
   TableRow,
 } from '@/components/ui/table.tsx';
 import { cn } from '@/lib/utils.ts';
-import { Loader2 } from 'lucide-react';
+import { formatYen } from '../../lib/format.ts';
 import type {
   PriceHistoryPoint,
   PropertyFeature,
 } from '../../types.ts';
-import { fetchPropertyDetail, type PropertyDetailResponse } from '../../lib/api/properties.ts';
 import PropertyPriceChart from './charts/PropertyPriceChart.tsx';
 import type { MarketMedianPoint } from './charts/PropertyPriceChart.tsx';
 import { KpiCard } from './charts/KpiCard.tsx';
 import { usePriceTrend } from '../../hooks/usePriceTrend.ts';
+import { usePropertyDetail } from '../../hooks/usePropertyDetail.ts';
 import {
   extractChangeEvents,
   formatDate,
@@ -54,27 +56,8 @@ function deltaClass(delta: number): string {
 export const PropertyPriceTab: React.FC<PropertyPriceTabProps> = ({ feature }) => {
   const property = feature.properties;
 
-  const [detail, setDetail] = useState<PropertyDetailResponse | null>(null);
-  const [detailLoading, setDetailLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setDetailLoading(true);
-    fetchPropertyDetail(property.id)
-      .then((json) => {
-        if (!cancelled) setDetail(json);
-      })
-      .catch((e) => {
-        // 失敗時も GeoJSON 由来の履歴(キャッシュ済み)で表示を続ける
-        console.error(e);
-      })
-      .finally(() => {
-        if (!cancelled) setDetailLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [property.id]);
+  // 詳細APIはhook内でキャッシュされ1回だけ取得。それまでは GeoJSON 側に付与済みの履歴で初期描画する
+  const { detail, loading: detailLoading } = usePropertyDetail(property.id);
 
   // 市場中央値は物件と同じ都道府県で取得(hook内でキャッシュ済み)
   const { data: marketData, error: marketError } = usePriceTrend(365, property.prefecture_name);
@@ -134,20 +117,21 @@ export const PropertyPriceTab: React.FC<PropertyPriceTabProps> = ({ feature }) =
     chartPoints.length > 0 ? chartPoints[chartPoints.length - 1].daily : property.min_daily_rent;
 
   if (detailLoading && initialHistory.length === 0) {
-    return (
-      <div className="flex items-center justify-center py-16 text-text-muted">
-        <Loader2 className="mr-2 size-4 animate-spin" />
-        読み込み中…
-      </div>
-    );
+    return <LoadingState />;
   }
 
   if (points.length < 2) {
     return (
-      <p className="text-sm text-text-muted italic">
-        比較できる履歴がまだありません(2回以上の収集が必要)。
-        {currentDaily != null ? `現在 ${currentDaily.toLocaleString()}円` : '現在の取得値はまだありません'}
-      </p>
+      <EmptyState
+        message={
+          <>
+            比較できる履歴がまだありません(2回以上の収集が必要)。
+            {currentDaily != null
+              ? `現在 ${formatYen(currentDaily)}`
+              : '現在の取得値はまだありません'}
+          </>
+        }
+      />
     );
   }
 
@@ -155,22 +139,14 @@ export const PropertyPriceTab: React.FC<PropertyPriceTabProps> = ({ feature }) =
     <>
       {/* ── コントロール: 期間プリセット ── */}
       <div className="flex flex-wrap items-center gap-3">
-        <ToggleGroup
-          multiple={false}
-          value={[periodDays]}
-          onValueChange={(vals) => {
-            const next = vals[0];
-            if (next) setPeriodDays(next);
-          }}
+        <SingleToggleGroup
+          options={PERIOD_OPTIONS}
+          value={periodDays}
+          onChange={setPeriodDays}
           size="sm"
           className="ml-auto"
-        >
-          {PERIOD_OPTIONS.map((opt) => (
-            <ToggleGroupItem key={opt.value} value={opt.value} className="text-xs">
-              {opt.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+          itemClassName="text-xs"
+        />
       </div>
 
       {/* ── KPIチップ(選択中の期間の集計) ── */}
@@ -183,14 +159,14 @@ export const PropertyPriceTab: React.FC<PropertyPriceTabProps> = ({ feature }) =
         <KpiCard
           label="現在日額"
           accent
-          value={summary ? `${summary.last.toLocaleString()}円` : '-'}
+          value={summary ? formatYen(summary.last) : '-'}
         />
         <KpiCard
           label="前回比"
           value={
             delta ? (
               <span className={deltaClass(delta.delta)}>
-                {delta.delta < 0 ? '▼' : '▲'} {Math.abs(delta.delta).toLocaleString()}円
+                {delta.delta < 0 ? '▼' : '▲'} {formatYen(Math.abs(delta.delta))}
               </span>
             ) : (
               '-'
@@ -202,7 +178,7 @@ export const PropertyPriceTab: React.FC<PropertyPriceTabProps> = ({ feature }) =
           value={
             summary ? (
               <>
-                <span className="text-success">{summary.min.toLocaleString()}円</span>
+                <span className="text-success">{formatYen(summary.min)}</span>
                 <span className="block text-[10px] font-normal text-text-muted">
                   {formatDate(summary.minAt)}
                 </span>
@@ -217,7 +193,7 @@ export const PropertyPriceTab: React.FC<PropertyPriceTabProps> = ({ feature }) =
           value={
             summary ? (
               <>
-                <span className="text-danger">{summary.max.toLocaleString()}円</span>
+                <span className="text-danger">{formatYen(summary.max)}</span>
                 <span className="block text-[10px] font-normal text-text-muted">
                   {formatDate(summary.maxAt)}
                 </span>
@@ -241,7 +217,7 @@ export const PropertyPriceTab: React.FC<PropertyPriceTabProps> = ({ feature }) =
       <section className="flex flex-col gap-1">
         <h3 className="text-xs text-text-muted m-0">変動履歴</h3>
         {events.length === 0 ? (
-          <p className="text-sm text-text-muted italic m-0">期間中の変動はありません</p>
+          <EmptyState message="期間中の変動はありません" className="m-0" />
         ) : (
           <Table className="text-xs">
             <TableHeader>
@@ -261,7 +237,7 @@ export const PropertyPriceTab: React.FC<PropertyPriceTabProps> = ({ feature }) =
                   </TableCell>
                   <TableCell className={cn('text-right font-semibold', deltaClass(e.delta))}>
                     {e.delta > 0 ? '+' : ''}
-                    {e.delta.toLocaleString()}円
+                    {formatYen(e.delta)}
                   </TableCell>
                   <TableCell className="text-right text-text-muted">
                     {e.pct > 0 ? '+' : ''}

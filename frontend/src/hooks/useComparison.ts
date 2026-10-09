@@ -1,9 +1,18 @@
 import { useCallback, useMemo } from 'react';
-import type { MapFilters, PropertyFeature, PropertyGeoJSON } from '../types.ts';
+import type {
+  BuildingFeature,
+  MapFilters,
+  PropertyFeature,
+  PropertyGeoJSON,
+} from '../types.ts';
 import type { ExplorerSearch, ExplorerSearchPatch } from '../lib/explorerSearch.ts';
 import { EXPLORER_MAX_COMPARE, normalizeCompareIds } from '../lib/explorerSearch.ts';
 import type { PatchExplorerSearchOptions } from './useExplorerSearch.ts';
 import { withStayEstimate } from '../lib/filterLogic.ts';
+import { savedCountOf } from '../lib/building.ts';
+
+/** rawBuildings 未指定時の安定空配列(useMemo 依存の同一性維持用) */
+const EMPTY_BUILDINGS: BuildingFeature[] = [];
 
 interface UseComparisonOptions {
   rawGeojsonData: PropertyGeoJSON | null;
@@ -11,12 +20,19 @@ interface UseComparisonOptions {
   filters: MapFilters;
   search: ExplorerSearch;
   patchSearch: (patch: ExplorerSearchPatch, opts?: PatchExplorerSearchOptions) => void;
+  /**
+   * 建物比較候補の母集団(生建物 Feature 配列・Phase B2-δ §4.5)。
+   * 部屋比較と対称に、現在のフィルタ外の建物も URL 明示 id で比較できるように
+   * raw(全件)側から解決する。
+   */
+  rawBuildings?: BuildingFeature[];
 }
 
 /**
- * 比較モード(?view=compare&compare=…)の状態導出。
- * 候補はショートリスト(saved)と URL 明示の compare id を統合し、
+ * 比較モード(?view=compare&compare=…/bcompare=…)の状態導出。
+ * 部屋比較: 候補はショートリスト(saved)と URL 明示の compare id を統合し、
  * 期間総額(stay_estimate)を付与して返す。
+ * 建物比較(B2-δ): 候補は saved 部屋を持つ建物と URL 明示の bcompare id。
  */
 export function useComparison({
   rawGeojsonData,
@@ -24,6 +40,7 @@ export function useComparison({
   filters,
   search,
   patchSearch,
+  rawBuildings,
 }: UseComparisonOptions): {
   savedFeatures: PropertyFeature[];
   compareIds: number[];
@@ -32,6 +49,10 @@ export function useComparison({
   handleCompareIdsChange: (ids: number[]) => void;
   handleComparisonOpenChange: (open: boolean) => void;
   handleOpenComparison: () => void;
+  /** 建物比較(Phase B2-δ) */
+  compareBuildingIds: number[];
+  compareBuildingCandidates: BuildingFeature[];
+  handleCompareBuildingIdsChange: (ids: number[]) => void;
 } {
   const savedFeatures = useMemo(() => {
     if (!rawGeojsonData) return [];
@@ -122,6 +143,53 @@ export function useComparison({
     handleComparisonOpenChange(true);
   }, [handleComparisonOpenChange]);
 
+  // ── 建物比較(Phase B2-δ §4.5) ──
+
+  const buildings = rawBuildings ?? EMPTY_BUILDINGS;
+  const compareBuildingIds = search.bcompare ?? [];
+
+  /**
+   * Candidates: 建物saved OR saved 部屋を 1 つ以上持つ建物 + URL 明示 bcompare id
+   * (建物ショートリスト承認 U4 — フィルタ「保存済み」の建物モード意味論と同一)。
+   */
+  const compareBuildingCandidates = useMemo(() => {
+    const saved = buildings.filter(
+      (b) =>
+        b.properties.shortlist_status === 'saved' || savedCountOf(b.properties) > 0,
+    );
+    const byId = new Map<number, BuildingFeature>();
+    for (const b of saved) {
+      byId.set(b.properties.id, b);
+    }
+    for (const id of compareBuildingIds) {
+      if (byId.has(id)) continue;
+      const raw = buildings.find((f) => f.properties.id === id);
+      if (raw) byId.set(id, raw);
+    }
+    // Order: compare ids first (for picker checked state), then remaining saved
+    const ordered: BuildingFeature[] = [];
+    const seen = new Set<number>();
+    for (const id of compareBuildingIds) {
+      const b = byId.get(id);
+      if (b) {
+        ordered.push(b);
+        seen.add(id);
+      }
+    }
+    for (const b of saved) {
+      if (!seen.has(b.properties.id)) ordered.push(b);
+    }
+    return ordered;
+  }, [buildings, compareBuildingIds]);
+
+  const handleCompareBuildingIdsChange = useCallback(
+    (ids: number[]) => {
+      const next = normalizeCompareIds(ids).slice(0, EXPLORER_MAX_COMPARE);
+      patchSearch({ bcompare: next.length ? next : null }, { replace: true });
+    },
+    [patchSearch],
+  );
+
   return {
     savedFeatures,
     compareIds,
@@ -130,5 +198,8 @@ export function useComparison({
     handleCompareIdsChange,
     handleComparisonOpenChange,
     handleOpenComparison,
+    compareBuildingIds,
+    compareBuildingCandidates,
+    handleCompareBuildingIdsChange,
   };
 }

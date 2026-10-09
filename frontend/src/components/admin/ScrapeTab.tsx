@@ -9,7 +9,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import type {
   AdminSourceInfo,
   AdminStats,
-  PropertyGeoJSON,
+  BuildingGeoJSON,
   RotationSourceStatus,
   RotationSettingsResponse,
   ScrapeSettingsResponse,
@@ -45,7 +45,7 @@ import { GeoJsonUploadSection } from './GeoJsonUploadSection.tsx';
 interface ScrapeTabProps {
   /** モーダルの開閉。閉じている間はポーリングも止める */
   isOpen: boolean;
-  onGeoJsonLoaded?: (data: PropertyGeoJSON) => void;
+  onGeoJsonLoaded?: (data: BuildingGeoJSON) => void;
 }
 
 export const ScrapeTab: React.FC<ScrapeTabProps> = ({ isOpen, onGeoJsonLoaded }) => {
@@ -366,7 +366,7 @@ export const ScrapeTab: React.FC<ScrapeTabProps> = ({ isOpen, onGeoJsonLoaded })
 
       {onGeoJsonLoaded && (
         <GeoJsonUploadSection
-          onGeoJsonLoaded={(data: unknown) => onGeoJsonLoaded(data as PropertyGeoJSON)}
+          onGeoJsonLoaded={(data: unknown) => onGeoJsonLoaded(data as BuildingGeoJSON)}
         />
       )}
     </>

@@ -10,6 +10,7 @@ import {
   YAxis,
 } from 'recharts';
 import type { PriceTrendPoint } from '../../../types.ts';
+import { formatYen } from '../../../lib/format.ts';
 // 色・軸・tooltip・凡例の共通定義は chartTheme へ切り出し(旧ローカル名は意味でalias)
 import {
   AXIS_TICK,
@@ -20,9 +21,10 @@ import {
   COLOR_SUCCESS as COLOR_DOWN,
   COLOR_WARNING as COLOR_COUNT,
   TooltipCard,
+  TooltipRow,
   TrendLegend,
   formatTickDate,
-  formatYen,
+  formatYenCompact,
 } from '../../shared/charts/chartTheme.tsx';
 
 interface PriceTrendChartProps {
@@ -42,16 +44,8 @@ function PriceTooltip({
   return (
     <TooltipCard>
       <div className="font-semibold text-text mb-1">{p.date}</div>
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block size-2 rounded-full" style={{ background: COLOR_MEDIAN }} />
-        <span className="text-text-muted">中央値</span>
-        <span className="font-semibold text-text ml-auto pl-3">{p.median.toLocaleString()}円</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block size-2 rounded-full" style={{ background: COLOR_AVG }} />
-        <span className="text-text-muted">平均</span>
-        <span className="font-semibold text-text ml-auto pl-3">{p.avg.toLocaleString()}円</span>
-      </div>
+      <TooltipRow label="中央値" color={COLOR_MEDIAN} value={formatYen(p.median)} />
+      <TooltipRow label="平均" color={COLOR_AVG} value={formatYen(p.avg)} />
     </TooltipCard>
   );
 }
@@ -69,21 +63,9 @@ function ChangeTooltip({
   return (
     <TooltipCard>
       <div className="font-semibold text-text mb-1">{p.date}</div>
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block size-2 rounded-full" style={{ background: COLOR_DOWN }} />
-        <span className="text-text-muted">値下げ</span>
-        <span className="font-semibold text-success ml-auto pl-3">{p.down}件</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block size-2 rounded-full" style={{ background: COLOR_UP }} />
-        <span className="text-text-muted">値上げ</span>
-        <span className="font-semibold text-danger ml-auto pl-3">{p.up}件</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block size-2 rounded-full" style={{ background: COLOR_COUNT }} />
-        <span className="text-text-muted">掲載物件数</span>
-        <span className="font-semibold text-text ml-auto pl-3">{p.count.toLocaleString()}件</span>
-      </div>
+      <TooltipRow label="値下げ" color={COLOR_DOWN} value={`${p.down}件`} valueClassName="text-success" />
+      <TooltipRow label="値上げ" color={COLOR_UP} value={`${p.up}件`} valueClassName="text-danger" />
+      <TooltipRow label="掲載物件数" color={COLOR_COUNT} value={`${p.count.toLocaleString()}件`} />
     </TooltipCard>
   );
 }
@@ -117,7 +99,7 @@ const PriceTrendChart: React.FC<PriceTrendChartProps> = ({ series }) => {
                 minTickGap={24}
               />
               <YAxis
-                tickFormatter={formatYen}
+                tickFormatter={formatYenCompact}
                 tick={AXIS_TICK}
                 width={64}
                 axisLine={false}

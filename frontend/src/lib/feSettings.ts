@@ -35,3 +35,25 @@ export function resolveInitialOpacity(
 export function resolvePinClustering(feSettings: FeSettings | undefined): boolean {
   return feSettings?.global.pinClustering !== false;
 }
+
+/**
+ * 物件バルーン(ピンのtooltip)常時表示の保存値(既定=false=ホバー/クリック時のみ)。
+ * 実効値はクラスタ表示中に個別マーカーが描画されないため MapPane 側で
+ * 「この値 && !resolvePinClustering」に減じられる(常時表示トグルのdisabledも同条件)。
+ */
+export function resolvePinBalloonPermanent(feSettings: FeSettings | undefined): boolean {
+  return feSettings?.global.pinBalloonPermanent === true;
+}
+
+/** 最下レイヤ(基本地図)下に見える地図コンテナ背景色(契約は BE FeGlobalSettings.mapBackground) */
+export type MapBackground = NonNullable<
+  Schemas['FeGlobalSettings']['mapBackground']
+>;
+
+/**
+ * 地図コンテナ背景色の保存値(既定='black'=従来の #1a1a24)。
+ * 'white' 選択時は MapPane がコンテナへ map-bg-light クラスを付与する。
+ */
+export function resolveMapBackground(feSettings: FeSettings | undefined): MapBackground {
+  return feSettings?.global.mapBackground ?? 'black';
+}

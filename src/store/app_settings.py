@@ -3,10 +3,10 @@
 scrape_settings / rotation_settings / fe_settings の 3 モジュールで重複していた
 以下を JsonSettingsStore に集約した:
 
-- ``SELECT value_json FROM app_settings WHERE key = ?`` の読み込み
+- ``SELECT value_json FROM app_settings WHERE key = %s`` の読み込み
   (テーブル未作成 / 未保存 / 壊れ JSON はすべて「未保存」として既定形状を返す)
 - ``INSERT ... ON CONFLICT(key) DO UPDATE`` の upsert
-- sqlite3.OperationalError 吸収
+- psycopg.errors.UndefinedTable 吸収(未マイグレーション DB)
 - null = 削除 (既定へ戻す) セマンティクスの部分マージ
 - トップレベルコンテナ / エントリ id / パッチキー / 値のバリデーション
 
@@ -17,12 +17,12 @@ scrape_settings / rotation_settings / fe_settings の 3 モジュールで重複
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-from store.repository import get_connection
-from store.schema import init_schema
+import psycopg
+
+from store.pg import open_connection
 
 # 値検証関数のシグネチャ: (value, where) -> None / 不正なら ValueError
 ValueValidator = Callable[[Any, str], None]
@@ -87,28 +87,25 @@ class JsonSettingsStore:
     # ----------------------------------------------------------------------
     # public API
     # ----------------------------------------------------------------------
-    def load(self, default_db_path: Optional[str] = None) -> dict:
+    def load(self) -> dict:
         """Load saved settings. Returns the default shape when unset."""
-        conn = get_connection(default_db_path)
-        try:
+        with open_connection() as conn:
             try:
                 row = conn.execute(
-                    "SELECT value_json FROM app_settings WHERE key = ?", (self.key,)
+                    "SELECT value_json FROM app_settings WHERE key = %s", (self.key,)
                 ).fetchone()
-            except sqlite3.OperationalError:
+            except psycopg.errors.UndefinedTable:
                 # テーブル未作成(v2初期化前)でも未保存として扱う
                 return self._empty()
             if not row:
                 return self._empty()
-            try:
-                data = json.loads(row["value_json"])
-            except (TypeError, ValueError):
+            # value_json は jsonb(Phase 6b)なので psycopg が dict を返す
+            data = row["value_json"]
+            if not isinstance(data, dict):
                 return self._empty()
             return self._normalize(data)
-        finally:
-            conn.close()
 
-    def save(self, update: Any, default_db_path: Optional[str] = None) -> dict:
+    def save(self, update: Any) -> dict:
         """Partial-merge save. Returns the full settings after save.
 
         - update.<container>.<id>.<key> = 値   → そのキーのみ上書き
@@ -118,31 +115,28 @@ class JsonSettingsStore:
         不正な値は ValueError。呼び出し側(web_server)が HTTPException(400) にする。
         """
         self._validate_update(update)
-        merged = self._merge(self.load(default_db_path), update)
+        merged = self._merge(self.load(), update)
 
-        conn = get_connection(default_db_path)
-        try:
-            init_schema(conn)
-            conn.execute(
-                """
-                INSERT INTO app_settings(key, value_json, updated_at) VALUES(?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET
-                    value_json = excluded.value_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    self.key,
-                    json.dumps(merged, ensure_ascii=False),
-                    datetime.now().isoformat(),
-                ),
-            )
-            conn.commit()
-            return merged
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        with open_connection() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO app_settings(key, value_json, updated_at) VALUES(%s, %s, %s)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value_json = excluded.value_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        self.key,
+                        json.dumps(merged, ensure_ascii=False),
+                        datetime.now().isoformat(),
+                    ),
+                )
+                conn.commit()
+                return merged
+            except Exception:
+                conn.rollback()
+                raise
 
     # ----------------------------------------------------------------------
     # shape
@@ -259,9 +253,9 @@ class JsonSettingsStore:
 def known_source_ids() -> set[str]:
     """SOURCE_CATALOG 由来のソース id。読み込み失敗時は空(id 検証をスキップ)。"""
     try:
-        from store.source_catalog import SOURCE_CATALOG
+        from store.source_catalog import SOURCE_IDS
 
-        return {str(entry["id"]) for entry in SOURCE_CATALOG}
+        return set(SOURCE_IDS)
     except Exception:
         return set()
 
@@ -318,3 +312,13 @@ def validate_bool_or_null(value: Any, where: str) -> None:
         return
     if not isinstance(value, bool):
         raise ValueError(f"{where} must be a boolean or null")
+
+
+def validate_choice_or_null(
+    value: Any, choices: Iterable[str], where: str
+) -> None:
+    """列挙文字列 (null 許容) の検証。"""
+    if value is None:
+        return
+    if not isinstance(value, str) or value not in choices:
+        raise ValueError(f"{where} must be one of {sorted(choices)} or null")

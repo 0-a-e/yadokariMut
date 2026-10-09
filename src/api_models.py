@@ -13,9 +13,20 @@ FE の型は openapi-typescript による自動生成に置き換わる。レス
   worker (rentCalculator) が担うため BE は滞在試算値を返さない
 """
 
-from typing import Any, Dict, List, Literal, Optional
+import datetime as dt
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from domain.models import PresentationUnit
+from domain.pricing import MONTH_DAYS
+
+# ============================================================
+# ショートリスト状態語彙 (H5-BE)
+# FE 正本: frontend/src/types.ts SHORTLIST_STATUS_VALUES と同期テストで保証
+# (tests/test_api_contract_sync.py)
+# ============================================================
+ShortlistStatus = Literal["saved", "hide", "reject", "none"]
 
 # ============================================================
 # 物件共通: 料金プラン / キャンペーン
@@ -45,11 +56,19 @@ class RentPlan(BaseModel):
     duration_text: Optional[str] = Field(
         None, description="plan_name のエイリアス (legacy 同義キー。現状維持)"
     )
+    plan_label: str = Field(
+        "",
+        description=(
+            "表示ラベル (BE 辞書解決・正本: domain.plan_catalog)。"
+            "帯レンジを含まない名称のみ。未知コードは plan_name (生値) フォールバック"
+        ),
+    )
     duration_min_days: Optional[int] = Field(None, description="最短滞在日数")
     duration_max_days: Optional[int] = Field(None, description="最長滞在日数 (無期限は null)")
     available: bool = Field(True, description="取扱ありフラグ")
     campaign_label: Optional[str] = Field(None, description="プラン行に付記されたキャンペーンラベル")
-    presentation_unit: str = Field("per_day", description="金額の原単位 (per_day / per_month)")
+    # 語彙正本: domain.models.PresentationUnit (Literal・決定 11)。openapi 生成型は enum 化
+    presentation_unit: PresentationUnit = Field("per_day", description="金額の原単位 (per_day / per_month)")
     rent_original_yen: Optional[int] = Field(None, description="定価 (presentation_unit 原単位)")
     rent_current_yen: Optional[int] = Field(None, description="現行価格 (同上)")
     management_yen: Optional[int] = Field(None, description="共益費 (同上)")
@@ -58,12 +77,18 @@ class RentPlan(BaseModel):
     cleaning_yen: Optional[int] = Field(None, description="清掃費 (同上)")
     original_daily_rent_yen: Optional[int] = Field(None, description="定価の日額換算")
     discounted_daily_rent_yen: Optional[int] = Field(None, description="現行価格の日額換算")
-    management_fee_daily_yen: int = Field(0, description="共益費の日額換算 (無ければ 0)")
+    # 決定 11: 共益費未記載・単位未知など換算不能は 0 円へ畳み込まず null を透過
+    # (FE は CalculatorPlan 経由で ?? 0 フォールバックを持つため契約変更は安全)
+    management_fee_daily_yen: Optional[int] = Field(
+        None, description="共益費の日額換算 (換算不能なら null — 決定 11)"
+    )
     cleaning_fee_yen: Optional[int] = Field(None, description="cleaning_yen のエイリアス")
     raw_text: Optional[str] = Field(None, description="抽出元の生テキスト")
     original_total_yen: Optional[int] = Field(None, description="定価の 30 日換算総額 ( rent+共益 )")
     discounted_total_yen: Optional[int] = Field(None, description="現行価格の 30 日換算総額")
-    total_period_days: int = Field(30, description="総額換算の基準日数 (固定 30)")
+    total_period_days: int = Field(
+        MONTH_DAYS, description="総額換算の基準日数 (固定 30。正本: domain.pricing.MONTH_DAYS)"
+    )
     effective_rent_yen: Optional[int] = Field(
         None, description="as-of-today で解決した実効価格 (presentation_unit 原単位)"
     )
@@ -100,11 +125,18 @@ class Campaign(BaseModel):
     content: Optional[str] = Field(None, description="本文")
     target_period_text: Optional[str] = Field(None, description="対象期間の生テキスト")
     target_condition_text: Optional[str] = Field(None, description="対象条件の生テキスト")
-    starts_on: Optional[str] = Field(None, description="開始日 (YYYY-MM-DD)")
-    ends_on: Optional[str] = Field(None, description="終了日 (YYYY-MM-DD). null=期間未記載")
+    starts_on: Optional[dt.date] = Field(None, description="開始日 (YYYY-MM-DD)")
+    ends_on: Optional[dt.date] = Field(None, description="終了日 (YYYY-MM-DD). null=期間未記載")
     target_plan_key: Optional[str] = Field(None, description="対象プランキー (空=全プラン)")
     target_plan_code: Optional[str] = Field(
         None, description="target_plan_key のエイリアス (legacy 同義キー。現状維持)"
+    )
+    target_plan_label: str = Field(
+        "",
+        description=(
+            "対象プランの表示ラベル (BE 辞書解決・正本: domain.plan_catalog)。"
+            "all / 空 = すべてのプラン。未知コードは生値"
+        ),
     )
     discount_unit: Optional[str] = Field(
         None, description="割引単位 (yen / percent / package / pokkiri 等)"
@@ -120,10 +152,10 @@ class Campaign(BaseModel):
     package_fee_benefit_yen: Optional[int] = Field(None, description="パッケ適用の手数料優待円")
     package_total_benefit_yen: Optional[int] = Field(None, description="パッケ適用の優待合計円")
     structure_source: Optional[str] = Field(None, description="構造化の由来 (llm / mechanical 等)")
-    parse_ok: Optional[int] = Field(None, description="構造化成功フラグ (0/1)")
+    parse_ok: Optional[bool] = Field(None, description="構造化成功フラグ")
     parse_warnings: Optional[str] = Field(None, description="構造化時の警告 (JSON)")
-    raw_json: Optional[str] = Field(None, description="抽出元の生 JSON")
-    scraped_at: Optional[str] = Field(None, description="取得日時")
+    raw_json: Optional[dict] = Field(None, description="抽出元の生 JSON (jsonb)")
+    scraped_at: Optional[dt.datetime] = Field(None, description="取得日時")
 
 
 # ============================================================
@@ -141,12 +173,26 @@ class PropertyAccessInfo(BaseModel):
 
 
 class PropertyImageInfo(BaseModel):
-    """画像 1 枚。"""
+    """画像 1 枚。
+
+    media_id は rustfs クラスタ代表ストアの格納済みメディアID
+    (docs/media-storage-rustfs-plan.md §2.8)。未取得・機能無効時は null で、
+    その場合は従来どおり image_url(元サイトURL)を直接参照する。
+    """
 
     image_url: str
     image_type: Optional[str] = Field(None, description="thumbnail / gallery / other")
     alt_text: Optional[str] = None
     sort_order: Optional[int] = None
+    media_id: Optional[int] = Field(
+        None, description="保存メディアのID (GET /api/media/{media_id})"
+    )
+    dhash: Optional[str] = Field(
+        None, description="知覚ハッシュ 16進16桁 (クラスタ代表・近重複判定用)"
+    )
+    has_thumb: Optional[bool] = Field(
+        None, description="640px WebP サムネイルの有無 (?variant=thumb が有効)"
+    )
 
 
 class PropertyLinkInfo(BaseModel):
@@ -161,7 +207,6 @@ class PropertyFeatureInfo(BaseModel):
     """設備 1 件。"""
 
     feature_name: str
-    feature_category: Optional[str] = Field(None, description="building / room 等の分類")
 
 
 class ShortlistInfo(BaseModel):
@@ -169,13 +214,13 @@ class ShortlistInfo(BaseModel):
 
     status: str = Field(..., description="saved / hide / reject")
     comment: Optional[str] = None
-    updated_at: str
+    updated_at: dt.datetime
 
 
 class PriceHistoryPoint(BaseModel):
     """価格履歴 1 点 (品質ガード適用後の割引日額)。"""
 
-    scraped_at: str
+    scraped_at: dt.datetime
     min_discounted_daily_rent_yen: int
     min_discounted_monthly_total_yen: Optional[int] = None
 
@@ -185,8 +230,8 @@ class PriceHistoryMeta(BaseModel):
 
     total_count: int
     dropped_count: int
-    first_at: Optional[str] = None
-    last_at: Optional[str] = None
+    first_at: Optional[dt.datetime] = None
+    last_at: Optional[dt.datetime] = None
 
 
 class PropertyDetailResponse(BaseModel):
@@ -220,15 +265,33 @@ class PropertyDetailResponse(BaseModel):
     construction_year_text: Optional[str] = None
     capacity_text: Optional[str] = None
     structure: Optional[str] = None
-    floors_text: Optional[str] = None
-    floor_number: Optional[str] = None
+    floors_text: Optional[str] = Field(
+        None, description="階数まわりの原文キャッシュ (bratto=階建セル / unionmonthly=所在階セル)"
+    )
+    floor_number: Optional[int] = Field(None, description="所在階 (min・地下は負数)")
+    floor_number_max: Optional[int] = Field(
+        None, description="所在階 (max・複数階「1・2階」のみ min と異なる)"
+    )
+    building_floors: Optional[int] = Field(None, description="建物階数 (bratto のみ取得可)")
+    orientation_text: Optional[str] = Field(
+        None, description="向きのパース原文 ('南東' 等。bratto は非公開のため常に null)"
+    )
+    orientation_deg: Optional[int] = Field(
+        None, description="向きの角度 0-359 (北=0・不明は null / null ≠ 北=0)"
+    )
+    orientation_source: Optional[str] = Field(
+        None, description="向きの取得経路 ('spec_parse' 等)。精度はこの値から導出"
+    )
     point_text: Optional[str] = Field(None, description="物件紹介文 (POINT)")
     availability_text: Optional[str] = None
     min_stay_days: Optional[int] = None
-    contract_fee_yen: Optional[int] = None
-    first_seen_at: Optional[str] = Field(None, description="初回検知日時 (掲載日数の算出に使用)")
-    last_seen_at: Optional[str] = Field(None, description="最終確認日時 (掲載終了時の参考値基準)")
-    detail_scraped_at: Optional[str] = None
+    contract_fee_yen: Optional[int] = Field(
+        None,
+        description="契約事務手数料の実効値 (物件個別値 > サイト既定)。null = 取得元サイトの既定が未登録で算出不能",
+    )
+    first_seen_at: Optional[dt.datetime] = Field(None, description="初回検知日時 (掲載日数の算出に使用)")
+    last_seen_at: Optional[dt.datetime] = Field(None, description="最終確認日時 (掲載終了時の参考値基準)")
+    detail_scraped_at: Optional[dt.datetime] = None
     is_active: bool = Field(True, description="false = サイト掲載終了 (価格等は最終取得時点の参考値)")
     catalog_rent_per_day_yen: Optional[int] = None
     catalog_total_hint_yen: Optional[int] = None
@@ -256,67 +319,279 @@ class PropertyDetailResponse(BaseModel):
 
 
 # ============================================================
-# GeoJSON (GET /api/geojson)
+# 物件検索リクエスト (H2: 検索フィルタパラメータ契約の正本)
+# Web (/api/geojson, /api/geojson/stream) / MCP (search_properties,
+# export_geojson, export_kml) / CLI (export-map) の6箇所で手書きされていた
+# params dict 組立をここへ集約する。詳細は docs/ssot-commonization-survey.md H2。
 # ============================================================
 
 
+class SearchFilters(BaseModel):
+    """物件検索フィルタのリクエスト契約 (Web / MCP / CLI 共通)。
+
+    queries 層 (store.queries.search.iter_search_properties /
+    store.queries.export) が期待する params dict へは
+    to_query_params() で変換する。limit は呼び出し層ごとの既定差
+    (MCP 一覧 50 / API 全件 10000 / export は queries 側で 10000 補完) を
+    吸収するため Optional とし、呼び出し側が設定する。
+
+    required_features は CSV 正規化 (strip + 空要素除去) の正本が queries 層
+    (iter_search_properties 冒頭) にあるため、カンマ区切り文字列
+    (Web QUERY STRING) も list[str] (MCP / CLI) も生値のまま受け入れる。
+    モデル側では分割・正規化しない。
+    """
+
+    prefecture_name: Optional[str] = Field(
+        None, description="県名 (表示名の完全一致)"
+    )
+    max_monthly_total_yen: Optional[int] = Field(
+        None, description="30日換算総額の上限円 (post filter)"
+    )
+    max_walk_minutes: Optional[int] = Field(
+        None, description="最寄り駅徒歩分数の上限 (post filter)"
+    )
+    min_area_m2: Optional[float] = Field(
+        None, description="専有面積の下限 (m2・SQL WHERE)"
+    )
+    required_features: Optional[Union[str, List[str]]] = Field(
+        None,
+        description=(
+            "必須設備。カンマ区切り文字列 or 配列の生値。"
+            "正規化 (strip + 空要素除去) の正本は queries 層"
+        ),
+    )
+    saved_only: bool = Field(False, description="ショートリスト saved のみ")
+    exclude_hidden: bool = Field(True, description="hide / reject を除外")
+    natural_query: Optional[str] = Field(
+        None,
+        description=(
+            "自然文意味検索クエリ(PG移行 Phase 7・pgvector + gemini-embedding-2)。"
+            "指定時は意味距離の昜順に建物がソートされ、embedding 未カバーの物件は"
+            "結果から除外される。構造フィルタ(県 / features / 徒歩等)との併用可"
+        ),
+    )
+    limit: Optional[int] = Field(
+        None,
+        description=(
+            "最大取得件数。None = queries 層の既定 (50) で、export 系は "
+            "queries 側が 10000 に補完する。呼び出し層ごとの既定差を吸収"
+        ),
+    )
+
+    def to_query_params(self) -> Dict[str, Any]:
+        """queries 層が期待する params dict へ変換する.
+
+        None のキーは除外する (queries 層は params.get() で読むため
+        「値 None」=「キー無し」と等価)。required_features は正規化せず
+        生値のまま渡す (CSV 分割の正本は iter_search_properties 冒頭)。
+        """
+        return self.model_dump(exclude_none=True)
+
+
+# ============================================================
+# 建物 GeoJSON (GET /api/buildings/geojson) — 建物単位集約モデル Phase B1
+# (正本: docs/building-aggregation-design.md §6.1。組立実体は
+#  store.queries.buildings。B1 では FE は消費しないが契約の自己記述性のため
+#  response_model に接続し openapi 生成型に載せる)
+# ============================================================
+
+
+class BuildingNameInfo(BaseModel):
+    """ソース別建物名 1 件 (building_names 行・名寄せ監査の正本)。"""
+
+    source_site: str = Field(..., description="ソース site id")
+    name: str = Field(..., description="そのソースでの建物名")
+
+
+class BuildingUnitProperties(BaseModel):
+    """建物 Feature の units 要素 = 建物に所属する部屋 1 件。
+
+    store.queries.buildings._assemble_rooms が載せる search 結果 1 物件の
+    dict (_property_row_to_result 出力 + feature_categories) をそのまま
+    搭載するため、部屋単位 /api/geojson の PropertyProperties (表示用に
+    文字列化・整形済み) とはキー構成が意図的に異なる:
+
+    - access_summary は文字列ではなく行リスト ("JR 渋谷駅 徒歩5分" 等)
+    - images は URL 文字列ではなく {image_url, image_type, sort_order} の行 dict
+    - source_property_id / external_id / prefecture_slug / built_year /
+      built_month / lat / lng など生列を追加で保持
+    - feature_summary は設備名カンマ結合(重複語除去済み・B2-ε で復旧:
+      詳細パネル・比較ボードの設備表示と searchHaystack が消費)
+    - station_summary は持たない (建物側 properties の station_summary に集約)
+    """
+
+    id: int
+    source_site: Optional[str] = None
+    source_display_name: Optional[str] = None
+    source_property_id: Optional[str] = Field(
+        None, description="external_id のエイリアス (MCP 互換)"
+    )
+    external_id: Optional[str] = Field(None, description="取得元サイトの物件 ID")
+    title: Optional[str] = None
+    detail_url: Optional[str] = None
+    address: Optional[str] = None
+    prefecture_name: Optional[str] = None
+    prefecture_slug: Optional[str] = None
+    municipality: Optional[str] = None
+    layout: Optional[str] = None
+    area_m2: Optional[float] = None
+    built_year: Optional[int] = None
+    built_month: Optional[int] = None
+    floor_number: Optional[int] = Field(
+        None, description="所在階 (min・地下は負数 / null = 取得元で非公開)"
+    )
+    floor_number_max: Optional[int] = Field(
+        None, description="所在階 (max・複数階「1・2階」のみ min と異なる)"
+    )
+    orientation_deg: Optional[int] = Field(
+        None,
+        description="向きの角度 0-359 (北=0・不明は null / null ≠ 北=0。bratto は常に null)",
+    )
+    total_score: float = Field(
+        0, description="総合スコア (スコアリング再活用予定のため維持・未スコアは 0)"
+    )
+    lat: Optional[float] = Field(
+        None, description="部屋行の緯度 (建物代表座標は親 Feature の geometry)"
+    )
+    lng: Optional[float] = Field(
+        None, description="部屋行の経度 (建物代表座標は親 Feature の geometry)"
+    )
+    point_text: Optional[str] = None
+    min_walk_minutes: Optional[int] = None
+    min_daily_rent: Optional[int] = Field(None, description="最安実効日額 (as-of-today)")
+    min_plan_total: Optional[int] = Field(None, description="最安プランの 30 日換算総額")
+    min_plan_name: Optional[str] = None
+    min_plan_label: Optional[str] = Field(
+        None, description="最安プランの表示ラベル (辞書解決・正本: domain.plan_catalog)"
+    )
+    thumbnail_url: Optional[str] = None
+    shortlist_status: Optional[ShortlistStatus] = Field(
+        None, description="saved / hide / reject / none (ショートリスト未登録は null)"
+    )
+    shortlist_updated_at: Optional[dt.datetime] = Field(
+        None,
+        description=(
+            "ショートリスト行の最終更新時刻 (ISO・行登録時のみ。"
+            "FE 最終編集順ソート用・未登録は null)"
+        ),
+    )
+    is_active: bool = Field(True, description="false = サイト掲載終了")
+    last_seen_at: Optional[dt.datetime] = None
+    contract_fee_yen: Optional[int] = Field(
+        None,
+        description="契約事務手数料の実効値 (物件個別値 > サイト既定)。null = 算出不能",
+    )
+    feature_summary: str = Field(
+        "", description="設備名のカンマ区切り要約(重複語除去済み)"
+    )
+    access_summary: List[str] = Field(
+        [], description="アクセス行リスト ('JR 渋谷駅 徒歩5分' 等・文字列化前)"
+    )
+    images: List[PropertyImageInfo] = Field(
+        [], description="画像行リスト (URL は image_url)"
+    )
+    feature_categories: List[str] = Field(
+        [],
+        description="部屋の充足可能カテゴリ code 集合 (単純/複合 code + 導出の親/横断 code)",
+    )
+    rent_plans: List[RentPlan] = []
+    campaigns: List[Campaign] = []
+
+
+class BuildingProperties(BaseModel):
+    """建物 GeoJSON Feature の properties (検索結果 1 建物分)。
+
+    一括 /api/buildings/geojson と /api/buildings/geojson/stream の feature 行
+    で同一ペイロード。units は FE 向け GeoJSON では建物の可視部屋全て
+    (units="all"・worker が現行フィルタを部屋単位で再適用する構成を維持)。
+    """
+
+    id: int = Field(..., description="buildings.id")
+    kind: Literal["building"] = Field(
+        "building", description="部屋単位 Feature (kind 無し) との識別子"
+    )
+    name: Optional[str] = Field(None, description="建物代表名 (canonical_name)")
+    address: Optional[str] = Field(None, description="表示用代表住所")
+    prefecture_slug: Optional[str] = None
+    prefecture_name: Optional[str] = None
+    municipality: Optional[str] = None
+    built_year: Optional[int] = Field(None, description="築年 (建物内多数決の代表値)")
+    structure: Optional[str] = Field(None, description="構造 (建物内多数決の代表値)")
+    building_floors: Optional[int] = Field(None, description="建物階数 (建物内多数決の代表値)")
+    is_active: bool = Field(
+        True, description="false = active 部屋が 1 つも無い建物 (all_inactive)"
+    )
+    units_count: Optional[int] = Field(None, description="所属部屋数 (キャッシュ列)")
+    active_units_count: Optional[int] = Field(None, description="active 部屋数 (キャッシュ列)")
+    source_sites: List[str] = Field(
+        [], description="所属部屋の source_site 一覧 (重複除去・出現順)"
+    )
+    building_names: List[BuildingNameInfo] = Field(
+        [], description="ソース別建物名 (クロスソース名寄せ時の併記・監査用)"
+    )
+    feature_categories: List[str] = Field(
+        [],
+        description=(
+            "建物レベル導出 code 集合 (所属部屋 code のうち sub='building' 語彙の"
+            " union + 導出の親/横断 code・辞書順)"
+        ),
+    )
+    min_daily_rent: Optional[int] = Field(None, description="所属部屋の最安実効日額")
+    max_daily_rent: Optional[int] = Field(
+        None, description="所属部屋の最高実効日額 (帯表示用)"
+    )
+    min_plan_total: Optional[int] = Field(None, description="最安部屋の 30 日換算総額")
+    min_plan_label: Optional[str] = Field(None, description="最安部屋のプラン表示ラベル")
+    min_walk_minutes: Optional[int] = Field(None, description="所属部屋の最小徒歩分数")
+    thumbnail_url: Optional[str] = Field(
+        None, description="代表写真 (現行 thumbnail 選別規則の建物内適用)"
+    )
+    has_campaign: bool = Field(
+        False, description="active なキャンペーンを 1 つ以上の所属部屋が持つ (建物レベル束ねなし)"
+    )
+    access_summary: List[str] = Field(
+        [], description="部屋 accesses の union + 重複除去 ('JR 渋谷駅 徒歩5分' 等)"
+    )
+    station_summary: str = Field("", description="カンマ区切りの駅名要約")
+    units: List[BuildingUnitProperties] = Field(
+        [], description="所属部屋一式 (id/title/layout/rent_plans/campaigns/...)"
+    )
+    shortlist_status: Optional[ShortlistStatus] = Field(
+        None, description="建物ショートリスト状態 (saved / none・未登録は null)"
+    )
+    shortlist_comment: Optional[str] = Field(
+        None, description="建物ショートリストのメモ (未登録は null)"
+    )
+    shortlist_updated_at: Optional[dt.datetime] = Field(
+        None,
+        description=(
+            "建物ショートリスト行の最終更新時刻 (ISO・行登録時のみ。"
+            "FE 最終編集順ソートの建物側キー・未登録は null)"
+        ),
+    )
+
+
 class GeoJSONPoint(BaseModel):
-    """Point ジオメトリ。coordinates は [lng, lat]。"""
+    """Point ジオメトリ。coordinates は [lng, lat]。(旧部屋GeoJSONと共用の形状・
+    B2-ε で旧側モデル削除後は建物 Feature 専用)"""
 
     type: Literal["Point"]
     coordinates: List[float]
 
 
-class PropertyProperties(BaseModel):
-    """GeoJSON Feature の properties (検索結果 1 物件分)。
-
-    一括 /api/geojson と /api/geojson/stream の feature 行で同一ペイロード。
-    """
-
-    id: int
-    room_id: Optional[str] = Field(None, description="external_id のエイリアス (legacy)")
-    source_site: Optional[str] = None
-    source_display_name: Optional[str] = None
-    title: Optional[str] = None
-    detail_url: Optional[str] = None
-    address: Optional[str] = None
-    prefecture_name: Optional[str] = None
-    municipality: Optional[str] = None
-    layout: Optional[str] = None
-    area_m2: Optional[float] = None
-    min_daily_rent: Optional[int] = Field(None, description="最安実効日額 (as-of-today)")
-    min_plan_total: Optional[int] = Field(None, description="最安プランの 30 日換算総額")
-    min_plan_name: Optional[str] = None
-    min_walk_minutes: Optional[int] = None
-    thumbnail_url: Optional[str] = None
-    images: List[str] = Field([], description="画像 URL のリスト")
-    total_score: Optional[float] = Field(
-        None, description="総合スコア (スコアリング再活用予定のため維持)"
-    )
-    shortlist_status: str = Field("none", description="saved / hide / reject / none")
-    is_active: bool = Field(True, description="false = サイト掲載終了")
-    last_seen_at: Optional[str] = None
-    access_summary: str = Field("", description="カンマ区切りのアクセス要約")
-    feature_summary: str = Field("", description="カンマ区切りの設備要約")
-    station_summary: str = Field("", description="カンマ区切りの駅名要約")
-    point_text: Optional[str] = None
-    rent_plans: List[RentPlan] = []
-    campaigns: List[Campaign] = []
-
-
-class PropertyFeature(BaseModel):
-    """GeoJSON Feature 1 件 (Point)。"""
+class BuildingFeature(BaseModel):
+    """建物 GeoJSON Feature 1 件 (Point・建物代表座標)。"""
 
     type: Literal["Feature"]
     geometry: GeoJSONPoint
-    properties: PropertyProperties
+    properties: BuildingProperties
 
 
-class PropertyGeoJSON(BaseModel):
-    """GET /api/geojson の FeatureCollection 応答。"""
+class BuildingGeoJSON(BaseModel):
+    """GET /api/buildings/geojson の FeatureCollection 応答。"""
 
     type: Literal["FeatureCollection"]
-    features: List[PropertyFeature]
+    features: List[BuildingFeature]
 
 
 # ============================================================
@@ -327,7 +602,7 @@ class PropertyGeoJSON(BaseModel):
 class PriceTrendPoint(BaseModel):
     """価格変動の日次集計 1 点。"""
 
-    date: str = Field(..., description="YYYY-MM-DD")
+    date: dt.date = Field(..., description="YYYY-MM-DD")
     median: int = Field(..., description="日額中央値 (円)")
     avg: int = Field(..., description="日額平均 (円)")
     count: int = Field(..., description="代表値が存在する物件数")
@@ -369,7 +644,7 @@ class PriceTrendResponse(BaseModel):
 
     days: int = Field(..., description="集計期間 (日数)")
     carried_window_days: int = Field(..., description="前進補完で既知値とみなす窓 (日数)")
-    generated_at: str
+    generated_at: dt.datetime
     providers: List[PriceTrendProvider]
     series: PriceTrendSeries
     meta: PriceTrendMeta
@@ -383,7 +658,23 @@ class PriceTrendResponse(BaseModel):
 class ShortlistUpdateResponse(BaseModel):
     status: Literal["success"]
     property_id: Optional[int] = None
-    shortlist_status: str
+    shortlist_status: ShortlistStatus
+
+
+# ============================================================
+# 建物ショートリスト更新 (POST /api/buildings/{building_id}/shortlist)
+# ============================================================
+
+
+class BuildingShortlistUpdateRequest(BaseModel):
+    status: Literal["saved", "none"]
+    comment: Optional[str] = None
+
+
+class BuildingShortlistUpdateResponse(BaseModel):
+    status: Literal["success"]
+    building_id: int
+    shortlist_status: Literal["saved", "none"]
 
 
 # ============================================================
@@ -483,8 +774,8 @@ class ScrapeRunSummary(BaseModel):
 
     id: int
     source_site: str
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
+    started_at: Optional[dt.datetime] = None
+    finished_at: Optional[dt.datetime] = None
     status: str
     list_pages: Optional[int] = None
     list_items: Optional[int] = None
@@ -502,6 +793,9 @@ class AdminDbStats(BaseModel):
     total_properties: int
     missing_coordinates: int
     shortlist: Dict[str, int] = Field({}, description="状態→件数マップ")
+    building_shortlist: Dict[str, int] = Field(
+        {}, description="建物ショートリストの状態→件数マップ"
+    )
     by_source: Dict[str, int] = Field({}, description="source_site→件数マップ")
 
 
@@ -528,9 +822,9 @@ class AdminTargetInfo(BaseModel):
     slug: str
     name: str
     counts: AdminTargetCounts
-    last_seen_at: Optional[str] = None
-    last_detail_scraped_at: Optional[str] = None
-    last_run_at: Optional[str] = None
+    last_seen_at: Optional[dt.datetime] = None
+    last_detail_scraped_at: Optional[dt.datetime] = None
+    last_run_at: Optional[dt.datetime] = None
     last_run_status: Optional[str] = None
     last_run_list_items: Optional[int] = None
     last_run_detail_ok: Optional[int] = None
@@ -574,8 +868,8 @@ class RotationPrefStatus(BaseModel):
     slug: str
     name: str
     known_total: Optional[int] = Field(None, description="既知物件数 (未計測は null)")
-    last_full_ok_at: Optional[str] = Field(None, description="前回フル取得成功時刻")
-    last_run_at: Optional[str] = None
+    last_full_ok_at: Optional[dt.datetime] = Field(None, description="前回フル取得成功時刻")
+    last_run_at: Optional[dt.datetime] = None
     consecutive_failures: int = Field(0, description="連続スクレイプ失敗数")
     suppressed: bool = Field(False, description="連続失敗によるクールダウン中か")
     is_running: bool = Field(False, description="現在スクレイプ実行中か")
@@ -707,6 +1001,20 @@ class FeGlobalSettings(BaseModel):
 
     pinClustering: Optional[bool] = Field(
         None, description="物件ピンのクラスタリング (未指定/null = true)"
+    )
+    pinBalloonPermanent: Optional[bool] = Field(
+        None,
+        description=(
+            "物件バルーン(tooltip)の常時表示 "
+            "(クラスタリング無効時のみ実効。未指定/null = false)"
+        ),
+    )
+    mapBackground: Optional[Literal["black", "white"]] = Field(
+        None,
+        description=(
+            "最下レイヤ(基本地図)下に見える地図コンテナの背景色 "
+            "(未指定/null = 'black' = 従来色)"
+        ),
     )
 
 

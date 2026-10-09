@@ -9,15 +9,21 @@ from sources.base import FetchedPage, ListCard, ListTarget, SourceAdapter
 from sources.registry import SourceRegistry
 from sources.unionmonthly.detail_parser import PARSER_VERSION, parse_detail_html
 from sources.unionmonthly.list_parser import extract_total_count, parse_list_html
+from store.pref_master import pref_display_name
 
 logger = logging.getLogger(__name__)
 
+# config.json sources.unionmonthly.prefectures 欠落時のみ使うフォールバック。
+# 県名は pref_master 正本から派生(pref_id はサイト固有値のまま残す)。
 DEFAULT_PREFS = {
-    "tokyo": {"name": "東京都", "pref_id": "PF13"},
-    "kanagawa": {"name": "神奈川県", "pref_id": "PF14"},
-    "chiba": {"name": "千葉県", "pref_id": "PF12"},
-    "saitama": {"name": "埼玉県", "pref_id": "PF11"},
-    "ibaraki": {"name": "茨城県", "pref_id": "PF08"},
+    slug: {"name": pref_display_name(slug), "pref_id": pref_id}
+    for slug, pref_id in {
+        "tokyo": "PF13",
+        "kanagawa": "PF14",
+        "chiba": "PF12",
+        "saitama": "PF11",
+        "ibaraki": "PF08",
+    }.items()
 }
 
 

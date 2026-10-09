@@ -1,6 +1,7 @@
 import React from 'react';
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { CalcBreakdown } from '../../../lib/rentCalculator.ts';
+import { formatYen } from '../../../lib/format.ts';
 // 色・tooltip・凡例の共通定義は chartTheme へ切り出し
 import {
   COLOR_ACCENT,
@@ -8,6 +9,7 @@ import {
   COLOR_MUTED,
   COLOR_WARNING,
   TooltipCard,
+  TooltipRow,
   TrendLegend,
 } from '../../shared/charts/chartTheme.tsx';
 
@@ -40,20 +42,15 @@ function BreakdownTooltip({
     <TooltipCard>
       <div className="font-semibold text-text mb-1">費用内訳</div>
       {payload.map((entry) => (
-        <div key={entry.name} className="flex items-center gap-1.5">
-          <span
-            className="inline-block size-2 rounded-full"
-            style={{ background: entry.color }}
-          />
-          <span className="text-text-muted">{entry.name}</span>
-          <span className="font-semibold text-text ml-auto pl-3">
-            {Number(entry.value ?? 0).toLocaleString()}円
-          </span>
-        </div>
+        <TooltipRow
+          key={entry.name}
+          label={entry.name}
+          color={entry.color}
+          value={formatYen(Number(entry.value ?? 0))}
+        />
       ))}
-      <div className="mt-1 pt-1 border-t border-border flex items-center gap-1.5">
-        <span className="text-text-muted">総額</span>
-        <span className="font-semibold text-text ml-auto pl-3">{total.toLocaleString()}円</span>
+      <div className="mt-1 pt-1 border-t border-border">
+        <TooltipRow label="総額" value={formatYen(total)} />
       </div>
     </TooltipCard>
   );
@@ -62,11 +59,12 @@ function BreakdownTooltip({
 /** 選択した滞在日数の費用内訳を1本の積み上げ横バーで表示する */
 const CostBreakdownBar: React.FC<CostBreakdownBarProps> = ({ breakdown, total }) => {
   const data = [{ name: '内訳', ...breakdown }];
-  // 光熱費0(utilities_included=true 等)の物件では光熱費セグメントを省略する
-  const segments =
-    breakdown.utilitiesTotal > 0
-      ? SEGMENTS
-      : SEGMENTS.filter((s) => s.key !== 'utilitiesTotal');
+  // 光熱費0(utilities_included=true 等)・手数料不明(null)のセグメントは凡例からも落とす
+  const segments = SEGMENTS.filter((s) => {
+    if (s.key === 'utilitiesTotal') return breakdown.utilitiesTotal > 0;
+    if (s.key === 'contractFee') return breakdown.contractFee != null;
+    return true;
+  });
 
   return (
     <div className="flex flex-col gap-1">

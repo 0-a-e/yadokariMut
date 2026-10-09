@@ -1,10 +1,10 @@
 import React, { useMemo, useCallback } from 'react';
-import { Campaign, RentPlan } from '../../types.ts';
+import type { Campaign, RentPlan } from '../../types.ts';
 import {
   calculateRentTotal,
-  type PlanCode,
-  PLAN_LABELS,
+  planDisplayLabel,
 } from '../../lib/rentCalculator.ts';
+import { formatYen } from '../../lib/format.ts';
 import { Card, CardContent } from '@/components/ui/card.tsx';
 import { Input } from '@/components/ui/input.tsx';
 import { Badge } from '@/components/ui/badge.tsx';
@@ -13,7 +13,7 @@ import { FaCalculator, FaCircleInfo } from 'react-icons/fa6';
 interface RentSimulatorProps {
   plans: RentPlan[];
   campaigns?: Campaign[];
-  /** 物件の契約事務手数料(詳細API由来)。null/未指定は既定 5500 にフォールバック */
+  /** 物件の契約事務手数料(BE 解決済み実効値)。null は算出不能として行を赤表示 */
   contractFeeYen?: number | null;
   /** @deprecated kept for call-site compatibility */
   propertyId?: number;
@@ -22,10 +22,6 @@ interface RentSimulatorProps {
   checkIn: string;
   checkOut: string;
   onDatesChange: (checkIn: string, checkOut: string) => void;
-}
-
-function yen(n: number): string {
-  return `${n.toLocaleString()}円`;
 }
 
 export const RentSimulator: React.FC<RentSimulatorProps> = ({
@@ -97,7 +93,7 @@ export const RentSimulator: React.FC<RentSimulatorProps> = ({
                 <span className="text-text-muted">ご利用日数</span>
                 <span className="font-bold text-accent">{result.stayDays.toLocaleString()}日</span>
                 <Badge variant="outline" className="text-xs border-primary/40 text-[#a37aff]">
-                  {PLAN_LABELS[result.selectedPlanCode as PlanCode] || result.selectedPlan.plan_name}
+                  {planDisplayLabel(result.selectedPlan)}
                 </Badge>
                 {result.usedFallback && (
                   <Badge variant="secondary" className="text-xs">
@@ -121,18 +117,18 @@ export const RentSimulator: React.FC<RentSimulatorProps> = ({
                 </div>
                 <BreakdownRow
                   label="賃料"
-                  calc={`${result.breakdown.rentDaily.toLocaleString()}円 × ${result.stayDays}日`}
+                  calc={`${formatYen(result.breakdown.rentDaily)} × ${result.stayDays}日`}
                   amount={result.breakdown.rentTotal}
                 />
                 <BreakdownRow
                   label="管理費"
-                  calc={`${result.breakdown.managementDaily.toLocaleString()}円 × ${result.stayDays}日`}
+                  calc={`${formatYen(result.breakdown.managementDaily)} × ${result.stayDays}日`}
                   amount={result.breakdown.managementTotal}
                 />
                 {result.breakdown.utilitiesTotal > 0 && (
                   <BreakdownRow
                     label="光熱費"
-                    calc={`${result.breakdown.utilitiesDaily.toLocaleString()}円 × ${result.stayDays}日`}
+                    calc={`${formatYen(result.breakdown.utilitiesDaily)} × ${result.stayDays}日`}
                     amount={result.breakdown.utilitiesTotal}
                   />
                 )}
@@ -142,7 +138,7 @@ export const RentSimulator: React.FC<RentSimulatorProps> = ({
                   <span>合計</span>
                   <span />
                   <span className="text-right text-accent min-w-[5.5rem]">
-                    {yen(result.grandTotal)}
+                    {formatYen(result.grandTotal)}
                   </span>
                 </div>
               </div>
@@ -166,14 +162,23 @@ export const RentSimulator: React.FC<RentSimulatorProps> = ({
   );
 };
 
-const BreakdownRow: React.FC<{ label: string; calc?: string; amount: number }> = ({
+/** amount = null は「算出不能」。行全体を赤文字で明示する */
+const BreakdownRow: React.FC<{ label: string; calc?: string; amount: number | null }> = ({
   label,
   calc,
   amount,
-}) => (
-  <div className="grid grid-cols-[1fr_auto_auto] gap-x-2 px-2.5 py-1.5 border-b border-border/30 last:border-0">
-    <span className="text-text">{label}</span>
-    <span className="text-text-muted text-right">{calc || ''}</span>
-    <span className="text-right min-w-[5.5rem] font-medium">{yen(amount)}</span>
-  </div>
-);
+}) => {
+  const unknown = amount == null;
+  const amountCls = unknown ? 'text-danger' : '';
+  return (
+    <div className="grid grid-cols-[1fr_auto_auto] gap-x-2 px-2.5 py-1.5 border-b border-border/30 last:border-0">
+      <span className={unknown ? 'text-danger' : 'text-text'}>{label}</span>
+      <span className={`${unknown ? 'text-danger/70' : 'text-text-muted'} text-right`}>
+        {calc || ''}
+      </span>
+      <span className={`text-right min-w-[5.5rem] font-medium ${amountCls}`}>
+        {unknown ? '不明' : formatYen(amount)}
+      </span>
+    </div>
+  );
+};

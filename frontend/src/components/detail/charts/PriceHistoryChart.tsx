@@ -8,6 +8,7 @@ import {
   YAxis,
 } from 'recharts';
 import { cn } from '@/lib/utils.ts';
+import { formatYen } from '../../../lib/format.ts';
 // tooltipカード・軸整形の共通実装(chartTheme)を利用
 import { TooltipCard, formatTick } from '../../shared/charts/chartTheme.tsx';
 
@@ -47,10 +48,10 @@ function SparklineTooltip({
   if (!p) return null;
   return (
     <TooltipCard>
-      <div className="font-semibold text-text">{p.daily.toLocaleString()}円</div>
+      <div className="font-semibold text-text">{formatYen(p.daily)}</div>
       {p.diff != null && p.diff !== 0 && (
         <div className={cn('font-medium', diffClass(p.diff))}>
-          {p.diff < 0 ? '▼' : '▲'} {Math.abs(p.diff).toLocaleString()}円
+          {p.diff < 0 ? '▼' : '▲'} {formatYen(Math.abs(p.diff))}
         </div>
       )}
       {p.diff === 0 && <div className="text-text-muted">変動なし</div>}

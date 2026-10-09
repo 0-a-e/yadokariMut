@@ -16,6 +16,7 @@ from sources.registry import SourceRegistry
 from sources.unionmonthly.detail_parser import parse_detail_html
 from sources.unionmonthly.list_parser import extract_total_count, parse_list_html
 from store.repository import Repository
+from helpers import fetch_child_rows, fetch_property_row
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "union-monthly"
 # glob 順に依存しないよう明示指定（新フィクスチャ追加時も既存テストが不変）
@@ -87,6 +88,16 @@ class TestDetailParserFixture(unittest.TestCase):
         self.assertAlmostEqual(draft.area_m2 or 0, 38.91, places=2)
         self.assertEqual(draft.built_year, 2024)
         self.assertEqual(draft.structure, "鉄筋コンクリート造")
+        # 所在階: floors_text に原文・floor_number に整数 (docs/floor-number-ssot-plan.md §3.4)
+        # 単一階は floor_number_max が min と同値になる
+        self.assertEqual(draft.floors_text, "9階")
+        self.assertEqual(draft.floor_number, 9)
+        self.assertEqual(draft.floor_number_max, 9)
+        self.assertIsNone(draft.building_floors)
+        # 向き: 原文+角度+取得経路 (docs/orientation-model-plan.md §6.1)
+        self.assertEqual(draft.orientation_text, "南東")
+        self.assertEqual(draft.orientation_deg, 135)
+        self.assertEqual(draft.orientation_source, "spec_parse")
         self.assertIsNotNone(draft.lat)
         self.assertIsNotNone(draft.lng)
         self.assertTrue(any(a.walk_minutes == 8 for a in draft.accesses))
@@ -97,6 +108,29 @@ class TestDetailParserFixture(unittest.TestCase):
         self.assertIn("明治神宮前〈原宿〉駅", stations)
         self.assertGreaterEqual(len(draft.features), 5)
         self.assertEqual(len(draft.price_plans), 3)
+
+    def test_facility_list_active_only(self):
+        """facility_list(「物件のこだわり」)は -active の li のみ採る(設計 §7-4)。
+
+        非 active は未達成のグレーアウト表示であり物件事実ではない。fixture の
+        facility_list は 10 語彙中「南向き」のみ非 active。entry_tag(サイト運営
+        バッジ・常時表示)は active 概念なしでそのまま採る。
+        """
+        draft = parse_detail_html(
+            self.html,
+            detail_url="https://www.unionmonthly.jp/tokyo/6575/",
+        )
+        names = {f.feature_name for f in draft.features}
+        self.assertNotIn("南向き", names)  # fixture で非 active の唯一の語彙
+        for expected in (
+            "バストイレ別", "2階以上", "独立洗面台", "室内洗濯機", "オートロック",
+            "モニター付きインターフォン", "インターネット無料", "エアコン", "エレベーター",
+        ):
+            self.assertIn(expected, names)
+        for expected in (
+            "敷金礼金仲介料・更新料 ￥0", "家具家電付き", "水道光熱費不要", "来店不要 WEB申込",
+        ):
+            self.assertIn(expected, names)
 
     def test_price_plans_monthly(self):
         draft = parse_detail_html(self.html, detail_url="https://www.unionmonthly.jp/tokyo/6575/")
@@ -132,6 +166,86 @@ class TestDetailParserFixture(unittest.TestCase):
         mgmt_d = 28500 // MONTH_DAYS
         self.assertEqual(result.breakdown.rent_daily, rent_d)
         self.assertEqual(result.breakdown.management_daily, mgmt_d)
+
+    def test_point_text_strips_leading_boilerplate(self):
+        """スタッフのおすすめコメント: 先頭ボイラープレートのみ除去し以降を保持。
+
+        comment-box は [県市駅のテンプレ 2 行][■路線情報][■周辺情報]
+        [■おすすめコメント] 構成。■路線情報は accesses に無い乗換情報、
+        ■周辺情報は距離付き POI で DB 未保存のため、いずれも保持する
+        (2026-10-09・生 HTML 5,315 件全走査に基づく抽出規則)。
+        """
+        draft = parse_detail_html(
+            self.html,
+            detail_url="https://www.unionmonthly.jp/tokyo/6575/",
+        )
+        pt = draft.point_text
+        self.assertIsNotNone(pt)
+        self.assertTrue(pt.startswith("■路線情報(最寄駅→主要駅)"))
+        self.assertIn("■周辺情報", pt)
+        self.assertIn("■おすすめコメント", pt)
+        # ボイラープレート(建物名テンプレ行)は含まれない
+        self.assertNotIn("ユニオンマンスリー渋谷カディナ１です", pt)
+
+
+class TestPointTextExtraction(unittest.TestCase):
+    """_parse_point_text の抽出規則(マーカー変種・フォールバック)。
+
+    実データの先頭マーカーは ■系/＜＞系の両方(■路線情報 4,789 /
+    ＜路線情報(最寄駅→主要駅)＞ 442 / ＜物件の特徴＞ 21 / ＜○○駅おすすめコメント＞ 等)。
+    """
+
+    def _parse(self, body_html: str):
+        from bs4 import BeautifulSoup
+
+        from sources.unionmonthly.detail_parser import _parse_point_text
+
+        html = f"<html><body>{body_html}</body></html>"
+        return _parse_point_text(BeautifulSoup(html, "html.parser"))
+
+    def test_standard_block_markers(self):
+        pt = self._parse(
+            '<section class="comment"><h2>スタッフのおすすめコメント</h2>'
+            '<div class="comment-box">東京都渋谷区のテンプレ行です<br>ユニオンマンスリー○○です<br>'
+            "■路線情報(最寄駅→主要駅)<br>・渋谷駅→新宿駅（約7分/乗り換えなし）<br>"
+            "■周辺情報<br>・ローソン(約130ｍ)<br>"
+            "■おすすめコメント<br>駅近で利便性抜群です。</div></section>"
+        )
+        self.assertEqual(
+            pt,
+            "■路線情報(最寄駅→主要駅)\n・渋谷駅→新宿駅（約7分/乗り換えなし）\n"
+            "■周辺情報\n・ローソン(約130ｍ)\n■おすすめコメント\n駅近で利便性抜群です。",
+        )
+
+    def test_bracket_marker_variant(self):
+        pt = self._parse(
+            '<section class="comment"><div class="comment-box">'
+            "建物テンプレです<br>＜大宮駅おすすめコメント＞<br>自由文です。</div></section>"
+        )
+        self.assertEqual(pt, "＜大宮駅おすすめコメント＞\n自由文です。")
+
+    def test_marker_first_line_kept_whole(self):
+        pt = self._parse(
+            '<section class="comment"><div class="comment-box">'
+            "＜物件の特徴＞<br>内容です。</div></section>"
+        )
+        self.assertEqual(pt, "＜物件の特徴＞\n内容です。")
+
+    def test_no_marker_falls_back_to_full_text(self):
+        pt = self._parse(
+            '<section class="comment"><div class="comment-box">'
+            "自由文のみの変種です。</div></section>"
+        )
+        self.assertEqual(pt, "自由文のみの変種です。")
+
+    def test_no_section_returns_none(self):
+        self.assertIsNone(self._parse(""))
+
+    def test_empty_box_returns_none(self):
+        pt = self._parse(
+            '<section class="comment"><div class="comment-box">   </div></section>'
+        )
+        self.assertIsNone(pt)
 
 
 @unittest.skipUnless(DETAIL_FIXTURE_5TABS.exists(), "union 5-tabs fixture missing")
@@ -213,6 +327,33 @@ class TestBuiltYearJapaneseEra(unittest.TestCase):
         self.assertEqual(_parse_built(None), (None, None, None))
 
 
+class TestMinStayDays(unittest.TestCase):
+    """最低契約日数表記 → min_stay_days への換算。
+
+    月表記は domain.pricing.MONTH_DAYS (正本) で日数換算する。
+    """
+
+    def _draft_with_min_stay_text(self, text: str):
+        html = f"""
+<html><body>
+<section class="entry" data-troom_id="9100">
+<h1>最低契約テスト物件</h1>
+<p>{text}</p>
+</section>
+</body></html>
+"""
+        return parse_detail_html(html, detail_url="https://www.unionmonthly.jp/tokyo/9100/")
+
+    def test_min_stay_two_months_is_sixty_days(self):
+        draft = self._draft_with_min_stay_text("最低契約日数2ヶ月からご入居いただけます")
+        self.assertEqual(draft.min_stay_days, 2 * MONTH_DAYS)
+        self.assertEqual(draft.min_stay_days, 60)
+
+    def test_min_stay_days_unit_kept_as_is(self):
+        draft = self._draft_with_min_stay_text("最低契約日数45日からご入居いただけます")
+        self.assertEqual(draft.min_stay_days, 45)
+
+
 class TestRegistryAndPipelineFixture(unittest.TestCase):
     def test_registry(self):
         self.assertIsNotNone(SourceRegistry.get("unionmonthly"))
@@ -226,8 +367,7 @@ class TestRegistryAndPipelineFixture(unittest.TestCase):
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         try:
-            repo = Repository(tmp.name)
-            repo.init_db()
+            repo = Repository()
             adapter = SourceRegistry.create("unionmonthly", {"delay_seconds": 0})
             pipeline = IngestPipeline(adapter, repo, save_raw=False)
             html = DETAIL_FIXTURE.read_text(encoding="utf-8", errors="replace")
@@ -238,11 +378,13 @@ class TestRegistryAndPipelineFixture(unittest.TestCase):
                 prefecture_slug="tokyo",
                 prefecture_name="東京都",
             )
-            prop = repo.get_property(pid)
-            self.assertEqual(prop["source_site"], "unionmonthly")
-            self.assertEqual(prop["external_id"], "6575")
-            self.assertEqual(len(prop["price_plans"]), 3)
-            self.assertEqual(prop["catalog_rent_per_day_yen"], 336000 // MONTH_DAYS)
+            self.assertEqual(fetch_property_row(repo, pid)["source_site"], "unionmonthly")
+            self.assertEqual(fetch_property_row(repo, pid)["external_id"], "6575")
+            self.assertEqual(len(fetch_child_rows(repo, pid, "price_plans")), 3)
+            self.assertEqual(
+                fetch_property_row(repo, pid)["catalog_rent_per_day_yen"],
+                336000 // MONTH_DAYS,
+            )
         finally:
             os.unlink(tmp.name)
 

@@ -1,6 +1,7 @@
 import React, { Suspense, useMemo } from 'react';
 import type { PriceHistoryMeta, PriceHistoryPoint } from '../../types.ts';
 import { Badge } from '@/components/ui/badge.tsx';
+import { Skeleton } from '@/components/ui/skeleton.tsx';
 import {
   Table,
   TableBody,
@@ -11,6 +12,7 @@ import {
 } from '@/components/ui/table.tsx';
 import { FaChartLine } from 'react-icons/fa6';
 import { cn } from '@/lib/utils.ts';
+import { formatYen } from '../../lib/format.ts';
 // 純関数は物件分析機能と共有するため lib/analysis へ切り出し
 import {
   formatDate,
@@ -83,7 +85,7 @@ export const PriceHistorySection: React.FC<PriceHistorySectionProps> = ({
             )}
           >
             {deltaInfo.delta < 0 ? '' : '+'}
-            {deltaInfo.delta.toLocaleString()}円
+            {formatYen(deltaInfo.delta)}
             <span className="font-normal opacity-80 ml-1">前回比</span>
           </Badge>
         )}
@@ -94,7 +96,7 @@ export const PriceHistorySection: React.FC<PriceHistorySectionProps> = ({
         )}
       </div>
 
-      <Suspense fallback={<div className="w-full h-16 rounded-md bg-white/[0.03]" />}>
+      <Suspense fallback={<Skeleton className="w-full h-16 bg-white/[0.03]" />}>
         <PriceHistoryChart points={chartPoints} />
       </Suspense>
 
@@ -110,7 +112,7 @@ export const PriceHistorySection: React.FC<PriceHistorySectionProps> = ({
             <TableRow key={`${row.scraped_at}-${i}`}>
               <TableCell className="text-text/90">{formatDate(row.scraped_at)}</TableCell>
               <TableCell className="text-right font-semibold text-accent">
-                {row.daily.toLocaleString()}円
+                {formatYen(row.daily)}
               </TableCell>
             </TableRow>
           ))}

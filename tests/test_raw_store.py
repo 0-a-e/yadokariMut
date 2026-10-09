@@ -62,14 +62,13 @@ class _StubAdapter(SourceAdapter):
 
 class TestSaveRawPageParserVersion(unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self._tmp.close()
-        self.db_path = self._tmp.name
-        self.repo = Repository(self.db_path)
-        self.repo.init_db()
+        from helpers import ScopedDb
+
+        self._db = ScopedDb("raw-store")
+        self.addCleanup(self._db.close)
+        self.repo = Repository()
         self._raw_dirs = tempfile.TemporaryDirectory()
         self.addCleanup(self._raw_dirs.cleanup)
-        self.addCleanup(os.unlink, self.db_path)
 
     def _parser_versions(self) -> list[str]:
         conn = self.repo.connect()

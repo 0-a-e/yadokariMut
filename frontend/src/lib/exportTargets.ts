@@ -1,4 +1,5 @@
-import type { PropertyFeature } from '../types.ts';
+import type { BuildingFeature, BuildingUnit, PropertyFeature } from '../types.ts';
+import { isListed } from './filterLogic.ts';
 
 /** エクスポート範囲 (表示中=フィルタ適用済み / 全物件) */
 export type ExportScope = 'filtered' | 'all';
@@ -20,12 +21,50 @@ export function selectExportFeatures(
 ): PropertyFeature[] {
   const base = options.scope === 'all' ? allFeatures : filteredFeatures;
   if (options.includeInactive) return base;
-  return base.filter((f) => f.properties.is_active !== false);
+  return base.filter((f) => isListed(f.properties));
 }
 
 /** エクスポート対象フィーチャーから物件 ID のリストを作る */
 export function featuresToIds(features: PropertyFeature[]): number[] {
   return features.map((f) => f.properties.id);
+}
+
+/**
+ * 可視部屋の判定正本(Phase B2-δ §4.7)。
+ * is_active な部屋、または shortlist で手を付けた部屋(saved/hide/reject)が可視。
+ * shortlist 未登録(none/null)かつ非掲載の部屋は BE の units に載らない想定だが、
+ * 契約変更に備え FE 側でも防御的に除外する。
+ */
+function isExportVisibleUnit(unit: BuildingUnit): boolean {
+  if (unit.is_active) return true;
+  const status = unit.shortlist_status;
+  return status === 'saved' || status === 'hide' || status === 'reject';
+}
+
+/**
+ * 建物配列からエクスポート対象部屋(units)を選ぶ(B2-δ §4.7)。
+ * 対象 = 可視部屋(is_active または saved/hide/reject)。includeInactive=false は
+ * is_active===false を除外する(掲載終了を含めない)。
+ * 建物順・units 順ともに元リスト順を維持する。
+ */
+export function selectExportUnits(
+  buildings: BuildingFeature[],
+  includeInactive: boolean,
+): BuildingUnit[] {
+  const out: BuildingUnit[] = [];
+  for (const b of buildings) {
+    for (const unit of b.properties.units) {
+      if (!isExportVisibleUnit(unit)) continue;
+      if (!includeInactive && unit.is_active === false) continue;
+      out.push(unit);
+    }
+  }
+  return out;
+}
+
+/** エクスポート対象部屋から部屋 ID のリストを作る */
+export function unitsToIds(units: BuildingUnit[]): number[] {
+  return units.map((u) => u.id);
 }
 
 /** ダウンロードファイル名 (yadokari_YYYYMMDD_HHMM.kml) */

@@ -1,8 +1,8 @@
-import { BoundsData, MapFilters, PropertyGeoJSON } from '../types.ts';
-import { applyMapFilters } from '../lib/filterLogic.ts';
+import type { BoundsData, BuildingGeoJSON, MapFilters } from '../types.ts';
+import { applyBuildingFilters } from '../lib/filterLogic.ts';
 
 export interface FilterRequestData {
-  rawGeojsonData: PropertyGeoJSON | null;
+  rawBuildingData: BuildingGeoJSON | null;
   filters: MapFilters;
   mapBounds: BoundsData | null;
 }
@@ -12,12 +12,18 @@ self.onmessage = function (
 ) {
   const { type, requestId, data } = e.data;
   if (type === 'filter') {
-    const { rawGeojsonData, filters, mapBounds } = data;
-    const { features, excludedUnestimable } = applyMapFilters(
-      rawGeojsonData,
+    const { rawBuildingData, filters, mapBounds } = data;
+    const { buildings, matchedRoomIds, excludedUnestimable } = applyBuildingFilters(
+      rawBuildingData,
       filters,
       mapBounds,
     );
-    self.postMessage({ type: 'filterResult', requestId, features, excludedUnestimable });
+    self.postMessage({
+      type: 'filterResult',
+      requestId,
+      buildings,
+      matchedRoomIds,
+      excludedUnestimable,
+    });
   }
 };

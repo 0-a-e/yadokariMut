@@ -3,10 +3,11 @@
  * 戻り値型は生成 schema (openapi-typescript) 由来。
  * エラーは client.ts の ApiError(detail 抽出付き)として投げる。
  */
-import type { ShortlistStatus } from '../../types.ts';
+import type { PropertyDetailResponse, ShortlistStatus } from '../../types.ts';
 import { fetchJson, postJson, type Schemas } from './client.ts';
 
-export type PropertyDetailResponse = Schemas['PropertyDetailResponse'];
+/** 型の正本は types.ts(生成 schema のエイリアス面)。旧 import 経路互換のため再 export */
+export type { PropertyDetailResponse };
 export type ShortlistUpdateResponse = Schemas['ShortlistUpdateResponse'];
 
 /** GET /api/properties/{id} — 物件詳細(properties 行 + 子テーブル) */

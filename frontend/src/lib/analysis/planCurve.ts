@@ -11,9 +11,9 @@ import {
   getAsOfToday,
   planDailyRent,
   planDurationBand,
-  preferredPlanCodeForDays,
   type CalculatorCampaign,
   type CalculatorPlan,
+  planDisplayLabel,
 } from '../rentCalculator.ts';
 
 export interface PlanCurveRow {
@@ -34,6 +34,8 @@ export interface PlanCurveResult {
   cheapest: PlanCurveRow | null;
   /** 破損値(rent<=0)等で除外したプランの plan_code 一覧 */
   excludedPlans: string[];
+  /** plan_code → 表示ラベル(plan_label+帯レンジ合成・設計 §3.6)。凡例表示用 */
+  labels: Record<string, string>;
 }
 
 export interface PlanDiscountInfo {
@@ -75,7 +77,8 @@ export function filterBrokenPlans(plans: CalculatorPlan[]): {
 export function buildPlanCurve(
   plans: CalculatorPlan[],
   campaigns?: CalculatorCampaign[],
-  maxDays = 730
+  maxDays = 730,
+  contractFeeYen?: number | null,
 ): PlanCurveResult {
   const { usable, excluded } = filterBrokenPlans(plans);
   const onDate = getAsOfToday();
@@ -101,11 +104,9 @@ export function buildPlanCurve(
       if (d >= 2 && d <= limit) daySet.add(d);
     }
   } else {
-    for (let d = 2; d <= limit; d++) {
-      if (preferredPlanCodeForDays(d) !== preferredPlanCodeForDays(d - 1)) {
-        daySet.add(d);
-      }
-    }
+    // duration データ欠損経路(本番では到達不能・BE が生産不能)。等間隔ステップで置く
+    const step = Math.max(1, Math.floor(limit / 60));
+    for (let d = 2; d <= limit; d += step) daySet.add(d);
   }
   const dayList = [...daySet].sort((a, b) => a - b);
 
@@ -116,6 +117,7 @@ export function buildPlanCurve(
       plans: usable,
       campaigns,
       onDate,
+      contractFeeYen,
     });
     if (!outcome.ok) continue;
     drafts.push({
@@ -140,7 +142,13 @@ export function buildPlanCurve(
     if (!cheapest || row.perDay < cheapest.perDay) cheapest = row;
   }
 
-  return { rows, cheapest, excludedPlans: excluded };
+  // code → 表示ラベル(plan_label ベース・未知コードは生名フォールバック)
+  const labels: Record<string, string> = {};
+  for (const p of usable) {
+    const code = p.plan_code || p.plan_name || '';
+    if (code && !labels[code]) labels[code] = planDisplayLabel(p) || code;
+  }
+  return { rows, cheapest, excludedPlans: excluded, labels };
 }
 
 /** 各プランの定価→現在値の日額から割引率(小数1桁の %)を算出する */
@@ -150,7 +158,7 @@ export function planDiscounts(plans: CalculatorPlan[]): PlanDiscountInfo[] {
     const current = p.discounted_daily_rent_yen;
     return {
       planCode: p.plan_code || p.plan_name || '',
-      planName: p.plan_name ?? '',
+      planName: planDisplayLabel(p) || '',
       originalDaily: original ?? 0,
       currentDaily: current ?? 0,
       discountPct:

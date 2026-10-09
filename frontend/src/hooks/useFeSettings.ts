@@ -16,7 +16,7 @@ import { fetchFeSettings, postFeSettings } from '../lib/api/feSettings.ts';
  */
 export function useFeSettings(): {
   feSettings: FeSettings;
-  feSettingsRef: React.MutableRefObject<FeSettings>;
+  feSettingsRef: React.RefObject<FeSettings>;
   updateFeSettings: (update: FeSettings) => Promise<FeSettings | null>;
 } {
   const [feSettings, setFeSettings] = useState<FeSettings>(EMPTY_FE_SETTINGS);

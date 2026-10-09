@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert.tsx';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group.tsx';
-import { Loader2 } from 'lucide-react';
+import { SingleToggleGroup } from '@/components/ui/toggle-group.tsx';
+import { EmptyState } from '@/components/shared/EmptyState.tsx';
+import { LoadingState } from '@/components/shared/LoadingState.tsx';
 import type { PriceTrendMode, PriceTrendPoint } from '../../types.ts';
+import { formatYen } from '../../lib/format.ts';
 import PriceTrendChart from './charts/PriceTrendChart.tsx';
 import { KpiCard } from './charts/KpiCard.tsx';
 import { usePriceTrend } from '../../hooks/usePriceTrend.ts';
@@ -53,12 +55,7 @@ export const PriceTrendTab: React.FC = () => {
   const upTotal = useMemo(() => series.reduce((acc, p) => acc + p.up, 0), [series]);
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-16 text-text-muted">
-        <Loader2 className="mr-2 size-4 animate-spin" />
-        読み込み中…
-      </div>
-    );
+    return <LoadingState />;
   }
 
   if (error) {
@@ -70,68 +67,40 @@ export const PriceTrendTab: React.FC = () => {
   }
 
   if (!data || series.length === 0) {
-    return (
-      <p className="text-sm text-text-muted italic">
-        この期間の価格データがまだありません。
-      </p>
-    );
+    return <EmptyState message="この期間の価格データがまだありません。" />;
   }
 
   return (
     <>
       {/* ── コントロール: 集計モード / プロバイダ切替 + 期間プリセット ── */}
       <div className="flex flex-wrap items-center gap-3">
-        <ToggleGroup
-          multiple={false}
-          value={[mode]}
-          onValueChange={(vals) => {
-            const next = vals[0];
-            if (next === 'carried' || next === 'scraped') setMode(next);
-          }}
+        <SingleToggleGroup
+          options={MODE_OPTIONS}
+          value={mode}
+          onChange={setMode}
           size="sm"
-        >
-          {MODE_OPTIONS.map((opt) => (
-            <ToggleGroupItem key={opt.value} value={opt.value} className="text-xs">
-              {opt.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+          itemClassName="text-xs"
+        />
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <ToggleGroup
-          multiple={false}
-          value={[provider]}
-          onValueChange={(vals) => {
-            const next = vals[0];
-            if (next) setProvider(next);
-          }}
+        <SingleToggleGroup
+          options={[
+            { value: PROVIDER_ALL, label: 'すべて' },
+            ...data.providers.map((p) => ({ value: p.id, label: p.display_name })),
+          ]}
+          value={provider}
+          onChange={setProvider}
           size="sm"
-        >
-          <ToggleGroupItem value={PROVIDER_ALL} className="text-xs">
-            すべて
-          </ToggleGroupItem>
-          {data.providers.map((p) => (
-            <ToggleGroupItem key={p.id} value={p.id} className="text-xs">
-              {p.display_name}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-        <ToggleGroup
-          multiple={false}
-          value={[periodDays]}
-          onValueChange={(vals) => {
-            const next = vals[0];
-            if (next) setPeriodDays(next);
-          }}
+          itemClassName="text-xs"
+        />
+        <SingleToggleGroup
+          options={PERIOD_OPTIONS}
+          value={periodDays}
+          onChange={setPeriodDays}
           size="sm"
           className="ml-auto"
-        >
-          {PERIOD_OPTIONS.map((opt) => (
-            <ToggleGroupItem key={opt.value} value={opt.value} className="text-xs">
-              {opt.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+          itemClassName="text-xs"
+        />
       </div>
 
       {/* ── KPIチップ(選択中の系列の最新日 + 期間内合計) ── */}
@@ -143,9 +112,9 @@ export const PriceTrendTab: React.FC = () => {
         <KpiCard
           label="日額中央値(最新)"
           accent
-          value={last ? `${last.median.toLocaleString()}円` : '-'}
+          value={last ? formatYen(last.median) : '-'}
         />
-        <KpiCard label="日額平均(最新)" value={last ? `${last.avg.toLocaleString()}円` : '-'} />
+        <KpiCard label="日額平均(最新)" value={last ? formatYen(last.avg) : '-'} />
         <KpiCard
           label="値下げ / 値上げ(期間内)"
           value={

@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from store.pref_master import pref_display_name
 from store.source_catalog import load_app_config
 
 from sources.base import FetchedPage, ListCard, ListTarget, SourceAdapter
@@ -50,7 +51,7 @@ class BrattoAdapter(SourceAdapter):
             if only and slug not in only:
                 continue
             if isinstance(meta, dict):
-                name = meta.get("name") or slug
+                name = meta.get("name") or pref_display_name(slug)
                 list_path = meta.get("list_path") or f"/{slug}/search_list/"
             else:
                 name = str(meta)

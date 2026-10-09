@@ -4,13 +4,15 @@ import {
   filterBrokenPlans,
   planDiscounts,
 } from './planCurve.ts';
-import { CONTRACT_FEE_YEN, type CalculatorPlan } from '../rentCalculator.ts';
+import type { CalculatorPlan } from '../rentCalculator.ts';
 
 /** 30日境界をまたぐ2プラン(s_short は日額5000円 / short は月額90000円=日額3000円) */
 const twoPlans: CalculatorPlan[] = [
   {
     plan_code: 's_short',
     plan_name: 'Sショート（1ヶ月未満）',
+    duration_min_days: 1,
+    duration_max_days: 29,
     available: true,
     discounted_daily_rent_yen: 5000,
     original_daily_rent_yen: 6000,
@@ -20,6 +22,8 @@ const twoPlans: CalculatorPlan[] = [
   {
     plan_code: 'short',
     plan_name: 'ショート（1〜3ヶ月）',
+    duration_min_days: 30,
+    duration_max_days: 89,
     available: true,
     discounted_daily_rent_yen: null,
     original_daily_rent_yen: 3000,
@@ -30,7 +34,7 @@ const twoPlans: CalculatorPlan[] = [
 
 describe('buildPlanCurve', () => {
   it('shows per-day step down at the 30-day plan boundary', () => {
-    const result = buildPlanCurve(twoPlans);
+    const result = buildPlanCurve(twoPlans, undefined, 730, 5500);
     const row29 = result.rows.find((r) => r.days === 29)!;
     const row30 = result.rows.find((r) => r.days === 30)!;
 
@@ -38,8 +42,8 @@ describe('buildPlanCurve', () => {
     expect(row30.planCode).toBe('short');
 
     // 総額 = 賃料×日数 + 清掃費 + 契約事務手数料
-    expect(row29.total).toBe(5000 * 29 + 15000 + CONTRACT_FEE_YEN);
-    expect(row30.total).toBe(3000 * 30 + 30000 + CONTRACT_FEE_YEN);
+    expect(row29.total).toBe(5000 * 29 + 15000 + 5500);
+    expect(row30.total).toBe(3000 * 30 + 30000 + 5500);
 
     // 30日境界で実質1日単価が段差的に下がる(165500/29=5707 → 125500/30=4183)
     expect(row29.perDay).toBe(5707);
@@ -49,6 +53,23 @@ describe('buildPlanCurve', () => {
     // 適用されなかったプランの系列は null
     expect(row29.values['short']).toBeNull();
     expect(row30.values['s_short']).toBeNull();
+  });
+
+  it('uses the passed contract fee; null is excluded from totals', () => {
+    // unionmonthly 等、サイト既定 0 円の物件(BE 解決済み実効値)を想定
+    const free = buildPlanCurve(twoPlans, undefined, 730, 0);
+    const row29 = free.rows.find((r) => r.days === 29)!;
+    expect(row29.total).toBe(5000 * 29 + 15000);
+
+    // 物件個別値(9900)もそのまま反映される
+    const custom = buildPlanCurve(twoPlans, undefined, 730, 9900);
+    const row29c = custom.rows.find((r) => r.days === 29)!;
+    expect(row29c.total).toBe(5000 * 29 + 15000 + 9900);
+
+    // null(算出不能)は手数料抜きの概算として計算(数値補完しない)
+    const unknown = buildPlanCurve(twoPlans, undefined, 730, null);
+    const row29u = unknown.rows.find((r) => r.days === 29)!;
+    expect(row29u.total).toBe(5000 * 29 + 15000);
   });
 
   it('picks the cheapest row on or after the boundary', () => {
@@ -63,10 +84,10 @@ describe('buildPlanCurve', () => {
 
   it('includes plan band boundary days even beyond the 7-day stride', () => {
     const result = buildPlanCurve(twoPlans);
-    // 91日(s_short→short→middle 境界)は7刻み(91,98,...)に含まれる
+    // 91日(7刻み)はストライドで含まれる
     expect(result.rows.some((r) => r.days === 91)).toBe(true);
-    // 181日(middle→long 境界)は7刻みに含まれないため境界追加で補われる
-    expect(result.rows.some((r) => r.days === 181)).toBe(true);
+    // 90日(short の帯上限 89+1 境界)は 7 刻みに含まれないため帯境界追加で補われる
+    expect(result.rows.some((r) => r.days === 90)).toBe(true);
   });
 
   it('excludes broken plans with non-positive rent', () => {

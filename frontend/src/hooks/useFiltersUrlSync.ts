@@ -42,7 +42,7 @@ export function useFiltersUrlSync(
   patchSearch: (patch: ExplorerSearchPatch, opts?: PatchExplorerSearchOptions) => void,
 ): {
   filters: MapFilters;
-  filtersRef: React.MutableRefObject<MapFilters>;
+  filtersRef: React.RefObject<MapFilters>;
   patchFilters: (patch: Partial<MapFilters> & { reset?: boolean }) => void;
   handleDatesChange: (checkIn: string, checkOut: string) => void;
 } {

@@ -70,6 +70,14 @@ describe('parseExplorerSearch', () => {
     });
   });
 
+  it('parses bcompare like compare (dedupe, cap 5, drop invalid)', () => {
+    expect(parseExplorerSearch({ bcompare: '7,8,7,0,x,9,10,11,12,13' })).toEqual({
+      bcompare: [7, 8, 9, 10, 11],
+    });
+    expect(parseExplorerSearch({ bcompare: '' })).toEqual({});
+    expect(parseExplorerSearch({ bcompare: 'a' })).toEqual({});
+  });
+
   it('ignores unknown view and bad id', () => {
     expect(parseExplorerSearch({ view: 'map', id: '0' })).toEqual({});
   });
@@ -107,6 +115,18 @@ describe('applyExplorerSearchPatch', () => {
     ).toEqual({ compare: [9, 8, 7] });
     expect(applyExplorerSearchPatch({ compare: [1] }, { compare: [] })).toEqual({});
   });
+
+  it('updates and clears bcompare list', () => {
+    expect(
+      applyExplorerSearchPatch({ bcompare: [1] }, { bcompare: [9, 8] }),
+    ).toEqual({ bcompare: [9, 8] });
+    expect(applyExplorerSearchPatch({ bcompare: [1] }, { bcompare: null })).toEqual({});
+    expect(applyExplorerSearchPatch({ bcompare: [1] }, { bcompare: [] })).toEqual({});
+    // compare には影響しない(両立可・計画 §5)
+    expect(
+      applyExplorerSearchPatch({ compare: [1], bcompare: [2] }, { bcompare: [3] }),
+    ).toEqual({ compare: [1], bcompare: [3] });
+  });
 });
 
 describe('explorerSearchForNavigate', () => {
@@ -130,8 +150,41 @@ describe('explorerSearchForNavigate', () => {
     });
   });
 
+  it('serializes bcompare as comma string and omits it when empty', () => {
+    expect(
+      explorerSearchForNavigate({ view: 'compare', bcompare: [4, 5] }),
+    ).toEqual({ view: 'compare', bcompare: '4,5' });
+    expect(explorerSearchForNavigate({ bcompare: [] })).toEqual({});
+  });
+
   it('omits stay mode and empty fields', () => {
     expect(explorerSearchForNavigate({ priceMode: 'stay' })).toEqual({});
     expect(compactExplorerSearch({ priceMode: 'stay', compare: [] })).toEqual({});
+  });
+});
+
+// ── Phase B2-γ: 建物選択 ?b= ──
+
+describe('explorerSearch ?b=(建物選択・Phase B2-γ)', () => {
+  it('b を正の整数で受ける', () => {
+    expect(parseExplorerSearch({ b: '123' }).b).toBe(123);
+    expect(parseExplorerSearch({ b: 45 }).b).toBe(45);
+    expect(parseExplorerSearch({ b: 'abc' }).b).toBeUndefined();
+    expect(parseExplorerSearch({ b: '-1' }).b).toBeUndefined();
+  });
+
+  it('id(部屋)と併用できる。patch で b を更新/クリアできる', () => {
+    const base = parseExplorerSearch({ id: '10', b: '1' });
+    expect(base).toMatchObject({ id: 10, b: 1 });
+    const updated = applyExplorerSearchPatch(base, { b: 2 });
+    expect(updated).toMatchObject({ id: 10, b: 2 });
+    const cleared = applyExplorerSearchPatch(updated, { b: null });
+    expect(cleared.b).toBeUndefined();
+    expect(cleared.id).toBe(10);
+  });
+
+  it('compact/serialize に b が含まれる', () => {
+    const nav = explorerSearchForNavigate(parseExplorerSearch({ b: '7' }));
+    expect(nav.b).toBe(7);
   });
 });

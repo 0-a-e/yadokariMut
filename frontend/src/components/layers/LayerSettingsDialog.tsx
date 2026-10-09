@@ -10,8 +10,8 @@ import {
 } from '@/components/ui/dialog.tsx';
 import { Button } from '@/components/ui/button.tsx';
 import { Slider } from '@/components/ui/slider.tsx';
+import { Switch } from '@/components/ui/switch.tsx';
 import { toast } from '@/components/ui/toast.tsx';
-import { cn } from '@/lib/utils.ts';
 
 /** 自動保存のdebounce待ち(ms) */
 const SAVE_DEBOUNCE_MS = 600;
@@ -160,27 +160,11 @@ export const LayerSettingsDialog: React.FC<LayerSettingsDialogProps> = ({
                     無効時は常時個別マーカー表示(ズーム12未満では非表示)
                   </p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={clusteringEnabled}
+                <Switch
+                  checked={clusteringEnabled}
+                  onCheckedChange={() => handleClusteringToggle()}
                   aria-label={`${entry.name}のクラスタリング`}
-                  onClick={handleClusteringToggle}
-                  className={cn(
-                    'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors outline-none',
-                    'focus-visible:border-primary',
-                    clusteringEnabled
-                      ? 'border-primary bg-primary/70'
-                      : 'border-border bg-white/[0.06]',
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'inline-block size-3.5 rounded-full bg-white shadow transition-transform',
-                      clusteringEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]',
-                    )}
-                  />
-                </button>
+                />
               </div>
               <p className="m-0 text-[10px] text-text-muted">
                 保存済み: {clusteringEnabled ? '有効' : '無効'}(初期値: 無効)

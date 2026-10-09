@@ -1,4 +1,6 @@
 import type { PropertyFeature } from '../../types.ts';
+import { formatYen } from '../format.ts';
+import { isListed } from '../filterLogic.ts';
 
 /** 相場比較で切り替えられる指標 */
 export type MarketMetric = 'daily' | 'perSqm' | 'area' | 'walk';
@@ -16,7 +18,7 @@ export const METRICS: Record<MarketMetric, MetricDef> = {
     id: 'daily',
     label: '日額',
     unit: '円',
-    formatValue: (v) => `${Math.round(v).toLocaleString()}円`,
+    formatValue: (v) => formatYen(Math.round(v)),
   },
   perSqm: {
     id: 'perSqm',
@@ -71,7 +73,7 @@ export function buildPeerSet(
   const prefecture = self.properties.prefecture_name ?? null;
   // 掲載中かつ self 以外のみを候補にする
   const candidates = allFeatures.filter(
-    (f) => f.properties.id !== selfId && f.properties.is_active !== false,
+    (f) => f.properties.id !== selfId && isListed(f.properties),
   );
 
   // 市区町村スコープ(self の municipality が取れない物件はそもそも対象にならない)

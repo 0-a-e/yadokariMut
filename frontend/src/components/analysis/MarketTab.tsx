@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group.tsx';
+import { SingleToggleGroup } from '@/components/ui/toggle-group.tsx';
+import { EmptyState } from '@/components/shared/EmptyState.tsx';
 import { Badge } from '@/components/ui/badge.tsx';
 import { Button } from '@/components/ui/button.tsx';
 import { KpiCard } from './charts/KpiCard.tsx';
@@ -104,9 +105,7 @@ export const MarketTab: React.FC<MarketTabProps> = ({ feature, allFeatures, onSw
 
   // ピア0件は比較そのものが成立しない
   if (peerSet.peers.length === 0) {
-    return (
-      <p className="text-sm text-text-muted italic">比較できる同条件物件がありません。</p>
-    );
+    return <EmptyState message="比較できる同条件物件がありません。" />;
   }
 
   return (
@@ -126,21 +125,13 @@ export const MarketTab: React.FC<MarketTabProps> = ({ feature, allFeatures, onSw
 
       {/* ── 指標切替 ── */}
       <div className="flex flex-wrap items-center gap-3">
-        <ToggleGroup
-          multiple={false}
-          value={[metric]}
-          onValueChange={(vals) => {
-            const next = vals[0];
-            if (next && next in METRICS) setMetric(next as MarketMetric);
-          }}
+        <SingleToggleGroup
+          options={Object.values(METRICS).map((def) => ({ value: def.id, label: def.label }))}
+          value={metric}
+          onChange={setMetric}
           size="sm"
-        >
-          {Object.values(METRICS).map((def) => (
-            <ToggleGroupItem key={def.id} value={def.id} className="text-xs">
-              {def.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+          itemClassName="text-xs"
+        />
       </div>
 
       {/* ── KPIチップ(中央値 / 自物件 / 中央値比 / 位置) ── */}

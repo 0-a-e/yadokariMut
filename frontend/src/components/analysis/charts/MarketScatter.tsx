@@ -10,7 +10,8 @@ import {
   YAxis,
   ZAxis,
 } from 'recharts';
-import { AXIS_TICK, COLOR_ACCENT, COLOR_GRID, COLOR_MUTED, TooltipCard, formatYen } from '../../shared/charts/chartTheme.tsx';
+import { formatYen } from '../../../lib/format.ts';
+import { AXIS_TICK, COLOR_ACCENT, COLOR_GRID, COLOR_MUTED, TooltipCard, TooltipRow, formatYenCompact } from '../../shared/charts/chartTheme.tsx';
 
 /** ピアの点色(控えめなダークグレー) */
 const PEER_POINT_COLOR = '#3d4354';
@@ -52,16 +53,8 @@ function ScatterTooltip({
       <div className="font-semibold text-text mb-1">
         {point.isSelf ? '自物件' : 'ピア物件'}
       </div>
-      <div className="flex items-center gap-1.5">
-        <span className="text-text-muted">面積</span>
-        <span className="font-semibold text-text ml-auto pl-3">{point.x.toFixed(1)}㎡</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="text-text-muted">日額</span>
-        <span className="font-semibold text-text ml-auto pl-3">
-          {Math.round(point.y).toLocaleString()}円
-        </span>
-      </div>
+      <TooltipRow label="面積" value={`${point.x.toFixed(1)}㎡`} />
+      <TooltipRow label="日額" value={formatYen(Math.round(point.y))} />
     </TooltipCard>
   );
 }
@@ -115,7 +108,7 @@ const MarketScatter: React.FC<MarketScatterProps> = ({ points, self, regression 
             dataKey="y"
             type="number"
             domain={[yDomainMin, yDomainMax]}
-            tickFormatter={formatYen}
+            tickFormatter={formatYenCompact}
             tick={AXIS_TICK}
             width={64}
             axisLine={false}

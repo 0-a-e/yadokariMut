@@ -56,12 +56,12 @@ _store = JsonSettingsStore(
 )
 
 
-def get_scrape_settings(default_db_path: Optional[str] = None) -> dict:
+def get_scrape_settings() -> dict:
     """Load saved per-source overrides. Returns {"sources": {}} when unset."""
-    return _store.load(default_db_path)
+    return _store.load()
 
 
-def save_scrape_settings(update: Any, default_db_path: Optional[str] = None) -> dict:
+def save_scrape_settings(update: Any) -> dict:
     """Partial-merge save. Returns the full settings after save.
 
     - update.sources.<id>.<key> = 値   → そのキーのみ上書き
@@ -70,11 +70,11 @@ def save_scrape_settings(update: Any, default_db_path: Optional[str] = None) -> 
 
     不正な値は ValueError。呼び出し側(web_server)が HTTPException(400) にする。
     """
-    return _store.save(update, default_db_path)
+    return _store.save(update)
 
 
 def apply_to_source_config(
-    source_id: str, src_cfg: dict | None, default_db_path: Optional[str] = None
+    source_id: str, src_cfg: dict | None
 ) -> dict:
     """Merge saved overrides into an adapter config dict (non-mutating).
 
@@ -82,7 +82,7 @@ def apply_to_source_config(
     src_cfg の値(config.json/未設定)のまま。run 時の明示指定(delay パラメタ)
     は呼び出し側がこの関数の後で上書きする想定。
     """
-    saved = get_scrape_settings(default_db_path)["sources"].get(source_id) or {}
+    saved = get_scrape_settings()["sources"].get(source_id) or {}
     out = dict(src_cfg or {})
     for key in _SOURCE_KEYS:
         if key in saved:
@@ -90,7 +90,7 @@ def apply_to_source_config(
     return out
 
 
-def effective_source_settings(default_db_path: Optional[str] = None) -> dict:
+def effective_source_settings() -> dict:
     """Admin UI 用: ソース別の保存済み上書き + 実効値 + 既定値を返す。
 
     実効値 = 保存値 > config.json sources.<id> > コード既定
@@ -98,7 +98,7 @@ def effective_source_settings(default_db_path: Optional[str] = None) -> dict:
     """
     from store.source_catalog import SOURCE_CATALOG, load_app_config
 
-    saved = get_scrape_settings(default_db_path)["sources"]
+    saved = get_scrape_settings()["sources"]
     sources_cfg = load_app_config().get("sources") or {}
 
     from sources.base import DEFAULT_DELAY_SECONDS

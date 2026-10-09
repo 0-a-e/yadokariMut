@@ -3,17 +3,18 @@ import { Alert, AlertDescription } from '@/components/ui/alert.tsx';
 import { Badge } from '@/components/ui/badge.tsx';
 import { Slider } from '@/components/ui/slider.tsx';
 import type { PropertyFeature } from '../../types.ts';
+import { formatYen } from '../../lib/format.ts';
 import { KpiCard } from './charts/KpiCard.tsx';
 import CostBreakdownBar from './charts/CostBreakdownBar.tsx';
 import PlanCostCurveChart from './charts/PlanCostCurveChart.tsx';
 import { buildPlanCurve, filterBrokenPlans, planDiscounts } from '../../lib/analysis/planCurve.ts';
 import {
-  CONTRACT_FEE_YEN,
   calculateRentTotalByDays,
   getAsOfToday,
   type CalcOutcome,
 } from '../../lib/rentCalculator.ts';
 import { AsOfNote } from './AsOfNote.tsx';
+import { EmptyState } from '@/components/shared/EmptyState.tsx';
 
 interface PlanCostTabProps {
   feature: PropertyFeature;
@@ -30,12 +31,18 @@ const MAX_STAY_DAYS = 730;
 export const PlanCostTab: React.FC<PlanCostTabProps> = ({ feature }) => {
   const plans = feature.properties.rent_plans ?? [];
   const campaigns = feature.properties.campaigns;
+  // 契約事務手数料は GeoJSON の BE 解決済み実効値(物件値 > サイト既定)。
+  // null = 取得元サイトの既定が未登録で算出不能
+  const contractFeeYen = feature.properties.contract_fee_yen ?? null;
 
   const [days, setDays] = useState(30);
 
   // 破損プラン(rent<=0)はカーブ・試算のいずれからも除外し警告表示する
   const { usable } = useMemo(() => filterBrokenPlans(plans), [plans]);
-  const curve = useMemo(() => buildPlanCurve(plans, campaigns), [plans, campaigns]);
+  const curve = useMemo(
+    () => buildPlanCurve(plans, campaigns, 730, contractFeeYen),
+    [plans, campaigns, contractFeeYen]
+  );
   const discounts = useMemo(() => planDiscounts(plans), [plans]);
   const outcome: CalcOutcome = useMemo(
     () =>
@@ -43,17 +50,25 @@ export const PlanCostTab: React.FC<PlanCostTabProps> = ({ feature }) => {
         stayDays: days,
         plans: usable,
         campaigns,
+        contractFeeYen,
         // 分析面は as-of-today 基準(契約)。滞在シミュレーション面はチェックイン日
         onDate: getAsOfToday(),
       }),
-    [days, usable, campaigns]
+    [days, usable, campaigns, contractFeeYen]
   );
 
   if (plans.length === 0) {
-    return <p className="text-sm text-text-muted italic">料金プラン情報がありません。</p>;
+    return <EmptyState message="料金プラン情報がありません。" />;
   }
 
   const perDay = outcome.ok ? Math.round(outcome.grandTotal / outcome.stayDays) : null;
+  // 手数料不明(=総額・単価から除外)はグリッド上部で赤字警告する
+  const feeUnknown =
+    (outcome.ok ? outcome.breakdown.contractFee : contractFeeYen) == null;
+  // 注記用の実際の手数料(パッケージキャンペーン適用時は outcome 側が減額後の値)
+  const feeNote = outcome.ok
+    ? outcome.breakdown.contractFee?.toLocaleString()
+    : (contractFeeYen ?? null)?.toLocaleString();
 
   return (
     <>
@@ -68,6 +83,11 @@ export const PlanCostTab: React.FC<PlanCostTabProps> = ({ feature }) => {
         <Alert variant="destructive" className="text-xs">
           <AlertDescription>{outcome.error}</AlertDescription>
         </Alert>
+      )}
+      {feeUnknown && (
+        <p className="text-xs text-danger font-medium m-0 leading-relaxed">
+          契約事務手数料が不明(取得元サイトの既定が未登録)のため、総額・実質1日単価から除外しています。
+        </p>
       )}
 
       {/* ── KPI(選択中の日数の試算 + 最安点) ── */}
@@ -84,16 +104,16 @@ export const PlanCostTab: React.FC<PlanCostTabProps> = ({ feature }) => {
         />
         <KpiCard
           label="日額"
-          value={outcome.ok ? `${outcome.breakdown.rentDaily.toLocaleString()}円` : '-'}
+          value={outcome.ok ? formatYen(outcome.breakdown.rentDaily) : '-'}
         />
         <KpiCard
           label="総額"
           accent
-          value={outcome.ok ? `${outcome.grandTotal.toLocaleString()}円` : '-'}
+          value={outcome.ok ? formatYen(outcome.grandTotal) : '-'}
         />
         <KpiCard
           label="実質1日単価"
-          value={perDay != null ? `${perDay.toLocaleString()}円` : '-'}
+          value={perDay != null ? formatYen(perDay) : '-'}
         />
         <KpiCard
           label="1日単価が最安になる日数"
@@ -122,7 +142,12 @@ export const PlanCostTab: React.FC<PlanCostTabProps> = ({ feature }) => {
         />
       </div>
 
-      <PlanCostCurveChart rows={curve.rows} selectedDays={days} onSelectDays={setDays} />
+      <PlanCostCurveChart
+        rows={curve.rows}
+        selectedDays={days}
+        onSelectDays={setDays}
+        labels={curve.labels}
+      />
 
       {outcome.ok && (
         <CostBreakdownBar breakdown={outcome.breakdown} total={outcome.grandTotal} />
@@ -146,7 +171,7 @@ export const PlanCostTab: React.FC<PlanCostTabProps> = ({ feature }) => {
 
       <p className="text-[11px] text-text-muted m-0 leading-relaxed">
         実質1日単価 =(賃料+管理費+光熱費)×日数+清掃費+契約事務手数料
-        {CONTRACT_FEE_YEN.toLocaleString()}円 を日数で割った値。
+        {feeUnknown ? '不明(総額から除外)' : `${feeNote}円`} を日数で割った値。
       </p>
       <AsOfNote />
     </>

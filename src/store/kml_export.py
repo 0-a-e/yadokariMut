@@ -14,7 +14,8 @@ from xml.sax.saxutils import escape as _xml_escape
 
 # KML の色は #AABBGGRR (alpha, blue, green, red の順)。
 # Web で馴染みのある #RRGGBB との混同を防ぐため、ここで一元的に定義する。
-#   stActive   = #50a050 (緑) / stSaved = #2e7dd1 (青) / stInactive = #999999 (灰)
+#   stActive = #50a050 (緑) / stSaved = #2e7dd1 (青) / stInactive = #999999 (灰)
+#   stBuildingSaved = #8e6fd1 (紫・建物saved の準ずる色・部屋自身の saved が優先)
 _STYLE_DEFS = """    <Style id="stActive">
       <IconStyle>
         <color>ff50a050</color>
@@ -28,6 +29,15 @@ _STYLE_DEFS = """    <Style id="stActive">
       <IconStyle>
         <color>ffd17d2e</color>
         <scale>1.15</scale>
+        <Icon>
+          <href>https://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href>
+        </Icon>
+      </IconStyle>
+    </Style>
+    <Style id="stBuildingSaved">
+      <IconStyle>
+        <color>ffd16f8e</color>
+        <scale>1.05</scale>
         <Icon>
           <href>https://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href>
         </Icon>
@@ -67,6 +77,8 @@ def _style_id(prop: dict[str, Any]) -> str:
         return "stInactive"
     if prop.get("shortlist_status") == "saved":
         return "stSaved"
+    if prop.get("building_shortlist_status") == "saved":
+        return "stBuildingSaved"
     return "stActive"
 
 
@@ -103,8 +115,10 @@ def _plans_html(prop: dict[str, Any]) -> str:
         )
         if label:
             daily_txt += f" ({label})"
+        # プラン列の表示の正は plan_label (辞書解決・レンジ無し)。
+        # plan_name は未知コードフォールバック (標準変換を通らない辞書向けの保険)
         rows.append(
-            f"<tr><td>{_h(plan.get('plan_name'))}</td>"
+            f"<tr><td>{_h(plan.get('plan_label') or plan.get('plan_name'))}</td>"
             f"<td>{_h(daily_txt)}</td><td>{_h(total_txt)}</td></tr>"
         )
     if not rows:
@@ -120,14 +134,16 @@ def _plans_html(prop: dict[str, Any]) -> str:
 def _description_html(prop: dict[str, Any]) -> str:
     parts: list[str] = [f"<h3>{_h(prop.get('title'))}</h3>"]
     if prop.get("is_active") is False:
-        last_seen = str(prop.get("last_seen_at") or "")[:10]
+        _ls = prop.get("last_seen_at")
+        last_seen = (_ls.isoformat()[:10] if hasattr(_ls, "isoformat") else str(_ls or ""))[:10]
         last_txt = f" (最終確認: {_h(last_seen)})" if last_seen else ""
         parts.append(
             f'<p style="color:#b00;"><b>掲載終了</b> — 価格等は最終取得時点の参考値{last_txt}</p>'
         )
     daily = prop.get("min_daily_rent")
     if daily:
-        plan_txt = _h(prop.get("min_plan_name") or "")
+        # 最安プランの表示も plan_label (辞書解決) を正とする
+        plan_txt = _h(prop.get("min_plan_label") or prop.get("min_plan_name") or "")
         total = prop.get("min_plan_total")
         total_txt = f" / 30日 {int(total):,}円" if total else ""
         parts.append(f"<p><b>最安賃料:</b> {_yen(daily)}/日 {plan_txt}{_h(total_txt)}</p>")
@@ -183,12 +199,20 @@ def _placemark(prop: dict[str, Any]) -> str | None:
         ("min_daily_rent", prop.get("min_daily_rent")),
         ("min_plan_total", prop.get("min_plan_total")),
         ("min_plan_name", prop.get("min_plan_name")),
+        ("min_plan_label", prop.get("min_plan_label")),
         ("min_walk_minutes", prop.get("min_walk_minutes")),
         ("shortlist_status", prop.get("shortlist_status") or "none"),
         ("is_active", prop.get("is_active")),
         ("last_seen_at", prop.get("last_seen_at")),
         ("detail_url", prop.get("detail_url")),
     ]
+    # 建物文脈 (建物単位集約モデル・設計 §6.3)。入力 dict に建物列があれば
+    # 加算的に載せる。未割当 (None) は Data 行自体を省略する (Placemark は
+    # 部屋単位のまま維持)。
+    for _bkey in ("building_id", "building_name"):
+        _bval = prop.get(_bkey)
+        if _bval is not None:
+            ext_rows.append((_bkey, _bval))
     ext = "".join(
         f'<Data name="{_esc(name)}"><value>{_esc(value)}</value></Data>'
         for name, value in ext_rows

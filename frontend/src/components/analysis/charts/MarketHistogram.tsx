@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AXIS_TICK, COLOR_ACCENT, COLOR_GRID, TooltipCard } from '../../shared/charts/chartTheme.tsx';
+import { AXIS_TICK, COLOR_ACCENT, COLOR_GRID, TooltipCard, TooltipRow } from '../../shared/charts/chartTheme.tsx';
 import type { MetricDef } from '../../../lib/analysis/marketBenchmark.ts';
 
 /** ピア(自物件以外)のバー色。自物件ビンは chartTheme の COLOR_ACCENT で強調する */
@@ -45,14 +45,11 @@ function BinTooltip({
       <div className="font-semibold text-text mb-1">
         {metric.formatValue(bin.from)}〜{metric.formatValue(bin.to)}
       </div>
-      <div className="flex items-center gap-1.5">
-        <span
-          className="inline-block size-2 rounded-full"
-          style={{ background: bin.hasSelf ? COLOR_ACCENT : PEER_BAR_COLOR }}
-        />
-        <span className="text-text-muted">件数</span>
-        <span className="font-semibold text-text ml-auto pl-3">{bin.count}件</span>
-      </div>
+      <TooltipRow
+        label="件数"
+        color={bin.hasSelf ? COLOR_ACCENT : PEER_BAR_COLOR}
+        value={`${bin.count}件`}
+      />
       {bin.hasSelf && <div className="text-[11px] text-accent mt-0.5">このビンに自物件を含む</div>}
     </TooltipCard>
   );

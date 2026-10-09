@@ -7,12 +7,13 @@ import unittest
 
 from domain.models import Campaign, PricePlan
 from domain.pricing import (
-    CONTRACT_FEE_YEN,
     MONTH_DAYS,
     calc_stay_days,
     calculate_stay_total,
     compute_catalog_min_daily,
+    plan_management_per_day,
     plan_rent_per_day,
+    plan_utilities_per_day,
     resolve_plan_effective,
     select_plan_for_stay,
     to_per_day,
@@ -133,6 +134,109 @@ class TestToPerDay(unittest.TestCase):
         self.assertEqual(to_per_day(28500, "per_month"), 28500 // MONTH_DAYS)
 
 
+class TestToPerDayStrict(unittest.TestCase):
+    """to_per_day の厳格化 (決定 11): 正式単位 2 値のみ・未知単位は None 返し.
+
+    正式単位集合の正本は domain.models.PresentationUnit。daily/day/monthly/
+    month エイリアス受容は廃止し、エイリアス解決はパーサ/正規化層の責務。
+    未知単位の黙認 per_day 換算は「約 7 倍過大」の無声失敗のため禁止。
+    """
+
+    def test_official_units_convert(self):
+        self.assertEqual(to_per_day(3600, "per_day"), 3600)
+        self.assertEqual(to_per_day(336000, "per_month"), 336000 // MONTH_DAYS)
+
+    def test_unknown_unit_returns_none(self):
+        self.assertIsNone(to_per_day(1000, "per_week"))
+
+    def test_aliases_rejected(self):
+        for alias in ("daily", "day", "monthly", "month"):
+            self.assertIsNone(to_per_day(1000, alias), alias)
+
+    def test_missing_unit_returns_none(self):
+        self.assertIsNone(to_per_day(1000, ""))
+
+
+class TestPerDayNonePropagation(unittest.TestCase):
+    """plan_management/utilities_per_day の None 伝播 (決定 11).
+
+    換算不能 (単位未知) を 0 円へ畳み込まない。0 円は「共益費なし」と
+    「算出不能」を区別できず、日額合計の無声失敗になるため。
+    """
+
+    def _plan(self, **overrides) -> PricePlan:
+        base = dict(
+            plan_key="short",
+            plan_name="ショート",
+            duration_min_days=30,
+            duration_max_days=89,
+            presentation_unit="per_day",
+            rent_original_yen=4000,
+            rent_current_yen=3600,
+            management_yen=500,
+        )
+        base.update(overrides)
+        return PricePlan(**base)
+
+    def test_management_unknown_unit_is_none(self):
+        plan = self._plan(presentation_unit="per_week")
+        self.assertIsNone(plan_management_per_day(plan))
+
+    def test_management_missing_is_zero(self):
+        plan = self._plan(management_yen=None)
+        self.assertEqual(plan_management_per_day(plan), 0)
+
+    def test_utilities_unknown_unit_is_none(self):
+        plan = self._plan(
+            presentation_unit="per_week",
+            utilities_included=False,
+            utilities_yen=3000,
+        )
+        self.assertIsNone(plan_utilities_per_day(plan))
+
+    def test_utilities_included_is_zero_even_if_unit_unknown(self):
+        # 光熱費込みは金額換算を要しないため 0 円のまま
+        plan = self._plan(presentation_unit="per_week", utilities_included=True)
+        self.assertEqual(plan_utilities_per_day(plan), 0)
+
+    def test_rent_per_day_unknown_unit_is_none(self):
+        plan = self._plan(presentation_unit="per_week")
+        self.assertIsNone(plan_rent_per_day(plan))
+
+    def test_stay_total_excludes_incalculable_plan(self):
+        # 日額合計が算出不能なプランは明示的な欠落として計算しない
+        result = calculate_stay_total(
+            check_in="2026-08-01",
+            check_out="2026-08-30",
+            plans=[self._plan(presentation_unit="per_week")],
+            use_structured_campaigns=False,
+        )
+        self.assertFalse(result.ok)
+        self.assertIsNone(result.breakdown)
+        self.assertIsNone(result.grand_total)
+
+    def test_stay_total_structured_campaign_path_excludes_too(self):
+        # 構造化キャンペーン経路でも original 日額の算出不能は欠落扱い
+        result = calculate_stay_total(
+            check_in="2026-08-01",
+            check_out="2026-08-30",
+            plans=[self._plan(presentation_unit="per_week")],
+            campaigns=[
+                Campaign(
+                    campaign_type="500円割",
+                    discount_unit="yen",
+                    discount_value=500,
+                    target_plan_key="short",
+                    starts_on="2026-01-01",
+                    ends_on="2026-12-31",
+                )
+            ],
+            use_structured_campaigns=True,
+        )
+        self.assertFalse(result.ok)
+        self.assertIsNone(result.grand_total)
+
+
 class TestSelectPlan(unittest.TestCase):
     def test_exact_short(self):
         sel = select_plan_for_stay(_bratto_plans(), 45)
@@ -210,8 +314,11 @@ class TestStayTotalBratto(unittest.TestCase):
         # effective current 3600 + mgmt 500
         self.assertEqual(result.breakdown.rent_daily, 3600)
         self.assertEqual(result.breakdown.management_daily, 500)
-        expected = (3600 + 500) * 30 + 20000 + CONTRACT_FEE_YEN
+        # contract_fee_yen 未指定 = 算出不能 → 総額から除外し warnings で明示
+        expected = (3600 + 500) * 30 + 20000
         self.assertEqual(result.grand_total, expected)
+        self.assertIsNone(result.breakdown.contract_fee)
+        self.assertTrue(any("契約事務手数料" in w and "不明" in w for w in result.warnings))
 
 
 class TestStayTotalUnion(unittest.TestCase):
@@ -298,10 +405,15 @@ class TestStructuredYenCampaign(unittest.TestCase):
 
 
 class TestPlanCodeMaps(unittest.TestCase):
-    """パーサ共有のプランコード語彙マップ (DURATION_BANDS 隣接集約)。"""
+    """パーサ共有のプランコード語彙マップ (サイトパッケージ移設後の所在確認)。
+
+    語彙正本の所在は設計 §3.6 により src/sources/<site>/plans.py へ移設
+    (表示ラベルの SSOT は domain.plan_catalog)。import 先変更のみで
+    assertion は移設前と同一を維持する。
+    """
 
     def test_resolve_bratto_plan_code(self):
-        from domain.pricing import resolve_bratto_plan_code
+        from sources.bratto.plans import resolve_bratto_plan_code
 
         self.assertEqual(resolve_bratto_plan_code("Sショート 1日~29日"), "s_short")
         self.assertEqual(resolve_bratto_plan_code("sショート"), "s_short")
@@ -313,7 +425,7 @@ class TestPlanCodeMaps(unittest.TestCase):
         self.assertEqual(resolve_bratto_plan_code(""), "other")
 
     def test_union_plan_code_map(self):
-        from domain.pricing import UNION_PLAN_CODE_MAP
+        from sources.unionmonthly.plans import UNION_PLAN_CODE_MAP
 
         self.assertEqual(UNION_PLAN_CODE_MAP["ショート"], "short")
         self.assertEqual(UNION_PLAN_CODE_MAP["スーパーショート"], "s_short")
@@ -321,6 +433,62 @@ class TestPlanCodeMaps(unittest.TestCase):
         self.assertEqual(UNION_PLAN_CODE_MAP["セミショート"], "semi_short")
         self.assertEqual(UNION_PLAN_CODE_MAP["ミドル"], "middle")
         self.assertEqual(UNION_PLAN_CODE_MAP["ロング"], "long")
+
+
+class TestCampaignAliasHelpers(unittest.TestCase):
+    """campaign target_plan エイリアス変換の正本2関数 (code→key / key→code)。
+
+    DB 列は target_plan_key のみ (store.schema) を正本とする。
+    """
+
+    def test_campaign_with_plan_key_code_only(self):
+        from domain.pricing import campaign_with_plan_key
+
+        src = {"target_plan_code": "short", "title": "c1"}
+        out = campaign_with_plan_key(src)
+        self.assertEqual(out["target_plan_key"], "short")
+        # legacy code は保持 (応答への載せ忘れ防止)
+        self.assertEqual(out["target_plan_code"], "short")
+        # 純関数: 入力は変更しない
+        self.assertIsNone(src.get("target_plan_key"))
+
+    def test_campaign_with_plan_key_key_only_unchanged(self):
+        from domain.pricing import campaign_with_plan_key
+
+        src = {"target_plan_key": "long"}
+        out = campaign_with_plan_key(src)
+        self.assertEqual(out["target_plan_key"], "long")
+        self.assertNotIn("target_plan_code", out)
+
+    def test_campaign_with_plan_key_both_prefers_key(self):
+        from domain.pricing import campaign_with_plan_key
+
+        out = campaign_with_plan_key(
+            {"target_plan_key": "middle", "target_plan_code": "s_short"}
+        )
+        self.assertEqual(out["target_plan_key"], "middle")
+
+    def test_campaign_with_plan_key_accepts_dataclass(self):
+        from domain.pricing import campaign_with_plan_key
+
+        out = campaign_with_plan_key(Campaign(title="c2", target_plan_key="all"))
+        self.assertEqual(out["target_plan_key"], "all")
+
+    def test_campaign_with_plan_code_alias(self):
+        from domain.pricing import campaign_with_plan_code_alias
+
+        src = {"target_plan_key": "long", "title": "c3"}
+        out = campaign_with_plan_code_alias(src)
+        self.assertEqual(out["target_plan_code"], "long")
+        self.assertEqual(out["target_plan_key"], "long")
+        self.assertEqual(src, {"target_plan_key": "long", "title": "c3"})
+
+    def test_campaign_targets_plan_key_via_alias(self):
+        from domain.pricing import campaign_targets_plan_key
+
+        # code のみの legacy 入力でも key 正規化を経由して合致する
+        self.assertTrue(campaign_targets_plan_key({"target_plan_code": "short"}, "short"))
+        self.assertFalse(campaign_targets_plan_key({"target_plan_code": "short"}, "long"))
 
 
 if __name__ == "__main__":

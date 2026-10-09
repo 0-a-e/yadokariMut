@@ -2,13 +2,12 @@
 # -*- coding: utf-8 -*-
 """BraTTo adapter + convert tests (offline fixtures)."""
 
-import os
-import tempfile
 import unittest
 from pathlib import Path
 
 
 import sources  # noqa: F401
+from helpers import fetch_child_rows, fetch_property_row, isolated_db
 from sources.bratto.convert import draft_from_normalized
 from sources.base import FetchedPage, ListTarget
 from sources.registry import SourceRegistry
@@ -107,13 +106,8 @@ class TestBrattoDetailConvert(unittest.TestCase):
             self.assertIn(p.plan_key, ("s_short", "short", "middle", "long", "other"))
 
     def test_pipeline_fixture_upsert(self):
-        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        tmp.close()
-        old_db = os.environ.get("YADOKARIMUT_V2_DB_PATH")
-        try:
-            os.environ["YADOKARIMUT_V2_DB_PATH"] = tmp.name
-            repo = Repository(tmp.name)
-            repo.init_db()
+        with isolated_db("bratto-pipeline") as db_path:
+            repo = Repository()
             adapter = SourceRegistry.create("bratto", {"delay_seconds": 0})
             pipeline = IngestPipeline(adapter, repo, save_raw=False)
             html = DETAIL_FIXTURE.read_text(encoding="utf-8", errors="replace")
@@ -125,40 +119,83 @@ class TestBrattoDetailConvert(unittest.TestCase):
                 prefecture_name="東京都",
             )
             # parse_detail uses normalize which needs room_id from card — external_id override on draft
-            prop = repo.get_property(pid)
-            self.assertEqual(prop["source_site"], "bratto")
-            self.assertTrue(prop["external_id"])
-            self.assertGreaterEqual(len(prop["price_plans"]), 1)
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except OSError:
-                pass
-            if old_db is None:
-                os.environ.pop("YADOKARIMUT_V2_DB_PATH", None)
-            else:
-                os.environ["YADOKARIMUT_V2_DB_PATH"] = old_db
+            self.assertEqual(fetch_property_row(repo, pid)["source_site"], "bratto")
+            self.assertTrue(fetch_property_row(repo, pid)["external_id"])
+            self.assertGreaterEqual(
+                len(fetch_child_rows(repo, pid, "price_plans")), 1
+            )
+
+    def test_floors_from_kaidate_spec(self):
+        """階建セルの連結値「N階建M階」が建物/所在階の整数列に分離されること
+        (docs/floor-number-ssot-plan.md §3.4・号室解釾込み)。
+        """
+        from sources.bratto.parser import normalize_property
+
+        cases = [
+            ("10階建7階", 7, 7, 10),
+            ("9階建803階", 8, 8, 9),  # 803号室 = 8階
+            ("10階建", None, None, 10),
+            ("2階建1・2階", 1, 2, 2),  # 複数階
+        ]
+        for kaidate, floor_min, floor_max, building in cases:
+            normalized = normalize_property(
+                {"room_id": "floor-check", "prefecture_slug": "tokyo"},
+                {"specs": {"階建": kaidate}},
+            )
+            draft = draft_from_normalized(normalized)
+            self.assertEqual(draft.floors_text, kaidate)
+            self.assertEqual(draft.floor_number, floor_min, kaidate)
+            self.assertEqual(draft.floor_number_max, floor_max, kaidate)
+            self.assertEqual(draft.building_floors, building, kaidate)
+
+
+class TestBrattoConvertCampaignAlias(unittest.TestCase):
+    """convert.py: normalize の legacy target_plan_code → key 正規化 (key 優先統一)."""
+
+    def test_code_only_campaign_gets_target_plan_key(self):
+        from sources.bratto.convert import draft_from_normalized
+
+        normalized = {
+            "source_site": "bratto",
+            "external_id": "alias-1",
+            "campaigns": [
+                {
+                    "campaign_type": "特別割引",
+                    "title": "sショート限定割引",
+                    "target_plan_code": "s_short",
+                }
+            ],
+        }
+        draft = draft_from_normalized(normalized)
+        self.assertEqual(len(draft.campaigns), 1)
+        self.assertEqual(draft.campaigns[0].target_plan_key, "s_short")
+
+    def test_key_present_takes_priority_over_code(self):
+        from sources.bratto.convert import draft_from_normalized
+
+        normalized = {
+            "source_site": "bratto",
+            "external_id": "alias-2",
+            "campaigns": [
+                {
+                    "campaign_type": "特別割引",
+                    "target_plan_code": "s_short",
+                    "target_plan_key": "middle",
+                }
+            ],
+        }
+        draft = draft_from_normalized(normalized)
+        self.assertEqual(draft.campaigns[0].target_plan_key, "middle")
 
 
 class TestApiQueriesShape(unittest.TestCase):
     def test_search_empty_db(self):
         from store.api_queries import search_properties
 
-        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        tmp.close()
-        old_db = os.environ.get("YADOKARIMUT_V2_DB_PATH")
-        try:
-            os.environ["YADOKARIMUT_V2_DB_PATH"] = tmp.name
-            repo = Repository(tmp.name)
-            repo.init_db()
+        with isolated_db("bratto-search-empty") as db_path:
+            repo = Repository()
             rows = search_properties({"limit": 10})
             self.assertEqual(rows, [])
-        finally:
-            os.unlink(tmp.name)
-            if old_db is None:
-                os.environ.pop("YADOKARIMUT_V2_DB_PATH", None)
-            else:
-                os.environ["YADOKARIMUT_V2_DB_PATH"] = old_db
 
 
 if __name__ == "__main__":

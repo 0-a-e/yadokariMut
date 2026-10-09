@@ -16,6 +16,7 @@ class TestAgentTools(unittest.TestCase):
 
         self.assertIn("applyFilters", SYSTEM_PROMPT)
         self.assertIn("updateShortlist", SYSTEM_PROMPT)
+        self.assertIn("updateBuildingShortlist", SYSTEM_PROMPT)
         self.assertIn("showComparison", SYSTEM_PROMPT)
         # レイヤ操作ツール群が SYSTEM_PROMPT に記載されていること
         for layer_tool in (
@@ -39,8 +40,8 @@ class TestAgentTools(unittest.TestCase):
             return name
 
         name = asyncio.run(_run())
-        # Prefer AsyncSqliteSaver; MemorySaver is acceptable fallback
-        self.assertIn(name, ("AsyncSqliteSaver", "MemorySaver", "SqliteSaver"))
+        # Prefer AsyncPostgresSaver; MemorySaver is acceptable fallback
+        self.assertIn(name, ("AsyncPostgresSaver", "MemorySaver"))
 
 
 if __name__ == "__main__":

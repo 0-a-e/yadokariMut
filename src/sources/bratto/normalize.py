@@ -1,7 +1,7 @@
 """BraTTo 一覧+詳細抽出結果の正規化 (normalize_property)。
 
-県マップは config.json の sources.bratto.prefectures 由来のため、
-設定読み込みもこのモジュールに集約する。
+県スラッグ集合は config.json の sources.bratto.prefectures 由来。
+県名は config の name を優先し、未設定分は store.pref_master で補完する。
 """
 
 from __future__ import annotations
@@ -10,14 +10,16 @@ import json
 import logging
 import re
 
+from store.pref_master import pref_display_name
 from store.source_catalog import load_app_config
 
-from domain.pricing import resolve_bratto_plan_code
 from sources.bratto.campaign_structurer import structure_campaign
+from sources.bratto.plans import resolve_bratto_plan_code
 from sources.parsing import (
     parse_access_parts,
     parse_area,
     parse_dates_from_text,
+    parse_floor_text,
     parse_japanese_era,
     parse_money,
 )
@@ -32,6 +34,8 @@ def _load_prefecture_map():
     """config.json sources.bratto.prefectures の県名 ↔ スラッグマップ。
 
     パスは load_app_config() (store.source_catalog) に一元化。
+    県名は config の name、未設定分は store.pref_master.pref_display_name
+    で補完するため config 側の name 削除でも 0 件化しない。
     単一HTML取り込み(ingest_detail_html)経路の県フォールバックが
     このマップに依存するため、読み込み結果はモジュール内でキャッシュする。
     """
@@ -45,7 +49,9 @@ def _load_prefecture_map():
         config = load_app_config()
         prefs = config.get("sources", {}).get("bratto", {}).get("prefectures", {})
         for slug, val in prefs.items():
-            name = val.get("name")
+            # name 未設定の slug は pref_master 正本から補完する
+            # (config 側の name 削除でマップが空になる事故を防ぐ)
+            name = val.get("name") or pref_display_name(slug)
             if name:
                 name_to_slug[name] = slug
                 slug_to_name[slug] = name
@@ -169,7 +175,12 @@ def normalize_property(list_data, detail_data):
     specs = detail_data.get("specs", {})
     normalized["capacity_text"] = specs.get("入居可能人数")
     normalized["structure"] = specs.get("構造")
-    normalized["floors_text"] = specs.get("階建")
+    kaidate_text = specs.get("階建")
+    normalized["floors_text"] = kaidate_text
+    floor_spec = parse_floor_text(kaidate_text)
+    normalized["floor_number"] = floor_spec.floor_min
+    normalized["floor_number_max"] = floor_spec.floor_max
+    normalized["building_floors"] = floor_spec.building_floors
     normalized["point_text"] = detail_data.get("point_text")
     normalized["availability_text"] = list_data.get("availability_text") # often empty in list, can be updated later
     
@@ -257,7 +268,7 @@ def normalize_property(list_data, detail_data):
                 "plan_code": plan_code,
                 "plan_name": plan["plan_name"],
                 "duration_text": plan["plan_name"].split()[-1] if len(plan["plan_name"].split()) > 1 else plan["plan_name"],
-                "available": 1 if plan["available"] else 0,
+                "available": bool(plan["available"]),
                 "campaign_label": plan["campaign_label"],
                 "original_daily_rent_yen": original_daily,
                 "discounted_daily_rent_yen": discounted_daily,
@@ -318,25 +329,23 @@ def normalize_property(list_data, detail_data):
                     "raw_text": p_val.get("message", "Unavailable")
                 })
                 
-    # 6. Features
+    # 6. Features — サイト見出しは解決に使わず、生値+辞書ルックアップの category
+    #    のみを書く(設計 §4.2・決定 1)。未知語は category=None。
+    from domain.feature_categories import lookup_feature_category
+
+    def _feature(tag: str) -> dict:
+        cat = lookup_feature_category(tag)
+        return {"feature_name": tag, "category": cat.code if cat else None}
+
     normalized["features"] = []
     detail_features = specs.get("基本設備", {})
     if detail_features:
-        for cat, list_tags in detail_features.items():
+        for _cat, list_tags in detail_features.items():
             for tag in list_tags:
-                normalized["features"].append({
-                    "feature_name": tag,
-                    "feature_category": cat,
-                    "raw_text": tag
-                })
+                normalized["features"].append(_feature(tag))
     else:
-        # Fallback to list tags
         for tag in list_data.get("features", []):
-            normalized["features"].append({
-                "feature_name": tag,
-                "feature_category": "list_tag",
-                "raw_text": tag
-            })
+            normalized["features"].append(_feature(tag))
             
     # 7. Campaigns (structured mechanically; merge official cam_* when present)
     normalized["campaigns"] = []

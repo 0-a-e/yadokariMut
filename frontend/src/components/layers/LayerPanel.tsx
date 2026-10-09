@@ -21,13 +21,20 @@ import { dragStartZone } from '../../lib/layers/dnd.ts';
 import { FaPlus, FaChevronDown } from 'react-icons/fa6';
 import { Button } from '@/components/ui/button.tsx';
 import { MultiCombobox } from '@/components/ui/combobox.tsx';
+import { SingleToggleGroup } from '@/components/ui/toggle-group.tsx';
+import { toast } from '@/components/ui/toast.tsx';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible.tsx';
 import { cn } from '@/lib/utils.ts';
+import { EmptyState } from '@/components/shared/EmptyState.tsx';
 import { AdaptivePointerSensor } from '../../lib/layers/dnd.ts';
 import type { DropPosition, LayerActions } from '../../lib/layers/state.ts';
 import { flattenStack } from '../../lib/layers/state.ts';
-import { catalogById, disabledEntries } from '../../lib/layers/catalog.ts';
-import type { FeSettings } from '../../lib/feSettings.ts';
+import { catalogById, disabledEntries, tagOrderOf } from '../../lib/layers/catalog.ts';
+import {
+  resolveMapBackground,
+  type FeSettings,
+  type MapBackground,
+} from '../../lib/feSettings.ts';
 import type { BaseLayerId } from '../../lib/layers/types.ts';
 import {
   LAYER_TAGS,
@@ -70,12 +77,11 @@ const GROUP_COLORS = [
   '#a3e635',
 ] as const;
 
-/** タグ→LAYER_TAGS定義順のインデックス(未定義タグは最後尾) */
-const TAG_ORDER: ReadonlyMap<LayerTag, number> = new Map(
-  LAYER_TAGS.map((t, i) => [t.id, i] as const),
-);
-const tagOrderOf = (tag: LayerTag | undefined): number =>
-  tag != null ? (TAG_ORDER.get(tag) ?? LAYER_TAGS.length) : LAYER_TAGS.length;
+/** 基底背景色トグルの選択肢(黒=従来の #1a1a24) */
+const MAP_BACKGROUND_OPTIONS: readonly { value: MapBackground; label: string }[] = [
+  { value: 'black', label: '黒' },
+  { value: 'white', label: '白' },
+];
 
 interface LayerPanelFeSettingsProps {
   feSettings: FeSettings;
@@ -377,6 +383,21 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
     setCollapsedGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
   }, []);
 
+  const mapBackground = resolveMapBackground(feSettings);
+
+  /**
+   * 基底背景色の部分マージ保存+Toast。トグルは離散操作のため debounce 無しの
+   * 即時保存(PropertiesLayerSettingsDialog の saveGlobal と同一契約)。
+   */
+  const saveMapBackground = async (value: MapBackground) => {
+    const result = await onFeSettingsChange({ layers: {}, global: { mapBackground: value } });
+    if (result != null) {
+      toast.add({ title: '保存しました', timeout: 2500, type: 'success' });
+    } else {
+      toast.add({ title: '保存に失敗しました', timeout: 4000, type: 'error' });
+    }
+  };
+
   /**
    * カスタム衝突検出。dnd-kit の droppable レジストリ(useDroppable 単独のコンテナが
    * 測定対象から欠落する問題がある)に頼らず、パネル内の実DOM rect とポインタ座標で
@@ -652,14 +673,25 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
                     data-layer-row は collisionDetection の over 判定に必要
                     (resolveDropTarget 側で index 0 への挿入に解決される) */}
                 <div data-layer-row={PROPERTIES_LAYER_ID}>
-                  <PropertiesLayerRow layer={layerConfig.properties} layerActions={layerActions} />
+                  <PropertiesLayerRow
+                    layer={layerConfig.properties}
+                    layerActions={layerActions}
+                    feSettings={feSettings}
+                    onFeSettingsChange={onFeSettingsChange}
+                  />
                 </div>
                 {layerConfig.stack.length === 0 ? (
-                  <p className="m-0 rounded-lg border border-dashed border-border px-3 py-3 text-center text-[11px] text-text-muted">
-                    有効なレイヤはありません。
-                    <br />
-                    下の無効レイヤから追加してください
-                  </p>
+                  <EmptyState
+                    dashed
+                    className="rounded-lg"
+                    message={
+                      <>
+                        有効なレイヤはありません。
+                        <br />
+                        下の無効レイヤから追加してください
+                      </>
+                    }
+                  />
                 ) : (
                   layerConfig.stack.map((item, i) => {
                     const itemId = item.kind === 'layer' ? item.id : item.groupId;
@@ -729,6 +761,19 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
               <FaPlus data-icon="inline-start" />
               グループ作成
             </Button>
+            {/* ── 基底の背景色(最下レイヤ=基本地図の下に見えるコンテナ背景) ── */}
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-semibold text-text-muted">基底の背景色</span>
+              <SingleToggleGroup
+                options={MAP_BACKGROUND_OPTIONS}
+                value={mapBackground}
+                onChange={(value) => void saveMapBackground(value)}
+                variant="outline"
+                size="sm"
+                aria-label="基底の背景色"
+                itemClassName="text-xs"
+              />
+            </div>
             <p className="m-0 text-[10px] text-text-muted/80">
               上=前面。ハンドルは即時ドラッグ、行の他の部分は長押しでドラッグ
               (順序変更・グループへの移動・無効リストへの移動)。
@@ -761,11 +806,15 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
                 )}
               >
                 {filteredDisabled.length === 0 ? (
-                  <p className="m-0 rounded-lg border border-dashed border-border px-3 py-3 text-center text-[11px] text-text-muted">
-                    {selectedTags.length === 0 && !query.trim()
-                      ? 'すべてのレイヤが有効です'
-                      : '該当するレイヤはありません'}
-                  </p>
+                  <EmptyState
+                    dashed
+                    className="rounded-lg"
+                    message={
+                      selectedTags.length === 0 && !query.trim()
+                        ? 'すべてのレイヤが有効です'
+                        : '該当するレイヤはありません'
+                    }
+                  />
                 ) : (
                   disabledGroups.map(([tag, entries]) => {
                     const key = tag ?? 'other';

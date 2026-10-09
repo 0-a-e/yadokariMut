@@ -13,7 +13,7 @@ const LINE_TO_PX = 16;
 const PAGE_TO_PX = 100;
 
 interface HorizontalWheelNavOptions {
-  /** wheel を監視する要素 (カードは embla viewport、モーダルは document) */
+  /** wheel を監視する要素 (カードは carousel ルート、モーダルは document) */
   target: HTMLElement | Document | null;
   /** 横方向のホイール入力で1枚戻る */
   onPrev: () => void;

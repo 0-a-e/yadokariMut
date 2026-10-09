@@ -1,3 +1,5 @@
+import { escapeHtml } from '../utils.ts';
+import { formatYen } from '../format.ts';
 import type { FeaturePopupDef, FeaturePopupField } from './types.ts';
 
 /**
@@ -30,30 +32,13 @@ export function formatPopupValue(value: unknown, format: FeaturePopupField['form
       // 数値整形系: 非finite数(欠損相当)は空文字、文字列はそのまま通す(属性型の揺れ対策)
       if (typeof value === 'number') {
         if (!Number.isFinite(value)) return '';
-        return format === 'jpy-m2' ? `${value.toLocaleString()}円/m²` : value.toLocaleString();
+        return format === 'jpy-m2' ? `${formatYen(value)}/m²` : value.toLocaleString();
       }
       return typeof value === 'string' ? value : '';
     }
     default:
       return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
   }
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (c) => {
-    switch (c) {
-      case '&':
-        return '&amp;';
-      case '<':
-        return '&lt;';
-      case '>':
-        return '&gt;';
-      case '"':
-        return '&quot;';
-      default:
-        return '&#39;';
-    }
-  });
 }
 
 // 色とフォントはCSS変数経由でアプリテーマに追従する(ポップアップDOMは

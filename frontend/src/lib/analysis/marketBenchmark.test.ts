@@ -17,7 +17,6 @@ const feature = (id: number, overrides: Partial<PropertyProperties> = {}): Prope
   geometry: { type: 'Point', coordinates: [139.63, 35.45] },
   properties: {
     id,
-    room_id: `room-${id}`,
     title: `物件${id}`,
     detail_url: `https://example.com/${id}`,
     address: '神奈川県横浜市',

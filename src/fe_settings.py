@@ -3,7 +3,8 @@
 保存対象はフロントエンドの「デフォルト値」設定のみ(設計 doc map-layer-system-v2 §2):
 
     {"layers": {"<layerId>": {"defaultOpacity": 0.6, "clustering": false}},
-     "global": {"pinClustering": true}}
+     "global": {"pinClustering": true, "pinBalloonPermanent": false,
+                "mapBackground": "black"}}
 
 - 1キー1行JSONで app_settings に保存する (読み書きの共通実装は
   store.app_settings.JsonSettingsStore。null=削除の部分マージ契約も同参照。
@@ -19,13 +20,16 @@ from typing import Any, Optional
 from store.app_settings import (
     JsonSettingsStore,
     validate_bool_or_null,
+    validate_choice_or_null,
     validate_entry_id_string,
     validate_number_or_null,
 )
 
 _SETTINGS_KEY = "fe_settings"
 _LAYER_OVERRIDE_KEYS = {"defaultOpacity", "clustering"}
-_GLOBAL_KEYS = {"pinClustering"}
+_GLOBAL_KEYS = {"pinClustering", "pinBalloonPermanent", "mapBackground"}
+# 最下レイヤ(基本地図)下に見える地図コンテナ背景色。black = 従来の #1a1a24
+_MAP_BACKGROUND_CHOICES = ("black", "white")
 
 
 def _validate_layer_entry_id(layer_id: Any) -> None:
@@ -44,18 +48,22 @@ _store = JsonSettingsStore(
         },
         "global": {
             "pinClustering": validate_bool_or_null,
+            "pinBalloonPermanent": validate_bool_or_null,
+            "mapBackground": lambda v, where: validate_choice_or_null(
+                v, _MAP_BACKGROUND_CHOICES, where
+            ),
         },
     },
     entry_id_validator=_validate_layer_entry_id,
 )
 
 
-def get_fe_settings(default_db_path: Optional[str] = None) -> dict:
+def get_fe_settings() -> dict:
     """Load saved FE default settings. Returns {"layers": {}, "global": {}} when unset."""
-    return _store.load(default_db_path)
+    return _store.load()
 
 
-def save_fe_settings(update: Any, default_db_path: Optional[str] = None) -> dict:
+def save_fe_settings(update: Any) -> dict:
     """Partial-merge save. Returns the full settings after save.
 
     - update.layers.<id>.<key> = 値   → そのキーのみ上書き
@@ -65,4 +73,4 @@ def save_fe_settings(update: Any, default_db_path: Optional[str] = None) -> dict
 
     不正な値は ValueError。呼び出し側(web_server)が HTTPException(400) にする。
     """
-    return _store.save(update, default_db_path)
+    return _store.save(update)

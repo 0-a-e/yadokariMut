@@ -1,12 +1,15 @@
 /**
  * Explorer URL search-param model (TanStack Router Phase R1).
  *
- * Keys: checkIn, checkOut, priceMode, id, compare, view
+ * Keys: checkIn, checkOut, priceMode, id, b, compare, bcompare, view
  * - Dates / priceMode: history.replace
- * - id open / view=compare open: history.push
+ * - id / b open / view=compare open: history.push
  * - Priority for dates: URL > localStorage > default
  * - compare is an explicit ID list (not shortlist-only), max 5
+ * - b is the selected building id (Phase B2-γ: 建物パネル。id(部屋)と併用可)
+ * - bcompare is the building-comparison counterpart of compare (Phase B2-δ, §4.5)
  */
+import { parseIsoDate } from './rentCalculator.ts';
 
 export const EXPLORER_MAX_COMPARE = 5;
 
@@ -19,23 +22,13 @@ export interface ExplorerSearch {
   checkOut?: string;
   priceMode?: ExplorerPriceMode;
   id?: number;
+  /** Selected building id(建物パネル・Phase B2-γ)。id(部屋)と併用可 */
+  b?: number;
   /** Explicit comparison property ids (order preserved, max 5). */
   compare?: number[];
+  /** Explicit comparison building ids (order preserved, max 5). Phase B2-δ §4.5. */
+  bcompare?: number[];
   view?: ExplorerView;
-}
-
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-function isIsoDate(value: string): boolean {
-  if (!ISO_DATE_RE.test(value)) return false;
-  const [y, m, d] = value.split('-').map(Number);
-  if (!y || !m || !d) return false;
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return (
-    dt.getUTCFullYear() === y &&
-    dt.getUTCMonth() === m - 1 &&
-    dt.getUTCDate() === d
-  );
 }
 
 function parsePositiveInt(value: unknown): number | undefined {
@@ -99,12 +92,14 @@ export function parseExplorerSearch(
 ): ExplorerSearch {
   const result: ExplorerSearch = {};
 
+  // 日付の妥当性判定は rentCalculator の parseIsoDate に一元化
+  // (stayDates.isValidIsoDate と同じ委譲パターン。閏日等の実在日チェックを含む)
   const checkIn =
-    typeof raw.checkIn === 'string' && isIsoDate(raw.checkIn)
+    typeof raw.checkIn === 'string' && parseIsoDate(raw.checkIn) != null
       ? raw.checkIn
       : undefined;
   const checkOut =
-    typeof raw.checkOut === 'string' && isIsoDate(raw.checkOut)
+    typeof raw.checkOut === 'string' && parseIsoDate(raw.checkOut) != null
       ? raw.checkOut
       : undefined;
   if (checkIn && checkOut && checkIn <= checkOut) {
@@ -119,8 +114,14 @@ export function parseExplorerSearch(
   const id = parsePositiveInt(raw.id);
   if (id != null) result.id = id;
 
+  const b = parsePositiveInt(raw.b);
+  if (b != null) result.b = b;
+
   const compare = parseCompareIds(raw.compare);
   if (compare.length > 0) result.compare = compare;
+
+  const bcompare = parseCompareIds(raw.bcompare);
+  if (bcompare.length > 0) result.bcompare = bcompare;
 
   if (raw.view === 'compare') result.view = 'compare';
 
@@ -133,7 +134,9 @@ export type ExplorerSearchPatch = {
   checkOut?: string | null;
   priceMode?: ExplorerPriceMode | null;
   id?: number | null;
+  b?: number | null;
   compare?: number[] | null;
+  bcompare?: number[] | null;
   view?: ExplorerView | null;
 };
 
@@ -163,12 +166,24 @@ export function applyExplorerSearchPatch(
     if (patch.id == null) delete next.id;
     else next.id = patch.id;
   }
+  if (patch.b !== undefined) {
+    if (patch.b == null) delete next.b;
+    else next.b = patch.b;
+  }
   if (patch.compare !== undefined) {
     if (patch.compare == null) delete next.compare;
     else {
       const ids = normalizeCompareIds(patch.compare);
       if (ids.length) next.compare = ids;
       else delete next.compare;
+    }
+  }
+  if (patch.bcompare !== undefined) {
+    if (patch.bcompare == null) delete next.bcompare;
+    else {
+      const ids = normalizeCompareIds(patch.bcompare);
+      if (ids.length) next.bcompare = ids;
+      else delete next.bcompare;
     }
   }
   if (patch.view !== undefined) {
@@ -198,7 +213,9 @@ export function compactExplorerSearch(search: ExplorerSearch): ExplorerSearch {
     out.priceMode = search.priceMode;
   }
   if (search.id != null) out.id = search.id;
+  if (search.b != null) out.b = search.b;
   if (search.compare?.length) out.compare = search.compare;
+  if (search.bcompare?.length) out.bcompare = search.bcompare;
   if (search.view === 'compare') out.view = 'compare';
   return out;
 }
@@ -216,7 +233,9 @@ export function explorerSearchForNavigate(
   if (compact.checkOut) out.checkOut = compact.checkOut;
   if (compact.priceMode) out.priceMode = compact.priceMode;
   if (compact.id != null) out.id = compact.id;
+  if (compact.b != null) out.b = compact.b;
   if (compact.compare?.length) out.compare = compact.compare.join(',');
+  if (compact.bcompare?.length) out.bcompare = compact.bcompare.join(',');
   if (compact.view) out.view = compact.view;
   return out;
 }

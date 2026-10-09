@@ -1,10 +1,17 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { MapFilters, PropertyFeature } from '../../types.ts';
-import { PropertyCard } from './PropertyCard.tsx';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import type { BuildingFeature, BuildingUnit, MapFilters, SortKey } from '../../types.ts';
+import { BuildingCard } from './BuildingCard.tsx';
 import { Button } from '@/components/ui/button.tsx';
 import { ScrollArea } from '@/components/ui/scroll-area.tsx';
 import { Separator } from '@/components/ui/separator.tsx';
 import { Badge } from '@/components/ui/badge.tsx';
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty.tsx';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip.tsx';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible.tsx';
 import {
@@ -22,7 +29,19 @@ import {
   FaFilter,
   FaVectorSquare,
 } from 'react-icons/fa6';
-import { Menu, MenuTrigger, MenuContent, MenuItem } from '@/components/ui/menu.tsx';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu.tsx';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select.tsx';
 import { cn } from '@/lib/utils.ts';
 import {
   type BaseLayerId,
@@ -50,9 +69,34 @@ const VIEW_TABS: { id: 'settings' | 'layers'; label: string; icon: React.ReactNo
   { id: 'layers', label: 'レイヤ', icon: <FaLayerGroup /> },
 ];
 
+/**
+ * 並び替え選択肢(建物数行の Select 用・FilterPanel から移設)。
+ * saved 表示時(防御的に updated_desc 選択中も)は最終編集順を先頭に加える
+ * (saved ビューの既定は最終編集順・切替時の寄せは mergeMapFilters 担当)。
+ * 価格系ラベルは priceMode で切替。
+ */
+function sortOptions(
+  priceMode: MapFilters['priceMode'],
+  withUpdatedAt: boolean,
+): { value: SortKey; label: string }[] {
+  const options: { value: SortKey; label: string }[] = [];
+  if (withUpdatedAt) options.push({ value: 'updated_desc', label: '最終編集順' });
+  options.push(
+    { value: 'score', label: 'スコア' },
+    { value: 'price_asc', label: priceMode === 'stay' ? '総額↑' : '安い順' },
+    { value: 'price_desc', label: priceMode === 'stay' ? '総額↓' : '高い順' },
+    { value: 'area_desc', label: '広い順' },
+  );
+  return options;
+}
+
 interface SidebarProps {
-  filteredFeatures: PropertyFeature[];
-  selectedId: number | null;
+  /** 採用建物一覧(worker が建物代表値ソート済み・B2-β で部屋平面リストから切替) */
+  buildings: BuildingFeature[];
+  /** フィルタ条件通過部屋 id 集合(建物カード内の一致部屋強調) */
+  matchedRoomIds: Set<number>;
+  /** 選択中建物(ピンとカードの選択ハイライト共有。部屋選択はAppが建物idへ解決) */
+  selectedBuildingId: number | null;
   /** レイヤ設定(ベース選択導出・LayerPanelへの中継) */
   layerConfig: LayerConfigState;
   layerActions: LayerActions;
@@ -67,11 +111,15 @@ interface SidebarProps {
   onFiltersChange: (patch: Partial<MapFilters> & { reset?: boolean }) => void;
   prefectureOptions: string[];
   sourceOptions?: { id: string; label: string; count: number }[];
-  onCardClick: (feature: PropertyFeature) => void;
+  /** 建物カードクリック */
+  onBuildingClick: (building: BuildingFeature) => void;
+  /** 建物カード内の部屋行クリック(部屋パネル直開) */
+  onUnitClick: (unit: BuildingUnit) => void;
   /** カードホバー状態の変化(null=離れた)。マップピンハイライト連動用 */
   onCardHover: (id: number | null) => void;
   className?: string;
   compactHeader?: boolean;
+  /** stay モードで総額を計算できず除外した部屋数(部屋数の意味論を維持) */
   excludedUnestimable?: number;
   /** Total saved shortlist count (may exceed current filter) */
   savedCount?: number;
@@ -79,8 +127,9 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
-  filteredFeatures,
-  selectedId,
+  buildings,
+  matchedRoomIds,
+  selectedBuildingId,
   layerConfig,
   layerActions,
   feSettings,
@@ -91,7 +140,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onFiltersChange,
   prefectureOptions,
   sourceOptions = [],
-  onCardClick,
+  onBuildingClick,
+  onUnitClick,
   onCardHover,
   className = '',
   compactHeader = false,
@@ -100,15 +150,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenComparison,
 }) => {
   const [displayedLimit, setDisplayedLimit] = useState(30);
+  /**
+   * 建物カードの展開状態(建物 id 集合)。ローカル state だとフィルタ/ソートの
+   * 並び替えでカードが再配置された際に畳まれてしまうため親で保持する
+   * (docs/fe-floor-orientation-redesign-plan.md §2.4 A13)。
+   */
+  const [expandedBuildingIds, setExpandedBuildingIds] = useState<Set<number>>(() => new Set());
+  const handleToggleExpanded = useCallback((buildingId: number) => {
+    setExpandedBuildingIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(buildingId)) next.delete(buildingId);
+      else next.add(buildingId);
+      return next;
+    });
+  }, []);
   /** コンテンツ切替(リスト=フィルタ/物件一覧、レイヤ=LayerPanel)。永続化なし */
   const [sidebarView, setSidebarView] = useState<'settings' | 'layers'>('settings');
-  /** フィルタ操作系(ご利用期間〜詳細フィルタ/リセット)の開閉。デフォルトオープン・永続化なし */
+  /** フィルタ操作系(利用期間〜詳細フィルタ/リセット)の開閉。デフォルトオープン・永続化なし */
   const [filtersSectionOpen, setFiltersSectionOpen] = useState(true);
   const sidebarContentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setDisplayedLimit(30);
-  }, [filteredFeatures]);
+  }, [buildings]);
 
   // レイヤビューへ切替えた際、カードが非表示でもマウスが乗ったままになるため
   // 残ったホバー状態(マップのゴーストピン等)をクリアする
@@ -120,12 +184,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const el = sidebarContentRef.current;
     if (!el) return;
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 150) {
-      if (displayedLimit < filteredFeatures.length) setDisplayedLimit((prev) => prev + 30);
+      if (displayedLimit < buildings.length) setDisplayedLimit((prev) => prev + 30);
     }
   };
 
   const stayMode = filters.priceMode === 'stay';
-  const displayedFeatures = filteredFeatures.slice(0, displayedLimit);
+  // 無限スクロールは建物単位(30建物/回・§4.2)
+  const displayedBuildings = buildings.slice(0, displayedLimit);
+
+  /** saved 表示時(防御的に updated_desc 選択中も)は最終編集順を出す */
+  const sortOpts = sortOptions(
+    filters.priceMode,
+    filters.status === 'saved' || filters.sortBy === 'updated_desc',
+  );
+  const sortItemMap: Record<string, string> = Object.fromEntries(
+    sortOpts.map((o) => [o.value, o.label]),
+  );
 
   /** 選択中ベースはレイヤ配列から導出(ローカルstate禁止)。無ければ全部未選択 */
   const activeBase =
@@ -229,8 +303,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 );
               })}
             </div>
-            <Menu>
-              <MenuTrigger
+            <DropdownMenu>
+              <DropdownMenuTrigger
                 render={
                   <Button
                     variant="ghost"
@@ -242,17 +316,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </Button>
                 }
               />
-              <MenuContent align="end">
-                <MenuItem onClick={onAdminToggle}>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={onAdminToggle}>
                   <FaGear className="text-sm text-text-muted" />
                   設定
-                </MenuItem>
-                <MenuItem onClick={onOpenAnalysis}>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onOpenAnalysis}>
                   <FaChartLine className="text-sm text-text-muted" />
                   分析
-                </MenuItem>
-              </MenuContent>
-            </Menu>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </div>
@@ -284,8 +358,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </Collapsible>
 
         <div>
-          <div className="flex items-center justify-between gap-2 mb-1">
-            <p className="text-sm text-text-muted m-0">物件数: {filteredFeatures.length}件</p>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+            <p className="text-sm text-text-muted m-0">建物数: {buildings.length}件</p>
             <div className="flex items-center gap-1.5 shrink-0">
               <Tooltip>
                 <TooltipTrigger
@@ -328,6 +402,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   )}
                 </Button>
               )}
+              {/* 並び替え(FilterPanel から移設・比較ボタンの右) */}
+              <Select
+                items={sortItemMap}
+                value={filters.sortBy}
+                onValueChange={(value) => {
+                  if (typeof value === 'string') onFiltersChange({ sortBy: value as SortKey });
+                }}
+              >
+                <SelectTrigger
+                  size="sm"
+                  aria-label="並び替え"
+                  className="h-8 text-xs font-semibold"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end" className="min-w-0">
+                  {sortOpts.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
           {stayMode && excludedUnestimable > 0 && (
@@ -337,18 +434,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
           {!(stayMode && excludedUnestimable > 0) && <div className="mb-3" />}
           <ScrollArea className="h-auto max-h-none">
-            <div className="flex flex-col gap-3">
-              {displayedFeatures.map((feat) => (
-                <PropertyCard
-                  key={feat.properties.id}
-                  feature={feat}
-                  isActive={selectedId === feat.properties.id}
-                  onClick={() => onCardClick(feat)}
-                  onHoverChange={onCardHover}
-                  priceMode={filters.priceMode}
-                />
-              ))}
-            </div>
+            {displayedBuildings.length === 0 ? (
+              <Empty variant="outline">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <FaFilter />
+                  </EmptyMedia>
+                  <EmptyTitle>条件に一致する建物がありません</EmptyTitle>
+                  <EmptyDescription>フィルタや表示条件を変更してください。</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {displayedBuildings.map((b) => (
+                  <BuildingCard
+                    key={b.properties.id}
+                    building={b}
+                    isActive={selectedBuildingId === b.properties.id}
+                    matchedRoomIds={matchedRoomIds}
+                    priceMode={filters.priceMode}
+                    expanded={expandedBuildingIds.has(b.properties.id)}
+                    onToggleExpanded={handleToggleExpanded}
+                    onClick={() => onBuildingClick(b)}
+                    onUnitClick={onUnitClick}
+                    onHoverChange={onCardHover}
+                  />
+                ))}
+              </div>
+            )}
           </ScrollArea>
         </div>
       </div>

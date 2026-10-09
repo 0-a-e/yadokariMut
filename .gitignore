@@ -46,7 +46,9 @@ AGENTS.md
 opencode.json
 skills-lock.json
 deploy.sh
-deploy/
+# deploy/ 配下は基本非公開だが、compose db サービスのビルドコンテキストのみ公開する
+deploy/*
+!deploy/postgres/
 sync_public.sh
 .v2c/
 

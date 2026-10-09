@@ -3,9 +3,6 @@
 """Tests for store.schema / store.repository (v2)."""
 
 import json
-import os
-import sqlite3
-import tempfile
 import unittest
 from datetime import datetime
 
@@ -19,31 +16,31 @@ from domain.models import (
 )
 from domain.pricing import MONTH_DAYS, calculate_stay_total
 from store.repository import Repository
-from store.schema import SCHEMA_VERSION, get_schema_version, init_schema
+from helpers import fetch_child_rows, fetch_property_row
 
 
 class TestSchemaAndRepository(unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self._tmp.close()
-        self.db_path = self._tmp.name
-        self.repo = Repository(self.db_path)
-        self.repo.init_db()
+        from helpers import ScopedDb
 
-    def tearDown(self):
-        try:
-            os.unlink(self.db_path)
-        except OSError:
-            pass
+        self._scope = ScopedDb("repo")
+        self.repo = Repository()
+        self.addCleanup(self._scope.close)
 
     def test_schema_version(self):
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        from store.migrations import ALEMBIC_INI, current
+
+        head = ScriptDirectory.from_config(Config(str(ALEMBIC_INI))).get_current_head()
+        self.assertEqual(current(), head)
         conn = self.repo.connect()
         try:
-            self.assertEqual(get_schema_version(conn), SCHEMA_VERSION)
             tables = {
                 r[0]
                 for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
+                    "SELECT tablename FROM pg_tables WHERE schemaname='public'"
                 )
             }
             self.assertIn("scrape_run_targets", tables)
@@ -103,7 +100,7 @@ class TestSchemaAndRepository(unittest.TestCase):
                 )
             ],
             images=[PropertyImage(image_url="https://example.com/a.jpg", image_type="thumbnail")],
-            features=[PropertyFeature(feature_name="オートロック", feature_category="building")],
+            features=[PropertyFeature(feature_name="オートロック", category=None)],
             price_plans=[
                 PricePlan(
                     plan_key="long",
@@ -133,12 +130,12 @@ class TestSchemaAndRepository(unittest.TestCase):
         pid = self.repo.upsert_property(draft)
         self.assertIsInstance(pid, int)
 
-        prop = self.repo.get_property(pid)
+        prop = fetch_property_row(self.repo, pid)
         self.assertIsNotNone(prop)
         self.assertEqual(prop["source_site"], "unionmonthly")
         self.assertEqual(prop["external_id"], "6575")
-        self.assertEqual(len(prop["price_plans"]), 2)
-        self.assertEqual(len(prop["accesses"]), 1)
+        self.assertEqual(len(fetch_child_rows(self.repo, pid, "price_plans")), 2)
+        self.assertEqual(len(fetch_child_rows(self.repo, pid, "property_accesses")), 1)
         # catalog uses cheapest per-day among plans → long 336000/30
         self.assertEqual(prop["catalog_rent_per_day_yen"], 336000 // MONTH_DAYS)
 
@@ -146,8 +143,7 @@ class TestSchemaAndRepository(unittest.TestCase):
         draft.title = "更新タイトル"
         pid2 = self.repo.upsert_property(draft)
         self.assertEqual(pid, pid2)
-        prop2 = self.repo.get_property(pid)
-        self.assertEqual(prop2["title"], "更新タイトル")
+        self.assertEqual(fetch_property_row(self.repo, pid)["title"], "更新タイトル")
 
     def test_source_counts_and_prefecture_stats(self):
         self.repo.upsert_property(
@@ -217,15 +213,18 @@ class TestSchemaAndRepository(unittest.TestCase):
                 ],
             )
         )
-        prop = self.repo.get_property(pid)
         result = calculate_stay_total(
             check_in="2026-08-01",
             check_out="2026-08-30",
-            plans=prop["price_plans"],
+            plans=fetch_child_rows(
+                self.repo, pid, "price_plans", " ORDER BY duration_min_days"
+            ),
             use_structured_campaigns=False,
         )
         self.assertTrue(result.ok)
-        self.assertEqual(result.grand_total, (3600 + 500) * 30 + 20000 + 5500)
+        # contract_fee_yen 未指定 = 算出不能 → 総額から除外(warnings で明示)
+        self.assertEqual(result.grand_total, (3600 + 500) * 30 + 20000)
+        self.assertIsNone(result.breakdown.contract_fee)
 
     def test_mark_inactive(self):
         pid_a = self.repo.upsert_property(
@@ -239,8 +238,8 @@ class TestSchemaAndRepository(unittest.TestCase):
         # count_by_source は is_active=1 の行のみ数えるため 2 → 1 に減る
         self.assertEqual(self.repo.count_by_source().get("unionmonthly"), 1)
         # seen セット外の "b" だけが非活性化され、"a" は活性のまま
-        self.assertEqual(self.repo.get_property(pid_a)["is_active"], 1)
-        self.assertEqual(self.repo.get_property(pid_b)["is_active"], 0)
+        self.assertEqual(fetch_property_row(self.repo, pid_a)["is_active"], 1)
+        self.assertEqual(fetch_property_row(self.repo, pid_b)["is_active"], 0)
 
     def test_finish_scrape_run_target_persists_list_completed(self):
         run_id = self.repo.start_scrape_run("unionmonthly")
@@ -264,36 +263,23 @@ class TestSchemaAndRepository(unittest.TestCase):
 
 
 class TestRotationState(unittest.TestCase):
-    _OLD_SRT_DDL = """
-        CREATE TABLE scrape_run_targets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id INTEGER NOT NULL,
-            source_site TEXT NOT NULL,
-            target_key TEXT NOT NULL,
-            started_at TEXT,
-            finished_at TEXT,
-            status TEXT NOT NULL DEFAULT 'running',
-            list_pages INTEGER DEFAULT 0,
-            list_items INTEGER DEFAULT 0,
-            detail_ok INTEGER DEFAULT 0,
-            detail_fail INTEGER DEFAULT 0,
-            error_summary TEXT,
-            FOREIGN KEY(run_id) REFERENCES scrape_runs(id) ON DELETE CASCADE
-        );
-    """
+
+    def test_alembic_revision_is_pinned(self):
+        """PG移行後の版ゲート相当: alembic_version が最新 head まで適用済み."""
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        from store.migrations import ALEMBIC_INI, current
+
+        head = ScriptDirectory.from_config(Config(str(ALEMBIC_INI))).get_current_head()
+        self.assertEqual(current(), head)
 
     def setUp(self):
-        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self._tmp.close()
-        self.db_path = self._tmp.name
-        self.repo = Repository(self.db_path)
-        self.repo.init_db()
+        from helpers import ScopedDb
 
-    def tearDown(self):
-        try:
-            os.unlink(self.db_path)
-        except OSError:
-            pass
+        self._scope = ScopedDb("repo")
+        self.repo = Repository()
+        self.addCleanup(self._scope.close)
 
     def _seed_property(self, source_site: str, external_id: str, slug: str) -> None:
         self.repo.upsert_property(
@@ -360,8 +346,9 @@ class TestRotationState(unittest.TestCase):
         self.assertEqual(len(states), 1)
         row = states[0]
         self.assertEqual(row["known_total"], 10)
-        self.assertEqual(row["last_full_ok_at"], "2026-09-01T03:00:00")
-        self.assertEqual(row["last_run_at"], "2026-09-07T04:00:00")
+        # timestamptz 化 (Phase 6c) で aware JST datetime が返る
+        self.assertEqual(row["last_full_ok_at"].isoformat(), "2026-09-01T03:00:00+09:00")
+        self.assertEqual(row["last_run_at"].isoformat(), "2026-09-07T04:00:00+09:00")
 
         # NULL-only での新規挿入も可能
         self.repo.upsert_rotation_state("unionmonthly", "gunma")
@@ -376,22 +363,23 @@ class TestRotationState(unittest.TestCase):
     def test_rotation_usage_today_counts_only_rotation_runs(self):
         now = datetime(2026, 9, 7, 15, 0, 0)
         rows = [
-            # (source_site, started_at, detail_ok, meta_json)
-            ("unionmonthly", "2026-09-07T01:00:00", 7, json.dumps({"rotation": True})),
-            ("unionmonthly", "2026-09-07T02:00:00", 5, json.dumps({"rotation": False})),
-            ("unionmonthly", "2026-09-06T23:00:00", 100, json.dumps({"rotation": True})),
-            ("unionmonthly", "2026-09-07T04:00:00", 2, None),
-            ("bratto", "2026-09-07T03:00:00", 3, '{"rotation": true}'),
+            # (source_site, started_at, detail_ok, is_rotation)
+            ("unionmonthly", "2026-09-07T01:00:00", 7, True),
+            ("unionmonthly", "2026-09-07T02:00:00", 5, False),
+            ("unionmonthly", "2026-09-06T23:00:00", 100, True),
+            ("unionmonthly", "2026-09-07T04:00:00", 2, False),
+            ("bratto", "2026-09-07T03:00:00", 3, True),
         ]
         conn = self.repo.connect()
         try:
-            for source, started_at, detail_ok, meta in rows:
+            for source, started_at, detail_ok, is_rotation in rows:
                 conn.execute(
                     """
-                    INSERT INTO scrape_runs (source_site, started_at, status, detail_ok, meta_json)
-                    VALUES (?, ?, 'ok', ?, ?)
+                    INSERT INTO scrape_runs
+                        (source_site, started_at, status, detail_ok, is_rotation)
+                    VALUES (%s, %s, 'ok', %s, %s)
                     """,
-                    (source, started_at, detail_ok, meta),
+                    (source, started_at, detail_ok, is_rotation),
                 )
             conn.commit()
         finally:
@@ -401,38 +389,7 @@ class TestRotationState(unittest.TestCase):
         self.assertEqual(self.repo.rotation_usage_today("bratto", now=now), 3)
         self.assertEqual(self.repo.rotation_usage_today("nosuch", now=now), 0)
 
-    def test_init_schema_migrates_list_completed(self):
-        # 旧スキーマ(list_completed 列なし)で DB を作る
-        conn = self.repo.connect()
-        try:
-            conn.execute("DROP TABLE scrape_run_targets")
-            conn.execute(self._OLD_SRT_DDL)
-            conn.commit()
-        finally:
-            conn.close()
 
-        # init_schema で列が追加される
-        self.repo.init_db()
-        conn = self.repo.connect()
-        try:
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(scrape_run_targets)")]
-        finally:
-            conn.close()
-        self.assertIn("list_completed", cols)
-
-        # 冪等: 2回実行してもエラーにならず列は1つのまま
-        self.repo.init_db()
-        conn = self.repo.connect()
-        try:
-            cols2 = [r[1] for r in conn.execute("PRAGMA table_info(scrape_run_targets)")]
-        finally:
-            conn.close()
-        self.assertEqual(cols2.count("list_completed"), 1)
-
-        # 追加された列で finish が動く
-        run_id = self.repo.start_scrape_run("unionmonthly")
-        tid = self.repo.start_scrape_run_target(run_id, "unionmonthly", "tokyo")
-        self.repo.finish_scrape_run_target(tid, status="ok", list_completed=True)
 
     def test_running_scrape_targets_filters_finished_and_stale(self):
         from datetime import datetime, timedelta
@@ -456,10 +413,10 @@ class TestRotationState(unittest.TestCase):
         conn = self.repo.connect()
         try:
             conn.execute(
-                "UPDATE scrape_run_targets SET started_at = ? WHERE id = ?", (old, t_stale)
+                "UPDATE scrape_run_targets SET started_at = %s WHERE id = %s", (old, t_stale)
             )
             conn.execute(
-                "UPDATE scrape_runs SET started_at = ? WHERE id = ?", (old, stale_run)
+                "UPDATE scrape_runs SET started_at = %s WHERE id = %s", (old, stale_run)
             )
             conn.commit()
         finally:
@@ -482,28 +439,29 @@ class TestRotationState(unittest.TestCase):
         t_done = self.repo.start_scrape_run_target(stale_run, "unionmonthly", "tokyo")
         self.repo.finish_scrape_run_target(t_done, status="ok", list_completed=True)
 
-        aborted_runs = self.repo.fail_stale_running_runs()
-        self.assertEqual(aborted_runs, 1)
+        # 戻り値は aborted 行の合算 (scrape_run_targets 1件 + scrape_runs 1件)
+        aborted_rows = self.repo.fail_stale_running_runs()
+        self.assertEqual(aborted_rows, 2)
 
         # 残骸行は finished_at が入って aborted になり、is_running の元も消える
         self.assertEqual(self.repo.running_scrape_targets("unionmonthly"), set())
         conn = self.repo.connect()
         try:
             run = conn.execute(
-                "SELECT status, finished_at, error_summary FROM scrape_runs WHERE id = ?",
+                "SELECT status, finished_at, error_summary FROM scrape_runs WHERE id = %s",
                 (stale_run,),
             ).fetchone()
             self.assertEqual(run["status"], "aborted")
             self.assertIsNotNone(run["finished_at"])
             self.assertIn("aborted", run["error_summary"])
             tgt = conn.execute(
-                "SELECT status, finished_at FROM scrape_run_targets WHERE id = ?",
+                "SELECT status, finished_at FROM scrape_run_targets WHERE id = %s",
                 (t_stale,),
             ).fetchone()
             self.assertEqual(tgt["status"], "aborted")
             self.assertIsNotNone(tgt["finished_at"])
             done = conn.execute(
-                "SELECT status, finished_at FROM scrape_run_targets WHERE id = ?",
+                "SELECT status, finished_at FROM scrape_run_targets WHERE id = %s",
                 (t_done,),
             ).fetchone()
             self.assertEqual(done["status"], "ok")
@@ -529,7 +487,7 @@ class TestRotationState(unittest.TestCase):
             for s in self.repo.load_rotation_states("unionmonthly")
         }["saitama"]
         self.assertEqual(row["consecutive_failures"], 3)
-        self.assertEqual(row["last_run_at"], "2026-09-08T05:00:00")
+        self.assertEqual(row["last_run_at"].isoformat(), "2026-09-08T05:00:00+09:00")
         self.assertIsNone(row["last_full_ok_at"])
 
         # 成功時の upsert で連続失敗は0にリセットされる
@@ -548,56 +506,3 @@ class TestRotationState(unittest.TestCase):
         self.assertEqual(row["consecutive_failures"], 0)
         self.assertEqual(row["known_total"], 539)
 
-    def test_init_schema_migrates_consecutive_failures(self):
-        # 旧スキーマ(consecutive_failures 列なし)の rotation_state を作る
-        conn = self.repo.connect()
-        try:
-            conn.execute("DROP TABLE rotation_state")
-            conn.execute(
-                """
-                CREATE TABLE rotation_state (
-                    source_site TEXT NOT NULL,
-                    prefecture_slug TEXT NOT NULL,
-                    known_total INTEGER,
-                    last_full_ok_at TEXT,
-                    last_run_at TEXT,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (source_site, prefecture_slug)
-                )
-                """
-            )
-            conn.execute(
-                """
-                INSERT INTO rotation_state
-                    (source_site, prefecture_slug, known_total, updated_at)
-                VALUES ('bratto', 'tokyo', 464, '2026-09-07T00:00:00')
-                """
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        # init_schema で列が追加され、既存行はデフォルト0
-        self.repo.init_db()
-        conn = self.repo.connect()
-        try:
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(rotation_state)")]
-            rows = conn.execute(
-                "SELECT consecutive_failures FROM rotation_state"
-                " WHERE source_site='bratto' AND prefecture_slug='tokyo'"
-            ).fetchall()
-        finally:
-            conn.close()
-        self.assertIn("consecutive_failures", cols)
-        self.assertEqual([r[0] for r in rows], [0])
-
-        # 追加された列で bump が動く
-        self.repo.bump_rotation_failures("bratto", "tokyo", last_run_at="2026-09-07T05:00:00")
-        row = {
-            s["prefecture_slug"]: s for s in self.repo.load_rotation_states("bratto")
-        }["tokyo"]
-        self.assertEqual(row["consecutive_failures"], 1)
-
-
-if __name__ == "__main__":
-    unittest.main()

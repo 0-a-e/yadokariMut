@@ -1,47 +1,45 @@
-"""Repository for multi-source v2 SQLite store."""
+"""Repository for multi-source property store (PostgreSQL・psycopg3).
+
+SQLite→PG移行 (docs/sqlite-pg-migration-plan.md) により接続の正本は
+``store.pg``(DSN は ``YADOKARIMUT_PG_DSN``)。本モジュールは書込系 SQL の
+SSOT として残る。プレースホルダは ``%s``(psycopg3)。
+"""
 
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import Any
 
-from domain.models import PropertyDraft
+import psycopg
+
+from domain.models import PropertyDraft, PropertyImage
 from domain.pricing import compute_catalog_min_daily, resolve_plans_effective
-from store.schema import init_schema
+from store.building_identity import assign_building
+from store.pg import connect as _pg_connect
+from store.pg import open_connection
 
-def default_db_path() -> str:
-    return os.environ.get(
-        "YADOKARIMUT_V2_DB_PATH",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "yadokari_mut_v2.db"),
-    )
+# 従来 ``store.repository`` から import していた呼び出し側のための再輸出
+# (新規コードは ``store.pg`` から直接 import してよい)。
+get_connection = _pg_connect
 
 
-def get_connection(db_path: str | None = None) -> sqlite3.Connection:
-    path = db_path or default_db_path()
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
+def now_iso() -> str:
+    """DB タイムスタンプ標準 (naive local ISO8601) の一元生成点。"""
+    return datetime.now().isoformat()
 
 
 class Repository:
-    """Thin data access for v2 schema. Does not scrape."""
+    """Thin data access for the property schema. Does not scrape."""
 
-    def __init__(self, db_path: str | None = None):
-        self.db_path = db_path or default_db_path()
+    def connect(self) -> psycopg.Connection:
+        """生コネクションを返す (テスト・移行ツール等の自前管理向け)。"""
+        return _pg_connect()
 
-    def connect(self) -> sqlite3.Connection:
-        return get_connection(self.db_path)
-
-    def init_db(self) -> None:
-        conn = self.connect()
-        try:
-            init_schema(conn)
-        finally:
-            conn.close()
+    def _conn(self) -> Iterator[psycopg.Connection]:
+        """close 保証付き接続(commit/rollback は呼び出し側が明示)。"""
+        return open_connection()
 
     # ------------------------------------------------------------------
     # Upsert
@@ -49,18 +47,15 @@ class Repository:
 
     def upsert_property(self, draft: PropertyDraft) -> int:
         """Insert or update a property and replace child rows. Returns property id."""
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             return self._upsert_property_conn(conn, draft)
-        finally:
-            conn.close()
 
-    def _upsert_property_conn(self, conn: sqlite3.Connection, draft: PropertyDraft) -> int:
-        now = datetime.now().isoformat()
+    def _upsert_property_conn(self, conn: psycopg.Connection, draft: PropertyDraft) -> int:
+        now = now_iso()
         cur = conn.cursor()
 
         cur.execute(
-            "SELECT id, first_seen_at FROM properties WHERE source_site = ? AND external_id = ?",
+            "SELECT id, first_seen_at FROM properties WHERE source_site = %s AND external_id = %s",
             (draft.source_site, draft.external_id),
         )
         row = cur.fetchone()
@@ -79,23 +74,27 @@ class Repository:
         cur.execute(
             """
             INSERT INTO properties (
-                id, source_site, external_id, entity_type, title, detail_url,
+                source_site, external_id, entity_type, title, detail_url,
                 prefecture_slug, prefecture_name, municipality, address,
                 lat, lng, geocode_source, geocode_confidence,
                 layout, area_m2, area_m2_max, built_year, built_month,
                 construction_year_text, capacity_text, structure, floors_text,
-                floor_number, point_text, availability_text, min_stay_days,
+                floor_number, floor_number_max, building_floors,
+                orientation_text, orientation_deg, orientation_source,
+                point_text, availability_text, min_stay_days,
                 contract_fee_yen, first_seen_at, last_seen_at, detail_scraped_at,
                 is_active, catalog_rent_per_day_yen
             ) VALUES (
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s
             )
             ON CONFLICT(source_site, external_id) DO UPDATE SET
                 entity_type = excluded.entity_type,
@@ -119,6 +118,11 @@ class Repository:
                 structure = excluded.structure,
                 floors_text = excluded.floors_text,
                 floor_number = excluded.floor_number,
+                floor_number_max = excluded.floor_number_max,
+                building_floors = excluded.building_floors,
+                orientation_text = excluded.orientation_text,
+                orientation_deg = excluded.orientation_deg,
+                orientation_source = excluded.orientation_source,
                 point_text = excluded.point_text,
                 availability_text = excluded.availability_text,
                 min_stay_days = excluded.min_stay_days,
@@ -127,9 +131,9 @@ class Repository:
                 detail_scraped_at = COALESCE(excluded.detail_scraped_at, properties.detail_scraped_at),
                 is_active = excluded.is_active,
                 catalog_rent_per_day_yen = excluded.catalog_rent_per_day_yen
+                RETURNING id
             """,
             (
-                property_id,
                 draft.source_site,
                 draft.external_id,
                 draft.entity_type,
@@ -153,6 +157,11 @@ class Repository:
                 draft.structure,
                 draft.floors_text,
                 draft.floor_number,
+                draft.floor_number_max,
+                draft.building_floors,
+                draft.orientation_text,
+                draft.orientation_deg,
+                draft.orientation_source,
                 draft.point_text,
                 draft.availability_text,
                 draft.min_stay_days,
@@ -160,59 +169,89 @@ class Repository:
                 first_seen_at,
                 now,
                 draft.detail_scraped_at,
-                1 if draft.is_active else 0,
+                draft.is_active,
                 catalog_daily,
             ),
         )
         if not property_id:
-            property_id = cur.lastrowid
+            property_id = cur.fetchone()["id"]
 
         # Replace children
-        cur.execute("DELETE FROM property_accesses WHERE property_id = ?", (property_id,))
+        cur.execute("DELETE FROM property_accesses WHERE property_id = %s", (property_id,))
         for a in draft.accesses:
             cur.execute(
                 """
                 INSERT INTO property_accesses
                 (property_id, line_name, station_name, walk_minutes, raw_text, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (property_id, a.line_name, a.station_name, a.walk_minutes, a.raw_text, a.sort_order),
             )
 
-        cur.execute("DELETE FROM property_images WHERE property_id = ?", (property_id,))
+        # 差分同期: DELETE→再INSERT だと再スクレイプのたびに media_id/fetch_status
+        # 等の取得状態が消えるため、残存URLは行を温存して表示属性のみ更新する。
+        seen_urls: set[str] = set()
+        draft_images: list[tuple[int, PropertyImage]] = []
         for i, img in enumerate(draft.images):
+            if img.image_url in seen_urls:
+                continue  # draft 内の URL 重複は最初の出現を採用(UNIQUE と整合)
+            seen_urls.add(img.image_url)
+            draft_images.append((i, img))  # i は sort_order fallback(従来挙動)
+
+        cur.execute(
+            "SELECT id, image_url FROM property_images WHERE property_id = %s",
+            (property_id,),
+        )
+        existing_images = {row["image_url"]: row["id"] for row in cur.fetchall()}
+
+        gone_urls = [url for url in existing_images if url not in seen_urls]
+        if gone_urls:
             cur.execute(
-                """
-                INSERT OR IGNORE INTO property_images
-                (property_id, image_url, image_type, alt_text, sort_order, scraped_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (property_id, img.image_url, img.image_type, img.alt_text, img.sort_order or i, now),
+                "DELETE FROM property_images"
+                " WHERE property_id = %s AND image_url = ANY(%s)",
+                (property_id, gone_urls),
             )
 
-        cur.execute("DELETE FROM property_links WHERE property_id = ?", (property_id,))
+        for fallback_order, img in draft_images:
+            sort_order = img.sort_order if img.sort_order is not None else fallback_order
+            if img.image_url in existing_images:
+                cur.execute(
+                    """
+                    UPDATE property_images
+                    SET sort_order = %s, image_type = %s, alt_text = %s, scraped_at = %s
+                    WHERE id = %s
+                    """,
+                    (sort_order, img.image_type, img.alt_text, now,
+                     existing_images[img.image_url]),
+                )
+            else:
+                # 新規URL: fetch_status は DEFAULT 'pending'(media_id は NULL)
+                cur.execute(
+                    """
+                    INSERT INTO property_images
+                    (property_id, image_url, image_type, alt_text, sort_order, scraped_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (property_id, img.image_url, img.image_type, img.alt_text,
+                     sort_order, now),
+                )
+
+        cur.execute("DELETE FROM property_links WHERE property_id = %s", (property_id,))
         for link in draft.links:
             cur.execute(
                 """
-                INSERT OR IGNORE INTO property_links
+                INSERT INTO property_links
                 (property_id, link_type, url, label, scraped_at)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
                 """,
                 (property_id, link.link_type, link.url, link.label, now),
             )
 
-        cur.execute("DELETE FROM property_features WHERE property_id = ?", (property_id,))
-        for f in draft.features:
-            cur.execute(
-                """
-                INSERT OR IGNORE INTO property_features
-                (property_id, feature_name, feature_category, raw_text)
-                VALUES (?, ?, ?, ?)
-                """,
-                (property_id, f.feature_name, f.feature_category, f.raw_text),
-            )
+        self._replace_features(cur, property_id, draft.features)
 
-        cur.execute("DELETE FROM price_plans WHERE property_id = ?", (property_id,))
+        cur.execute("DELETE FROM price_plans WHERE property_id = %s", (property_id,))
         for p in draft.price_plans:
             cur.execute(
                 """
@@ -221,7 +260,7 @@ class Repository:
                     available, presentation_unit, rent_original_yen, rent_current_yen,
                     management_yen, utilities_yen, utilities_included, cleaning_yen,
                     campaign_label, raw_text, scraped_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     property_id,
@@ -229,13 +268,13 @@ class Repository:
                     p.plan_name,
                     p.duration_min_days,
                     p.duration_max_days,
-                    1 if p.available else 0,
+                    p.available,
                     p.presentation_unit,
                     p.rent_original_yen,
                     p.rent_current_yen,
                     p.management_yen,
                     p.utilities_yen,
-                    1 if p.utilities_included else 0,
+                    p.utilities_included,
                     p.cleaning_yen,
                     p.campaign_label,
                     p.raw_text,
@@ -243,7 +282,7 @@ class Repository:
                 ),
             )
 
-        cur.execute("DELETE FROM campaigns WHERE property_id = ?", (property_id,))
+        cur.execute("DELETE FROM campaigns WHERE property_id = %s", (property_id,))
         for c in draft.campaigns:
             cur.execute(
                 """
@@ -255,7 +294,7 @@ class Repository:
                     package_rent_benefit_yen, package_cleaning_benefit_yen,
                     package_fee_benefit_yen, package_total_benefit_yen,
                     structure_source, parse_ok, parse_warnings, raw_json, scraped_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     property_id,
@@ -290,119 +329,137 @@ class Repository:
             """
             INSERT INTO property_snapshots (
                 property_id, scraped_at, is_active, catalog_rent_per_day_yen,
-                raw_list_json, raw_detail_json, raw_html_path, parser_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                raw_html_path, parser_version
+            ) VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (
                 property_id,
                 now,
-                1 if draft.is_active else 0,
+                draft.is_active,
                 catalog_daily,
-                draft.raw_list_json,
-                draft.raw_detail_json,
                 draft.raw_html_path,
                 draft.parser_version,
             ),
         )
 
+        # 建物割当(建物集約設計 §5 第 1 段 — 同一トランザクション内の決定的名寄せ。
+        # address_key 完全一致のみ・読み取り+building 割当の最小処理)
+        assign_building(cur, property_id)
+
         conn.commit()
         return int(property_id)
+
+    @staticmethod
+    def _replace_features(
+        cur: psycopg.Cursor, property_id: int, features: list[PropertyFeature]
+    ) -> None:
+        cur.execute("DELETE FROM property_features WHERE property_id = %s", (property_id,))
+        for f in features:
+            category = f.category
+            if category is None:
+                # 旧フィールド名(feature_category)からの移行互換(テスト FIXTURE 等)
+                category = getattr(f, "feature_category", None)
+            cur.execute(
+                """
+                INSERT INTO property_features
+                (property_id, feature_name, category)
+                VALUES (%s, %s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (property_id, f.feature_name, category),
+            )
+
+    def replace_features(self, property_id: int, features: list[PropertyFeature]) -> None:
+        """features 行を差し替える(再パース等のデータ修正用・単一トランザクション)。"""
+        with self._conn() as conn:
+            self._replace_features(conn.cursor(), property_id, features)
+            conn.commit()
+
+    def update_floors(
+        self,
+        property_id: int,
+        floors_text: str | None,
+        floor_number: int | None,
+        floor_number_max: int | None,
+        building_floors: int | None,
+    ) -> None:
+        """階数 4 列を差し替える(reparse-floors 等のデータ修正用・単一トランザクション)。"""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE properties
+                SET floors_text = %s, floor_number = %s,
+                    floor_number_max = %s, building_floors = %s
+                WHERE id = %s
+                """,
+                (floors_text, floor_number, floor_number_max, building_floors, property_id),
+            )
+            conn.commit()
+
+    def update_orientation(
+        self,
+        property_id: int,
+        orientation_text: str | None,
+        orientation_deg: int | None,
+        orientation_source: str | None,
+    ) -> None:
+        """向き 3 列を差し替える(reparse-orientation 等のデータ修正用・単一トランザクション)。"""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE properties
+                SET orientation_text = %s, orientation_deg = %s, orientation_source = %s
+                WHERE id = %s
+                """,
+                (orientation_text, orientation_deg, orientation_source, property_id),
+            )
+            conn.commit()
+
+    def update_point_text(self, property_id: int, point_text: str | None) -> None:
+        """紹介文(point_text)を差し替える(reparse-point 等のデータ修正用・単一トランザクション)。"""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE properties SET point_text = %s WHERE id = %s",
+                (point_text, property_id),
+            )
+            conn.commit()
 
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
 
-    def get_property(self, property_id: int) -> dict[str, Any] | None:
-        """生の properties 行 + 子テーブル行を取得する.
-
-        本番コードからは未使用で、tests (upsert 後の行検証 / calculate_stay_total への
-        price_plans 供給) が意図して使用している。get_property_detail
-        (store.queries.detail) が契約モデル互換の応答を返すのに対し、本メソッドは
-        DB 行の素通しである点が違い。将来 get_property_detail の行取得基盤として
-        再利用する可能性を残すため保持するが、共通化リファクタは未実施。
-        """
-        conn = self.connect()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM properties WHERE id = ?", (property_id,))
-            row = cur.fetchone()
-            if not row:
-                return None
-            prop = dict(row)
-            prop["price_plans"] = [
-                dict(r)
-                for r in cur.execute(
-                    "SELECT * FROM price_plans WHERE property_id = ? ORDER BY duration_min_days",
-                    (property_id,),
-                )
-            ]
-            prop["campaigns"] = [
-                dict(r)
-                for r in cur.execute(
-                    "SELECT * FROM campaigns WHERE property_id = ?",
-                    (property_id,),
-                )
-            ]
-            prop["accesses"] = [
-                dict(r)
-                for r in cur.execute(
-                    "SELECT * FROM property_accesses WHERE property_id = ? ORDER BY sort_order",
-                    (property_id,),
-                )
-            ]
-            prop["images"] = [
-                dict(r)
-                for r in cur.execute(
-                    "SELECT * FROM property_images WHERE property_id = ? ORDER BY sort_order",
-                    (property_id,),
-                )
-            ]
-            prop["features"] = [
-                dict(r)
-                for r in cur.execute(
-                    "SELECT * FROM property_features WHERE property_id = ?",
-                    (property_id,),
-                )
-            ]
-            return prop
-        finally:
-            conn.close()
 
     def count_by_source(self) -> dict[str, int]:
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT source_site, COUNT(*) AS n
                 FROM properties
-                WHERE is_active = 1
+                WHERE is_active
                 GROUP BY source_site
                 """
             )
             return {r["source_site"]: r["n"] for r in rows}
-        finally:
-            conn.close()
 
     def counts_by_prefecture(
         self, source_site: str | None = None
     ) -> dict[str, dict[str, dict[str, Any]]]:
         """Return {source_site: {pref_slug: {total, active, missing_coords, last_seen_at, last_detail_scraped_at, prefecture_name}}}."""
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             sql = """
                 SELECT source_site,
                        COALESCE(prefecture_slug, '') AS prefecture_slug,
                        MAX(prefecture_name) AS prefecture_name,
                        COUNT(*) AS total,
-                       SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active,
-                       SUM(CASE WHEN is_active = 1 AND (lat IS NULL OR lng IS NULL) THEN 1 ELSE 0 END) AS missing_coords,
+                       SUM(CASE WHEN is_active THEN 1 ELSE 0 END) AS active,
+                       SUM(CASE WHEN is_active AND (lat IS NULL OR lng IS NULL) THEN 1 ELSE 0 END) AS missing_coords,
                        MAX(last_seen_at) AS last_seen_at,
                        MAX(detail_scraped_at) AS last_detail_scraped_at
                 FROM properties
             """
             params: list[Any] = []
             if source_site:
-                sql += " WHERE source_site = ?"
+                sql += " WHERE source_site = %s"
                 params.append(source_site)
             sql += " GROUP BY source_site, COALESCE(prefecture_slug, '')"
             out: dict[str, dict[str, dict[str, Any]]] = {}
@@ -418,8 +475,6 @@ class Repository:
                     "prefecture_name": row["prefecture_name"],
                 }
             return out
-        finally:
-            conn.close()
 
     def fail_stale_running_runs(self) -> int:
         """Close scrape runs/targets left 'running' by a crash or restart.
@@ -428,35 +483,34 @@ class Repository:
         新タスク開始時に残っている running 行はプロセス死亡の残骸と確定できる。
         放置すると running_scrape_targets の 12 時間ウィンドウ内は admin UI の
         is_running 表示(ローディング/ハイライト)が消えないままになる。
-        Returns the number of aborted run rows.
+        Returns the number of aborted rows (scrape_runs + scrape_run_targets).
         """
-        now = datetime.now().isoformat()
+        now = now_iso()
         summary = "aborted: run interrupted by process restart"
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
                 UPDATE scrape_run_targets SET
-                    finished_at = ?, status = 'aborted',
-                    error_summary = COALESCE(error_summary, ?)
+                    finished_at = %s, status = 'aborted',
+                    error_summary = COALESCE(error_summary, %s)
                 WHERE finished_at IS NULL AND status = 'running'
                 """,
                 (now, summary),
             )
+            aborted_targets = cur.rowcount or 0
             cur.execute(
                 """
                 UPDATE scrape_runs SET
-                    finished_at = ?, status = 'aborted',
-                    error_summary = COALESCE(error_summary, ?)
+                    finished_at = %s, status = 'aborted',
+                    error_summary = COALESCE(error_summary, %s)
                 WHERE finished_at IS NULL AND status = 'running'
                 """,
                 (now, summary),
             )
+            aborted_runs = cur.rowcount or 0
             conn.commit()
-            return cur.rowcount or 0
-        finally:
-            conn.close()
+            return aborted_targets + aborted_runs
 
     def running_scrape_targets(
         self, source_site: str, *, within_hours: int = 12
@@ -467,23 +521,20 @@ class Repository:
         and a start-time window.
         """
         cutoff = (datetime.now() - timedelta(hours=within_hours)).isoformat()
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT DISTINCT srt.target_key
                 FROM scrape_run_targets srt
                 INNER JOIN scrape_runs sr ON sr.id = srt.run_id
-                WHERE srt.source_site = ?
+                WHERE srt.source_site = %s
                   AND srt.finished_at IS NULL
                   AND sr.status = 'running'
-                  AND srt.started_at >= ?
+                  AND srt.started_at >= %s
                 """,
                 (source_site, cutoff),
             )
             return {r["target_key"] for r in rows}
-        finally:
-            conn.close()
 
     def latest_scrape_runs_by_target(
         self, source_site: str | None = None
@@ -492,8 +543,7 @@ class Repository:
 
         Returns {source_site: {target_key: {finished_at, status, list_items, detail_ok, detail_fail, run_id}}}.
         """
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             # Prefer finished_at, fall back to started_at for still-running rows
             sql = """
                 SELECT srt.id, srt.run_id, srt.source_site, srt.target_key,
@@ -510,7 +560,7 @@ class Repository:
             """
             params: list[Any] = []
             if source_site:
-                sql += " WHERE srt.source_site = ?"
+                sql += " WHERE srt.source_site = %s"
                 params.append(source_site)
             out: dict[str, dict[str, dict[str, Any]]] = {}
             for row in conn.execute(sql, params):
@@ -529,8 +579,6 @@ class Repository:
                     "last_run_at": row["finished_at"] or row["started_at"],
                 }
             return out
-        finally:
-            conn.close()
 
     def recent_scrape_runs(self, limit: int = 8) -> list[dict[str, Any]]:
         """Recent scrape_runs rows (newest first) for the admin UI.
@@ -538,8 +586,7 @@ class Repository:
         Survives process restarts unlike in-memory TASK_STATUS, so the FE can
         show the outcome of e.g. a nightly rotation run after a redeploy.
         """
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT id, source_site, started_at, finished_at, status,
@@ -547,13 +594,11 @@ class Repository:
                        error_summary
                 FROM scrape_runs
                 ORDER BY id DESC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
-        finally:
-            conn.close()
 
     def mark_inactive_missing(
         self,
@@ -563,14 +608,13 @@ class Repository:
         prefecture_slug: str | None = None,
     ) -> int:
         """Mark properties not in seen set as inactive. Returns rows updated."""
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             cur = conn.cursor()
             if prefecture_slug:
                 cur.execute(
                     """
                     SELECT id, external_id FROM properties
-                    WHERE source_site = ? AND prefecture_slug = ? AND is_active = 1
+                    WHERE source_site = %s AND prefecture_slug = %s AND is_active
                     """,
                     (source_site, prefecture_slug),
                 )
@@ -578,20 +622,18 @@ class Repository:
                 cur.execute(
                     """
                     SELECT id, external_id FROM properties
-                    WHERE source_site = ? AND is_active = 1
+                    WHERE source_site = %s AND is_active
                     """,
                     (source_site,),
                 )
             to_deactivate = [r["id"] for r in cur.fetchall() if r["external_id"] not in seen_external_ids]
             for pid in to_deactivate:
                 cur.execute(
-                    "UPDATE properties SET is_active = 0, last_seen_at = ? WHERE id = ?",
-                    (datetime.now().isoformat(), pid),
+                    "UPDATE properties SET is_active = FALSE, last_seen_at = %s WHERE id = %s",
+                    (now_iso(), pid),
                 )
             conn.commit()
             return len(to_deactivate)
-        finally:
-            conn.close()
 
     # ------------------------------------------------------------------
     # Shortlist
@@ -610,46 +652,78 @@ class Repository:
         解決済み properties.id への書込 (DELETE / INSERT..ON CONFLICT + commit)
         のみを担う。queries 側の公開 API は store.queries.detail.update_shortlist。
         """
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             cur = conn.cursor()
             if status in (None, "", "none"):
-                cur.execute("DELETE FROM shortlists WHERE property_id = ?", (property_id,))
+                cur.execute("DELETE FROM property_shortlists WHERE property_id = %s", (property_id,))
             else:
                 cur.execute(
                     """
-                    INSERT INTO shortlists (property_id, status, comment, updated_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO property_shortlists (property_id, status, comment, updated_at)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT(property_id) DO UPDATE SET
                         status = excluded.status,
-                        comment = COALESCE(excluded.comment, shortlists.comment),
+                        comment = COALESCE(excluded.comment, property_shortlists.comment),
                         updated_at = excluded.updated_at
                     """,
-                    (property_id, status, comment, datetime.now().isoformat()),
+                    (property_id, status, comment, now_iso()),
                 )
             conn.commit()
-        finally:
-            conn.close()
+
+    def update_building_shortlist(
+        self,
+        building_id: int,
+        status: str,
+        comment: str | None = None,
+    ) -> None:
+        """建物ショートリスト行を 1 建物分更新する (status が空系/'none' なら行削除).
+
+        部屋の update_shortlist と対称の同型テーブル。当面 status='saved'(+メモ)
+        のみ運用(API 層で検証)。buildings.id の存在検証は queries 層が担う。
+        """
+        with self._conn() as conn:
+            cur = conn.cursor()
+            if status in (None, "", "none"):
+                cur.execute(
+                    "DELETE FROM building_shortlists WHERE building_id = %s",
+                    (building_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO building_shortlists
+                        (building_id, status, comment, updated_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT(building_id) DO UPDATE SET
+                        status = excluded.status,
+                        comment = COALESCE(excluded.comment, building_shortlists.comment),
+                        updated_at = excluded.updated_at
+                    """,
+                    (building_id, status, comment, now_iso()),
+                )
+            conn.commit()
 
     # ------------------------------------------------------------------
     # Scrape runs
     # ------------------------------------------------------------------
 
     def start_scrape_run(self, source_site: str, meta: dict | None = None) -> int:
-        conn = self.connect()
-        try:
+        # rotation フラグは Phase 6b から is_rotation 列が正本(meta_json の
+        # LIKE 抽出は廃止)。meta から pop して残りを meta_json へ
+        meta = dict(meta or {})
+        is_rotation = bool(meta.pop("rotation", False))
+        with self._conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO scrape_runs (source_site, started_at, status, meta_json)
-                VALUES (?, ?, 'running', ?)
+                INSERT INTO scrape_runs (source_site, started_at, status, meta_json, is_rotation)
+                VALUES (%s, %s, 'running', %s, %s)
+                RETURNING id
                 """,
-                (source_site, datetime.now().isoformat(), json.dumps(meta or {}, ensure_ascii=False)),
+                (source_site, now_iso(), json.dumps(meta, ensure_ascii=False), is_rotation),
             )
             conn.commit()
-            return int(cur.lastrowid)
-        finally:
-            conn.close()
+            return int(cur.fetchone()["id"])
 
     def finish_scrape_run(
         self,
@@ -662,17 +736,16 @@ class Repository:
         detail_fail: int = 0,
         error_summary: str | None = None,
     ) -> None:
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             conn.execute(
                 """
                 UPDATE scrape_runs SET
-                    finished_at = ?, status = ?, list_pages = ?, list_items = ?,
-                    detail_ok = ?, detail_fail = ?, error_summary = ?
-                WHERE id = ?
+                    finished_at = %s, status = %s, list_pages = %s, list_items = %s,
+                    detail_ok = %s, detail_fail = %s, error_summary = %s
+                WHERE id = %s
                 """,
                 (
-                    datetime.now().isoformat(),
+                    now_iso(),
                     status,
                     list_pages,
                     list_items,
@@ -683,8 +756,6 @@ class Repository:
                 ),
             )
             conn.commit()
-        finally:
-            conn.close()
 
     def start_scrape_run_target(
         self,
@@ -692,21 +763,19 @@ class Repository:
         source_site: str,
         target_key: str,
     ) -> int:
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
                 INSERT INTO scrape_run_targets
                     (run_id, source_site, target_key, started_at, status)
-                VALUES (?, ?, ?, ?, 'running')
+                VALUES (%s, %s, %s, %s, 'running')
+                RETURNING id
                 """,
-                (run_id, source_site, target_key, datetime.now().isoformat()),
+                (run_id, source_site, target_key, now_iso()),
             )
             conn.commit()
-            return int(cur.lastrowid)
-        finally:
-            conn.close()
+            return int(cur.fetchone()["id"])
 
     def finish_scrape_run_target(
         self,
@@ -720,31 +789,28 @@ class Repository:
         error_summary: str | None = None,
         list_completed: bool = False,
     ) -> None:
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             conn.execute(
                 """
                 UPDATE scrape_run_targets SET
-                    finished_at = ?, status = ?, list_pages = ?, list_items = ?,
-                    detail_ok = ?, detail_fail = ?, error_summary = ?,
-                    list_completed = ?
-                WHERE id = ?
+                    finished_at = %s, status = %s, list_pages = %s, list_items = %s,
+                    detail_ok = %s, detail_fail = %s, error_summary = %s,
+                    list_completed = %s
+                WHERE id = %s
                 """,
                 (
-                    datetime.now().isoformat(),
+                    now_iso(),
                     status,
                     list_pages,
                     list_items,
                     detail_ok,
                     detail_fail,
                     error_summary,
-                    1 if list_completed else 0,
+                    list_completed,
                     target_run_id,
                 ),
             )
             conn.commit()
-        finally:
-            conn.close()
 
     # ------------------------------------------------------------------
     # Rotation state
@@ -761,12 +827,11 @@ class Repository:
         consecutive_failures: int | None = None,
     ) -> None:
         """Insert or partially update rotation_state row. Non-None fields only on update."""
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             cur = conn.cursor()
-            now = datetime.now().isoformat()
+            now = now_iso()
             cur.execute(
-                "SELECT 1 FROM rotation_state WHERE source_site = ? AND prefecture_slug = ?",
+                "SELECT 1 FROM rotation_state WHERE source_site = %s AND prefecture_slug = %s",
                 (source_site, prefecture_slug),
             )
             if cur.fetchone() is None:
@@ -775,7 +840,7 @@ class Repository:
                     INSERT INTO rotation_state
                         (source_site, prefecture_slug, known_total,
                          last_full_ok_at, last_run_at, consecutive_failures, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         source_site,
@@ -788,31 +853,29 @@ class Repository:
                     ),
                 )
             else:
-                sets = ["updated_at = ?"]
+                sets = ["updated_at = %s"]
                 params: list[Any] = [now]
                 if known_total is not None:
-                    sets.append("known_total = ?")
+                    sets.append("known_total = %s")
                     params.append(known_total)
                 if last_full_ok_at is not None:
-                    sets.append("last_full_ok_at = ?")
+                    sets.append("last_full_ok_at = %s")
                     params.append(last_full_ok_at)
                 if last_run_at is not None:
-                    sets.append("last_run_at = ?")
+                    sets.append("last_run_at = %s")
                     params.append(last_run_at)
                 if consecutive_failures is not None:
-                    sets.append("consecutive_failures = ?")
+                    sets.append("consecutive_failures = %s")
                     params.append(consecutive_failures)
                 params.extend([source_site, prefecture_slug])
                 cur.execute(
                     f"""
                     UPDATE rotation_state SET {', '.join(sets)}
-                    WHERE source_site = ? AND prefecture_slug = ?
+                    WHERE source_site = %s AND prefecture_slug = %s
                     """,
                     tuple(params),
                 )
             conn.commit()
-        finally:
-            conn.close()
 
     def bump_rotation_failures(
         self,
@@ -822,15 +885,14 @@ class Repository:
         last_run_at: str | None = None,
     ) -> None:
         """Record a failed rotation attempt: increment consecutive_failures atomically."""
-        now = datetime.now().isoformat()
+        now = now_iso()
         last_run_at = last_run_at or now
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             conn.execute(
                 """
                 INSERT INTO rotation_state
                     (source_site, prefecture_slug, last_run_at, consecutive_failures, updated_at)
-                VALUES (?, ?, ?, 1, ?)
+                VALUES (%s, %s, %s, 1, %s)
                 ON CONFLICT(source_site, prefecture_slug) DO UPDATE SET
                     consecutive_failures = COALESCE(rotation_state.consecutive_failures, 0) + 1,
                     last_run_at = excluded.last_run_at,
@@ -839,81 +901,69 @@ class Repository:
                 (source_site, prefecture_slug, last_run_at, now),
             )
             conn.commit()
-        finally:
-            conn.close()
 
     def load_rotation_states(self, source_site: str) -> list[dict]:
         """Return rotation_state rows for a source, ordered by prefecture_slug."""
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT prefecture_slug, known_total, last_full_ok_at, last_run_at,
                        consecutive_failures, updated_at
                 FROM rotation_state
-                WHERE source_site = ?
+                WHERE source_site = %s
                 ORDER BY prefecture_slug ASC
                 """,
                 (source_site,),
             )
             return [dict(r) for r in rows]
-        finally:
-            conn.close()
 
     def rotation_usage_today(self, source_site: str, now: datetime | None = None) -> int:
         """Sum of detail_ok for rotation-flagged runs started today (local time)."""
         now = now or datetime.now()
         start_of_day = datetime(now.year, now.month, now.day).isoformat()
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             row = conn.execute(
                 """
-                SELECT COALESCE(SUM(detail_ok), 0) FROM scrape_runs
-                WHERE source_site = ? AND started_at >= ?
-                  AND meta_json LIKE '%"rotation": true%'
+                SELECT COALESCE(SUM(detail_ok), 0) AS n FROM scrape_runs
+                WHERE source_site = %s AND started_at >= %s AND is_rotation
                 """,
                 (source_site, start_of_day),
             ).fetchone()
-            return int(row[0] or 0)
-        finally:
-            conn.close()
+            return int(row["n"] or 0)
 
     def seed_rotation_state(self, source_site: str, pref_catalog: list[str]) -> int:
         """Insert rotation_state rows for prefectures not yet tracked. Returns inserted count."""
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             cur = conn.cursor()
-            now = datetime.now().isoformat()
+            now = now_iso()
             inserted = 0
             for slug in pref_catalog:
                 cur.execute(
-                    "SELECT 1 FROM rotation_state WHERE source_site = ? AND prefecture_slug = ?",
+                    "SELECT 1 FROM rotation_state WHERE source_site = %s AND prefecture_slug = %s",
                     (source_site, slug),
                 )
                 if cur.fetchone() is not None:
                     continue
                 cur.execute(
                     """
-                    SELECT COUNT(*) FROM properties
-                    WHERE source_site = ? AND prefecture_slug = ?
+                    SELECT COUNT(*) AS n FROM properties
+                    WHERE source_site = %s AND prefecture_slug = %s
                     """,
                     (source_site, slug),
                 )
-                known_total = int(cur.fetchone()[0] or 0)
+                known_total = int(cur.fetchone()["n"] or 0)
                 cur.execute(
                     """
                     INSERT INTO rotation_state
                         (source_site, prefecture_slug, known_total,
                          last_full_ok_at, last_run_at, updated_at)
-                    VALUES (?, ?, ?, NULL, NULL, ?)
+                    VALUES (%s, %s, %s, NULL, NULL, %s)
                     """,
                     (source_site, slug, known_total, now),
                 )
                 inserted += 1
             conn.commit()
             return inserted
-        finally:
-            conn.close()
 
     # ------------------------------------------------------------------
     # Admin stats
@@ -922,35 +972,40 @@ class Repository:
     def db_stats(self) -> dict[str, Any]:
         """Admin status 用の DB 統計。
 
-        旧 web_server.py の /api/admin/status 直 SQL (properties / shortlists
+        旧 web_server.py の /api/admin/status 直 SQL (properties / property_shortlists
         の 4 集計) を web 層から Repository へ集約したもの。by_source は既存
         count_by_source() を再利用する。
         Returns {total_properties, missing_coordinates, shortlist, by_source}.
         """
-        conn = self.connect()
-        try:
+        with self._conn() as conn:
             cur = conn.cursor()
             total_properties = cur.execute(
-                "SELECT COUNT(*) FROM properties WHERE is_active = 1"
-            ).fetchone()[0]
+                "SELECT COUNT(*) AS n FROM properties WHERE is_active"
+            ).fetchone()["n"]
             missing_coordinates = cur.execute(
                 """
-                SELECT COUNT(*) FROM properties
-                WHERE is_active = 1 AND (lat IS NULL OR lng IS NULL)
+                SELECT COUNT(*) AS n FROM properties
+                WHERE is_active AND (lat IS NULL OR lng IS NULL)
                 """
-            ).fetchone()[0]
+            ).fetchone()["n"]
             shortlist_stats: dict[str, int] = {
                 row["status"]: row["n"]
                 for row in cur.execute(
-                    "SELECT status, COUNT(*) AS n FROM shortlists GROUP BY status"
+                    "SELECT status, COUNT(*) AS n FROM property_shortlists GROUP BY status"
                 )
             }
-        finally:
-            conn.close()
-        # by_source は既存メソッドを再利用 (集計条件は同一: is_active = 1)
+            building_shortlist_stats: dict[str, int] = {
+                row["status"]: row["n"]
+                for row in cur.execute(
+                    "SELECT status, COUNT(*) AS n FROM building_shortlists GROUP BY status"
+                )
+            }
+
+        # by_source は既存メソッドを再利用 (集計条件は同一: is_active)
         return {
             "total_properties": int(total_properties),
             "missing_coordinates": int(missing_coordinates),
             "shortlist": shortlist_stats,
+            "building_shortlist": building_shortlist_stats,
             "by_source": self.count_by_source(),
         }

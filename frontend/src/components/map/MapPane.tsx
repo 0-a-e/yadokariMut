@@ -1,12 +1,16 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet.markercluster';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import { FaVectorSquare, FaDrawPolygon, FaXmark, FaEraser } from 'react-icons/fa6';
-import { PropertyFeature, BoundsData } from '../../types.ts';
-import { getScoreColor } from '../../lib/score.ts';
+import type { BoundsData, BuildingFeature, PriceMode } from '../../types.ts';
+import { hiddenCountOf, savedCountOf, stayBandOfUnits } from '../../lib/building.ts';
+import { buildingPinColor, buildingTooltipHtml } from './buildingTooltip.ts';
+import { DEFAULT_CENTER, DEFAULT_ZOOM, FIT_BOUNDS_PADDING } from '../../lib/mapDefaults.ts';
 import { LayerEngine, PROPERTIES_PANE } from '../../lib/layers/engine.ts';
 import type { LayerConfigState } from '../../lib/layers/types.ts';
+import type { MapBackground } from '../../lib/feSettings.ts';
+import { useLatestRef } from '../../hooks/useLatestRef.ts';
 import { MapLegendControl } from './MapLegendControl.tsx';
 import { Button } from '@/components/ui/button.tsx';
 
@@ -17,19 +21,40 @@ function ensureGeoman(): Promise<unknown> {
   return geomanLoadPromise;
 }
 
-/** 囲みシェイプの表示色(accent) */
+/** 囲みシェイプの表示色(accent)。--color-primary は oklch 解決で #854dff と同値でないため hex 維持 */
 const SHAPE_COLOR = '#854dff';
 
 type DrawTool = 'rect' | 'polygon';
 
 interface MapPaneProps {
-  filteredFeatures: PropertyFeature[];
-  selectedId: number | null;
-  /** サイドバーカードのホバー中物件(ホバーハイライト連動) */
-  hoveredId: number | null;
+  /** ピン = 建物(B2-β)。1 Feature = 1 建物(代表座標)のマーカーを 1 つ */
+  buildings: BuildingFeature[];
+  /**
+   * フィルタ条件通過部屋 id 集合(worker 出力)。β の地図描画では未使用
+   * (部屋の一致強調はサイドバー建物カードの管轄)。App↔MapPane の契約対称性のため
+   * 受け取るのみで γ(建物パネルの一致強調等)で使用予定。
+   */
+  matchedRoomIds: Set<number>;
+  /**
+   * 選択中建物(ピンの .active とパン対象)。部屋選択(?id=)は App 側で
+   * 建物 id へ解決して渡す(γで ?b= 直持へ置き換え予定)。
+   */
+  selectedBuildingId: number | null;
+  /** サイドバーカードのホバー中建物(ホバーハイライト連動) */
+  hoveredBuildingId: number | null;
+  /** tooltip 2行目の帯差し替え用(stay モード時は units の期間総額帯) */
+  priceMode: PriceMode;
+  /** YYYY-MM-DD(stay 帯は units の stay_estimate 由来のため引数不要だが、
+   *  再計算トリガ検知のために checkIn/checkOut を受ける) */
+  checkIn: string;
+  checkOut: string;
   layerConfig: LayerConfigState;
-  /** 物件ピンのクラスタリング(未指定=true=クラスタあり) */
+  /** 建物ピンのクラスタリング(未指定=true=クラスタあり) */
   pinClustering: boolean;
+  /** 建物バルーン(tooltip)常時表示の保存値(実効値は pinClustering と掛けて算出) */
+  pinBalloonPermanent: boolean;
+  /** 最下レイヤ(基本地図)下に見えるコンテナ背景色(未指定='black'=従来の #1a1a24) */
+  mapBackground: MapBackground;
   /** 確定済みの囲み範囲([lng, lat][], null=未描画) */
   drawnPolygon: [number, number][] | null;
   /** 囲み描画モード(App側マスタスイッチ。trueで描画開始を要求) */
@@ -37,7 +62,8 @@ interface MapPaneProps {
   onDrawModeChange: (active: boolean) => void;
   onShapeDrawn: (polygon: [number, number][]) => void;
   onShapeClear: () => void;
-  onMarkerClick: (feature: PropertyFeature) => void;
+  /** ピン(建物)クリック。部屋詳細パネル経由の暫定導線は App 側(handleBuildingClick) */
+  onBuildingClick: (building: BuildingFeature) => void;
   onMapMove?: (center: [number, number], zoom: number, bounds: BoundsData) => void;
   onMapInit?: (map: L.Map, cluster: any) => void;
   /** When false, container may be hidden; set true to trigger invalidateSize. */
@@ -45,9 +71,11 @@ interface MapPaneProps {
 }
 
 export const MapPane: React.FC<MapPaneProps> = ({
-  filteredFeatures, selectedId, hoveredId, layerConfig, pinClustering,
+  buildings, selectedBuildingId, hoveredBuildingId,
+  priceMode, checkIn, checkOut, layerConfig, pinClustering, pinBalloonPermanent,
+  mapBackground,
   drawnPolygon, drawMode, onDrawModeChange, onShapeDrawn, onShapeClear,
-  onMarkerClick, onMapMove, onMapInit,
+  onBuildingClick, onMapMove, onMapInit,
   isVisible = true,
 }) => {
   const mapRef = useRef<HTMLDivElement>(null);
@@ -61,14 +89,22 @@ export const MapPane: React.FC<MapPaneProps> = ({
   /** 現行グループが markerClusterGroup かどうか(pinClustering トグルで作り直す) */
   const groupIsClusterRef = useRef<boolean>(pinClustering);
   /** 初期化effect内で最新propsを読むためのref */
-  const pinClusteringRef = useRef(pinClustering);
-  const onMapInitRef = useRef(onMapInit);
-  useEffect(() => {
-    pinClusteringRef.current = pinClustering;
-  }, [pinClustering]);
-  useEffect(() => {
-    onMapInitRef.current = onMapInit;
-  }, [onMapInit]);
+  const pinClusteringRef = useLatestRef(pinClustering);
+  const onMapInitRef = useLatestRef(onMapInit);
+  /** マーカーclick closure を最新に保つ(signature 未変化時の再構築を避ける) */
+  const onBuildingClickRef = useLatestRef(onBuildingClick);
+  /**
+   * 建物 properties 索引(stay 帯の tooltip 差し替え用)。useMemo で現行 buildings
+   * に追従するため、worker 再計算(checkIn/checkOut 変化)後の最新 stay_estimate
+   * を参照できる(marker 再構築 signature には stay 変化は含まれないため必須)。
+   */
+  const buildingPropsById = useMemo(
+    () => new Map(buildings.map((b) => [b.properties.id, b.properties])),
+    [buildings],
+  );
+
+  /** バルーン常時表示の実効値: クラスタ表示中は個別マーカーが描画されないため無効 */
+  const balloonPermanent = pinBalloonPermanent && !pinClustering;
 
   // ── 囲み描画(Geoman) ──
   const [uiTool, setUiTool] = useState<DrawTool | null>(null);
@@ -77,12 +113,9 @@ export const MapPane: React.FC<MapPaneProps> = ({
   const shapeLayerRef = useRef<L.Polygon | null>(null);
   const prevShapeSigRef = useRef('');
   const lastToolRef = useRef<DrawTool>('rect');
-  const onShapeDrawnRef = useRef(onShapeDrawn);
-  const onShapeClearRef = useRef(onShapeClear);
-  const onDrawModeChangeRef = useRef(onDrawModeChange);
-  useEffect(() => { onShapeDrawnRef.current = onShapeDrawn; }, [onShapeDrawn]);
-  useEffect(() => { onShapeClearRef.current = onShapeClear; }, [onShapeClear]);
-  useEffect(() => { onDrawModeChangeRef.current = onDrawModeChange; }, [onDrawModeChange]);
+  const onShapeDrawnRef = useLatestRef(onShapeDrawn);
+  const onShapeClearRef = useLatestRef(onShapeClear);
+  const onDrawModeChangeRef = useLatestRef(onDrawModeChange);
 
   /** pm:create を一度だけ配線。確定時に頂点抽出して App へ(表示は drawnPolygon props の effect が担う) */
   const wireGeoman = (map: L.Map) => {
@@ -209,7 +242,10 @@ export const MapPane: React.FC<MapPaneProps> = ({
   useEffect(() => {
     if (!mapRef.current || mapInstanceRef.current) return;
 
-    const map = L.map(mapRef.current, { zoomControl: false, maxZoom: 20 }).setView([35.6812, 139.7671], 13);
+    const map = L.map(mapRef.current, { zoomControl: false, maxZoom: 20 }).setView(
+      DEFAULT_CENTER,
+      DEFAULT_ZOOM,
+    );
     mapInstanceRef.current = map;
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
@@ -281,6 +317,14 @@ export const MapPane: React.FC<MapPaneProps> = ({
     layerEngineRef.current?.syncProperties(layerConfig.properties);
   }, [layerConfig]);
 
+  // 基底背景色トグル: 背景を持つのは container のみ(#map 既定 #1a1a24)のため
+  // 白選択時のみクラス付与で上書きする(LayerPanel「基底の背景色」)
+  useEffect(() => {
+    const el = mapInstanceRef.current?.getContainer();
+    if (!el) return;
+    el.classList.toggle('map-bg-light', mapBackground === 'white');
+  }, [mapBackground]);
+
   // pinClustering トグル: markercluster に実行時トグルAPIは無いため
   // グループを作り直し、markersRef の現行マーカーを新しいグループへ再投入する
   useEffect(() => {
@@ -311,7 +355,16 @@ export const MapPane: React.FC<MapPaneProps> = ({
     const cluster = clusterGroupRef.current;
     if (!map || !cluster) return;
 
-    const signature = filteredFeatures.map(f => `${f.properties.id}-${f.properties.shortlist_status}`).join(',');
+    // 常時表示トグルでも再構築させるため実効値をsignatureに含める。
+    // units 内の stay_estimate 変化は含めない(設計 §4.1: 価格変化で再構築しない
+    // 現行挙動と対称。stay 帯は別 effect が tooltip 差し替えのみで追従)
+    const signature =
+      buildings
+        .map(
+          (b) =>
+            `${b.properties.id}:${b.properties.units.length}:${savedCountOf(b.properties)}:${hiddenCountOf(b.properties)}:${b.properties.is_active}:${b.properties.shortlist_status ?? ''}`,
+        )
+        .join(',') + (balloonPermanent ? '|P' : '');
     if (signature === prevFeatureSignatureRef.current) {
       return;
     }
@@ -321,66 +374,47 @@ export const MapPane: React.FC<MapPaneProps> = ({
     markersRef.current = {};
 
     const markers: L.Marker[] = [];
-    filteredFeatures.forEach((feat) => {
-      const coords = feat.geometry?.coordinates;
+    buildings.forEach((b) => {
+      const coords = b.geometry?.coordinates;
       if (!coords || coords.length < 2) return;
 
       const latlng: L.LatLngExpression = [coords[1], coords[0]];
-      const score = feat.properties.total_score || 0;
-      const color = getScoreColor(score);
-      const scoreRound = Math.round(score);
+      // ピン内数値ラベルは active_units_count 転用(スコア表示の代替・§4.1)。
+      // 色は2値: active=既定 / all_inactive=グレー(getScoreColor 廃止)
+      const color = buildingPinColor(b.properties, savedCountOf(b.properties) > 0);
+      const label = b.properties.active_units_count ?? b.properties.units.length;
 
       const html = `
         <div class="custom-div-icon">
-          <div class="marker-pin" style="background-color: ${color};" id="marker-pin-${feat.properties.id}"></div>
-          <div class="marker-label">${scoreRound}</div>
+          <div class="marker-pin" style="background-color: ${color};" id="marker-pin-${b.properties.id}"></div>
+          <div class="marker-label">${label}</div>
         </div>`;
 
       const icon = L.divIcon({ html, iconSize: [32, 32], iconAnchor: [16, 32], className: '' });
-      const marker = L.marker(latlng, { icon, pane: PROPERTIES_PANE }).on('click', () => onMarkerClick(feat));
+      const marker = L.marker(latlng, { icon, pane: PROPERTIES_PANE }).on('click', () =>
+        onBuildingClickRef.current(b),
+      );
 
-      // Bind custom tooltip showing details and active campaigns
-      // BE campaigns に is_active 列は無い(常時有効)。掲載中判定は日付で行う
-      const activeCampaigns = feat.properties.campaigns ?? [];
-      
-      const campaignBadges = activeCampaigns.length > 0
-        ? `<div class="mt-1 flex flex-wrap gap-1">
-            ${activeCampaigns.map(c => `
-              <span style="background-color: rgba(0, 230, 118, 0.12); color: #00e676; border: 1px solid rgba(0, 230, 118, 0.3); border-radius: 4px; padding: 2px 4px; font-size: calc(9px * var(--font-scale)); font-weight: 700; display: inline-flex; align-items: center; gap: 2px; white-space: nowrap;">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" style="width:9px;height:9px;display:inline;fill:#00e676;margin-right:2px"><path d="M0 80V229.5c0 17 6.7 33.3 18.7 45.3L176 432c24.9 24.9 65.4 24.9 90.3 0L421.3 278.3c24.9-24.9 24.9-65.4 0-90.3L263.8 30.3C252.8 19.3 236.5 4.7 224 0H80C35.8 0 0 35.8 0 80zm112 48a32 32 0 1 1 0 64 32 32 0 1 1 0-64z"/></svg>${(c.title ?? '').length > 12 ? (c.title ?? '').substring(0, 12) + '...' : (c.title ?? '')}
-              </span>
-            `).join('')}
-           </div>`
-        : '';
-        
-      const tooltipContent = `
-        <div style="padding: 6px; font-family: 'Outfit', 'Noto Sans JP', sans-serif;">
-          <div style="font-weight: 700; font-size: calc(11px * var(--font-scale)); color: #fff; margin-bottom: 2px;">${feat.properties.title}</div>
-          <div style="font-size: calc(10px * var(--font-scale)); color: #8e95a5; margin-bottom: 4px;">
-            ${feat.properties.layout} | ${feat.properties.area_m2 ? `${feat.properties.area_m2}㎡` : '広さ不明'} | ${feat.properties.min_walk_minutes ? `徒歩${feat.properties.min_walk_minutes}分` : '徒歩不明'}
-          </div>
-          <div style="font-weight: 700; font-size: calc(11px * var(--font-scale)); color: #00f2fe;">
-            ${
-              feat.properties.stay_estimate?.ok &&
-              feat.properties.stay_estimate.stayTotalYen != null
-                ? `${feat.properties.stay_estimate.stayTotalYen.toLocaleString()}円（${feat.properties.stay_estimate.stayDays}日）`
-                : feat.properties.min_daily_rent
-                  ? `${feat.properties.min_daily_rent.toLocaleString()}円/日`
-                  : '詳細参照'
-            }
-          </div>
-          ${campaignBadges}
-        </div>
-      `;
-      
+      // バルーンは DOM(inline style / SVG)なのでテーマ色は var() 参照で正本
+      // (index.css @theme)に追従できる。生成は buildingTooltip.ts(純関数)へ切り出し
+      const stayMode = priceMode === 'stay';
+      const tooltipContent = buildingTooltipHtml(
+        b.properties,
+        stayMode ? stayBandOfUnits(b.properties.units) : null,
+      );
+
       marker.bindTooltip(tooltipContent, {
         direction: 'top',
         offset: [0, -26],
         className: 'leaflet-custom-tooltip border border-border bg-panel backdrop-blur-glass shadow-lg rounded-lg text-text',
-        sticky: false
+        sticky: false,
+        // 建物ピンpaneに載せる(tooltipPane のままだとピン非表示中もバルーンが
+        // 残り、行の不透明度も効かない)。pane CSS経由で両方に追従する
+        permanent: balloonPermanent,
+        pane: PROPERTIES_PANE,
       });
 
-      markersRef.current[feat.properties.id] = marker;
+      markersRef.current[b.properties.id] = marker;
       markers.push(marker);
     });
 
@@ -394,9 +428,22 @@ export const MapPane: React.FC<MapPaneProps> = ({
       isFirstLoadRef.current = false;
       // クラスタ有無によらず全マーカーが収まる範囲へフィット
       const bounds = L.latLngBounds(markers.map((m) => m.getLatLng()));
-      map.fitBounds(bounds, { padding: [50, 50] });
+      map.fitBounds(bounds, { padding: FIT_BOUNDS_PADDING });
     }
-  }, [filteredFeatures, onMarkerClick]);
+  }, [buildings, balloonPermanent]);
+
+  // stay モードの価格帯(priceMode/checkIn/checkOut)はマーカー再構築に含めず、
+  // 既存マーカーの tooltip 差し替え(setTooltipContent)のみで追従する(§4.1)。
+  // buildings の変化でも再適用し(useMemo 索引経由で最新 stay_estimate を参照)、
+  // マーカー再構築後の内容もここで確定させる
+  useEffect(() => {
+    const stayMode = priceMode === 'stay';
+    for (const [idStr, marker] of Object.entries(markersRef.current)) {
+      const p = buildingPropsById.get(Number(idStr));
+      if (!p) continue;
+      marker.setTooltipContent(buildingTooltipHtml(p, stayMode ? stayBandOfUnits(p.units) : null));
+    }
+  }, [buildingPropsById, priceMode, checkIn, checkOut]);
 
   useEffect(() => {
     document.querySelectorAll('.marker-pin').forEach((el) => {
@@ -405,15 +452,15 @@ export const MapPane: React.FC<MapPaneProps> = ({
       pin.style.borderColor = '#fff';
     });
 
-    if (selectedId === null) return;
+    if (selectedBuildingId === null) return;
 
-    const pin = document.getElementById(`marker-pin-${selectedId}`);
+    const pin = document.getElementById(`marker-pin-${selectedBuildingId}`);
     if (pin) {
       pin.classList.add('active');
       pin.style.borderColor = 'var(--accent)';
     }
 
-    const marker = markersRef.current[selectedId];
+    const marker = markersRef.current[selectedBuildingId];
     const cluster = clusterGroupRef.current;
     const map = mapInstanceRef.current;
     if (marker && typeof marker.getLatLng === 'function' && map) {
@@ -451,7 +498,7 @@ export const MapPane: React.FC<MapPaneProps> = ({
         }
       }
     }
-  }, [selectedId]);
+  }, [selectedBuildingId]);
 
   // ── サイドバーホバー連動ハイライト ──
   // ピンが見える状態なら .hovered で拡大、クラスタ内なら正確な位置に
@@ -461,10 +508,7 @@ export const MapPane: React.FC<MapPaneProps> = ({
   const hoverZBoostRef = useRef<L.Marker | null>(null);
   const hoverGhostRef = useRef<L.Marker | null>(null);
   const hoverClusterElRef = useRef<HTMLElement | null>(null);
-  const hoveredIdRef = useRef<number | null>(null);
-  useEffect(() => {
-    hoveredIdRef.current = hoveredId;
-  }, [hoveredId]);
+  const hoveredBuildingIdRef = useLatestRef(hoveredBuildingId);
 
   /** ホバー演出の全消去(冪等) */
   const clearHoverFx = () => {
@@ -484,10 +528,10 @@ export const MapPane: React.FC<MapPaneProps> = ({
     hoverClusterElRef.current = null;
   };
 
-  /** hoveredId の演出適用(markercluster再構築後も冪等に再適用できる) */
+  /** hoveredBuildingId の演出適用(markercluster再構築後も冪等に再適用できる) */
   const applyHoverFx = () => {
     const map = mapInstanceRef.current;
-    const id = hoveredIdRef.current;
+    const id = hoveredBuildingIdRef.current;
     const marker = id != null ? markersRef.current[id] : undefined;
     if (!map || !marker) return;
     // 物件レイヤ非表示中は演出しない(ゴーストピンはpane外に直接addするため
@@ -535,21 +579,22 @@ export const MapPane: React.FC<MapPaneProps> = ({
 
   useEffect(() => {
     clearHoverFx();
-    if (hoveredId === null) return;
+    if (hoveredBuildingId === null) return;
     // 120ms遅延: リスト流し読み時の連切替で演出がちらつくのを防ぐ
     hoverTimerRef.current = window.setTimeout(() => {
       hoverTimerRef.current = null;
       applyHoverFx();
     }, 120);
     return () => clearHoverFx();
-  }, [hoveredId, filteredFeatures, pinClustering]);
+    // balloonPermanent: マーカー再構築(常時表示トグル)後も演出を張り直す
+  }, [hoveredBuildingId, buildings, pinClustering, balloonPermanent]);
 
   // ホバー中のパン/ズームでピンのクラスタ内外が変わったら演出を張り直す
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
     const handleMoveEnd = () => {
-      if (hoveredIdRef.current === null) return;
+      if (hoveredBuildingIdRef.current === null) return;
       clearHoverFx();
       window.setTimeout(applyHoverFx, 0);
     };

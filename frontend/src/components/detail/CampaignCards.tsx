@@ -5,24 +5,17 @@ import React from 'react';
 import type { Campaign } from '../../types.ts';
 import { Badge } from '@/components/ui/badge.tsx';
 import { Card } from '@/components/ui/card.tsx';
+import { formatYen } from '../../lib/format.ts';
 import { FaRegCalendar, FaCircleInfo } from 'react-icons/fa6';
-
-const PLAN_NAME_MAP: Record<string, string> = {
-  s_short: 'Sショートプラン',
-  short: 'ショートプラン',
-  middle: 'ミドルプラン',
-  long: 'ロングプラン',
-  all: 'すべてのプラン',
-  UNKNOWN: '対象プラン不明',
-};
 
 export const CampaignCards: React.FC<{ campaigns: Campaign[] }> = ({ campaigns }) => {
   return (
     <div className="flex flex-col gap-2.5 mt-1">
       {campaigns.map((cam, idx) => {
-        const planName = cam.target_plan_code
-          ? PLAN_NAME_MAP[cam.target_plan_code] || cam.target_plan_code
-          : null;
+        // 表示の正は BE 解決の target_plan_label(設計 §3.6。all=すべてのプラン含む)。
+        // 欠損(旧キャッシュ)時のみ target_plan_code 生値にフォールバック。
+        const planName = cam.target_plan_label
+          || (cam.target_plan_code ? cam.target_plan_code : null);
         // BE campaigns に is_active / date_end_unknown 列は無い(常時有効扱い)
 
         return (
@@ -53,7 +46,7 @@ export const CampaignCards: React.FC<{ campaigns: Campaign[] }> = ({ campaigns }
             {(() => {
               const structBits: string[] = [];
               if (cam.discount_unit === 'yen' && cam.discount_value != null) {
-                structBits.push(`日額 ${cam.discount_value.toLocaleString()}円引き`);
+                structBits.push(`日額 ${formatYen(cam.discount_value)}引き`);
               } else if (
                 cam.discount_unit === 'percent' &&
                 cam.discount_value != null
@@ -64,14 +57,14 @@ export const CampaignCards: React.FC<{ campaigns: Campaign[] }> = ({ campaigns }
                 cam.package_total_benefit_yen != null
               ) {
                 structBits.push(
-                  `お得額 最大${cam.package_total_benefit_yen.toLocaleString()}円`
+                  `お得額 最大${formatYen(cam.package_total_benefit_yen)}`
                 );
               } else if (
                 cam.discount_unit === 'pokkiri' &&
                 cam.discount_value != null
               ) {
                 structBits.push(
-                  `月額 ${cam.discount_value.toLocaleString()}円ポッキリ`
+                  `月額 ${formatYen(cam.discount_value)}ポッキリ`
                 );
               } else if (cam.discount_unit === 'free_first_week') {
                 structBits.push('初週無料');
@@ -79,7 +72,7 @@ export const CampaignCards: React.FC<{ campaigns: Campaign[] }> = ({ campaigns }
               if (cam.period_max_days != null)
                 structBits.push(`最大${cam.period_max_days}日適用`);
               if (cam.discount_max_yen != null)
-                structBits.push(`上限${cam.discount_max_yen.toLocaleString()}円`);
+                structBits.push(`上限${formatYen(cam.discount_max_yen)}`);
               if (cam.stay_min_days != null || cam.stay_max_days != null) {
                 const a =
                   cam.stay_min_days != null ? `${cam.stay_min_days}日` : '';

@@ -10,34 +10,43 @@ from store.pref_master import pref_display_name
 
 # Declarative metadata — new sites only need a registry adapter + entry here
 # (and optional config.json sources.<id> block).
+# contract_fee_yen は全エントリで必須(0円も明示)。書き忘れはテスト
+# (tests/test_site_contract_fee.py)で検出する。
 SOURCE_CATALOG: list[dict[str, Any]] = [
+    # 表示名はカタログに持たせず SOURCE_DISPLAY のみに置く (SSOT)。
     {
         "id": "bratto",
-        "display_name": "BraTTo",
         "description": "000area-weekly.com（全国）",
         "default_pages": 5,
         "supports_all_pages": True,
         "default_mark_inactive": True,
+        "contract_fee_yen": 5500,
     },
     {
         "id": "unionmonthly",
-        "display_name": "ユニオンマンスリー",
         "description": "unionmonthly.jp（東京・神奈川・千葉・埼玉・茨城）",
         "default_pages": None,  # None → all pages preferred for small footprint
         "supports_all_pages": True,
         "default_mark_inactive": True,
         "default_all_pages": True,
+        "contract_fee_yen": 0,
     },
     # Future (not registered yet — shown as unavailable until adapter exists):
-    # {"id": "tokyomonthly", "display_name": "東京マンスリー", ...},
-    # {"id": "tm21", "display_name": "東京マンスリー21", ...},
-    # {"id": "goodmonthly", "display_name": "グッドマンスリー", ...},
+    # {"id": "tokyomonthly", ...},
+    # {"id": "tm21", ...},
+    # {"id": "goodmonthly", ...},
 ]
+
+
+# ソースid集合の正本。id 列挙が必要な箇所 (設定バリデーション・
+# ローテーション既定など) は個別にハードコードせず本定数を参照する。
+SOURCE_IDS: frozenset[str] = frozenset(e["id"] for e in SOURCE_CATALOG)
 
 
 # ソース表示名の SSOT (旧 store.api_queries.SOURCE_DISPLAY より移設)。
 # queries 層 (store.queries) は本モジュールから import する一方向依存とし、
-# API/MCP/GeoJSON/KML/価格トレンドで同一の表示名を使う。
+# API/MCP/GeoJSON/KML/価格トレンド/rotation 画面で同一の表示名を使う。
+# SOURCE_CATALOG エントリには display_name を持たせない (上書き源を作らない)。
 SOURCE_DISPLAY: dict[str, str] = {
     "bratto": "BraTTo",
     "unionmonthly": "ユニオンマンスリー",
@@ -47,6 +56,22 @@ SOURCE_DISPLAY: dict[str, str] = {
     "shintoshin": "マンスリー新都心",
     "weeklymonthly": "ウィークリー＆マンスリー",
 }
+
+
+def default_contract_fee_yen(source_site: str | None) -> int | None:
+    """契約事務手数料のサイト別既定値 (未登録サイトは None = 算出不能)。
+
+    実効値の解決順は「物件個別値 (properties.contract_fee_yen) > サイト既定
+    (SOURCE_CATALOG の contract_fee_yen)」の 2 層で、根拠のない数値への
+    フォールバックは持たない。未登録サイト (アップロード GeoJSON や旧データ)
+    は None を返し、物件値とのマージは queries 層の
+    resolve_contract_fee_yen が行う。
+    """
+    if source_site:
+        for entry in SOURCE_CATALOG:
+            if entry.get("id") == source_site:
+                return int(entry["contract_fee_yen"])
+    return None
 
 
 def load_app_config() -> dict:
@@ -159,6 +184,7 @@ def _merge_targets(
 def list_source_admin_info() -> list[dict[str, Any]]:
     """Merge catalog + registry + config + DB counts + per-target status for admin API."""
     from sources.registry import SourceRegistry
+    from store.pg import open_connection
     from store.repository import Repository
 
     config = load_app_config()
@@ -171,19 +197,13 @@ def list_source_admin_info() -> list[dict[str, Any]]:
 
     try:
         repo = Repository()
-        # Ensure new tables exist (scrape_run_targets)
-        try:
-            repo.init_db()
-        except Exception:
-            pass
-        conn = repo.connect()
-        try:
+        with open_connection() as conn:
             for row in conn.execute(
                 """
                 SELECT source_site,
                        COUNT(*) AS total,
-                       SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active,
-                       SUM(CASE WHEN is_active = 1 AND (lat IS NULL OR lng IS NULL) THEN 1 ELSE 0 END) AS missing_coords
+                       SUM(CASE WHEN is_active THEN 1 ELSE 0 END) AS active,
+                       SUM(CASE WHEN is_active AND (lat IS NULL OR lng IS NULL) THEN 1 ELSE 0 END) AS missing_coords
                 FROM properties
                 GROUP BY source_site
                 """
@@ -193,8 +213,6 @@ def list_source_admin_info() -> list[dict[str, Any]]:
                     "active": row["active"] or 0,
                     "missing_coords": row["missing_coords"] or 0,
                 }
-        finally:
-            conn.close()
         try:
             counts_pref = repo.counts_by_prefecture()
             runs_pref = repo.latest_scrape_runs_by_target()
@@ -228,8 +246,7 @@ def list_source_admin_info() -> list[dict[str, Any]]:
         out.append(
             {
                 **entry,
-                "display_name": entry.get("display_name")
-                or SOURCE_DISPLAY.get(sid, sid),
+                "display_name": SOURCE_DISPLAY.get(sid, sid),
                 "enabled": bool(enabled) and is_reg,
                 "registered": is_reg,
                 "available": is_reg and bool(enabled),
@@ -260,8 +277,11 @@ def list_source_admin_info() -> list[dict[str, Any]]:
         out.append(
             {
                 "id": sid,
-                "display_name": getattr(cls, "display_name", None)
-                or SOURCE_DISPLAY.get(sid, sid),
+                # 未登録アダプタの表示名: SOURCE_DISPLAY を優先し、
+                # 無ければアダプタクラス属性、最後に id にフォールバック。
+                "display_name": SOURCE_DISPLAY.get(sid)
+                or getattr(cls, "display_name", None)
+                or sid,
                 "description": f"Registered adapter ({sid})",
                 "default_pages": 5,
                 "supports_all_pages": True,

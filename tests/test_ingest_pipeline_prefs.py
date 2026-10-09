@@ -116,17 +116,11 @@ def _seed(repo: Repository, source: str, slug: str, name: str, ext_id: str) -> N
 
 class TestPrefScopedMarkInactive(unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self._tmp.close()
-        self.db_path = self._tmp.name
-        self.repo = Repository(self.db_path)
-        self.repo.init_db()
+        from helpers import ScopedDb
 
-    def tearDown(self):
-        try:
-            os.unlink(self.db_path)
-        except OSError:
-            pass
+        self._db = ScopedDb("ingest-prefs")
+        self.addCleanup(self._db.close)
+        self.repo = Repository()
 
     def test_partial_pref_does_not_deactivate_other_pref(self):
         # Existing data in tokyo + osaka
@@ -166,7 +160,7 @@ class TestPrefScopedMarkInactive(unittest.TestCase):
             rows = {
                 r["external_id"]: r["is_active"]
                 for r in conn.execute(
-                    "SELECT external_id, is_active FROM properties WHERE source_site=?",
+                    "SELECT external_id, is_active FROM properties WHERE source_site= %s",
                     ("fakesource",),
                 )
             }
@@ -218,17 +212,11 @@ class TestListCompletedGate(unittest.TestCase):
     """max_pages 打ち切り時は list_completed=False となり mark_inactive が走らないこと。"""
 
     def setUp(self):
-        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self._tmp.close()
-        self.db_path = self._tmp.name
-        self.repo = Repository(self.db_path)
-        self.repo.init_db()
+        from helpers import ScopedDb
 
-    def tearDown(self):
-        try:
-            os.unlink(self.db_path)
-        except OSError:
-            pass
+        self._db = ScopedDb("ingest-prefs")
+        self.addCleanup(self._db.close)
+        self.repo = Repository()
 
     @staticmethod
     def _cards(prefix: str, slug: str, name: str, n: int):
@@ -248,7 +236,7 @@ class TestListCompletedGate(unittest.TestCase):
             rows = {
                 r["external_id"]: r["is_active"]
                 for r in conn.execute(
-                    "SELECT external_id, is_active FROM properties WHERE source_site=?",
+                    "SELECT external_id, is_active FROM properties WHERE source_site= %s",
                     ("fakesource",),
                 )
             }
@@ -262,7 +250,7 @@ class TestListCompletedGate(unittest.TestCase):
             row = conn.execute(
                 """
                 SELECT list_completed FROM scrape_run_targets
-                WHERE target_key = ?
+                WHERE target_key = %s
                 ORDER BY id DESC LIMIT 1
                 """,
                 (target_key,),
@@ -317,17 +305,17 @@ class TestListCompletedGate(unittest.TestCase):
         conn = self.repo.connect()
         try:
             row = conn.execute(
-                "SELECT meta_json FROM scrape_runs ORDER BY id DESC LIMIT 1"
+                "SELECT meta_json, is_rotation FROM scrape_runs ORDER BY id DESC LIMIT 1"
             ).fetchone()
         finally:
             conn.close()
-        meta = json.loads(row["meta_json"])
-        self.assertIs(meta["rotation"], True)
+        # rotation フラグは is_rotation 列が正本(Phase 6b・meta_json へは混入されない)
+        self.assertIs(row["is_rotation"], True)
+        meta = row["meta_json"]
+        self.assertNotIn("rotation", meta)
         self.assertEqual(meta["pref_budget_detail_ok"], 50)
         # 既存キーは維持される
         self.assertEqual(meta["prefs"], ["tokyo"])
-        # rotation_usage_today の LIKE パターンに一致する形式
-        self.assertIn('"rotation": true', row["meta_json"])
 
 
 class _FailingListAdapter(_FakeAdapter):
@@ -348,17 +336,11 @@ class TestRunStatusSummary(unittest.TestCase):
     """run全体ステータス確定: 全県error→error / 一部失敗→partial / 全成功→ok。"""
 
     def setUp(self):
-        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self._tmp.close()
-        self.db_path = self._tmp.name
-        self.repo = Repository(self.db_path)
-        self.repo.init_db()
+        from helpers import ScopedDb
 
-    def tearDown(self):
-        try:
-            os.unlink(self.db_path)
-        except OSError:
-            pass
+        self._db = ScopedDb("ingest-prefs")
+        self.addCleanup(self._db.close)
+        self.repo = Repository()
 
     def _last_run_row(self) -> dict:
         conn = self.repo.connect()

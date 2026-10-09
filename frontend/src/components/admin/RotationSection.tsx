@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button.tsx';
 import { Input } from '@/components/ui/input.tsx';
 import { FaArrowRotateLeft } from 'react-icons/fa6';
 import { Loader2 } from 'lucide-react';
+import { LoadingState } from '@/components/shared/LoadingState.tsx';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip.tsx';
 import type { SourceSettingsController } from '../../hooks/useSourceSettings.ts';
 import { formatAdminTs, nextBatchPrefLabels, ROTATION_REASON_LABELS } from './adminHelpers.ts';
@@ -39,9 +40,10 @@ export const RotationSection: React.FC<RotationSectionProps> = ({
         cron 時刻ごとに各県を 1 バッチずつ順番に取得します。次のバッチを手動で先行実行できます。
       </p>
       {rotationSources.length === 0 ? (
-        <div className="border border-border rounded-lg p-3 text-xs text-text-muted">
-          ローテーション情報を読み込み中…
-        </div>
+        <LoadingState
+          label="ローテーション情報を読み込み中…"
+          className="border border-border rounded-lg p-3 text-xs"
+        />
       ) : (
         <div className="flex flex-col gap-3">
           {rotationSources.map((src) => {

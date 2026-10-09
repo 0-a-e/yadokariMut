@@ -23,31 +23,34 @@ from copilotkit import LangGraphAGUIAgent
 
 from web import REPO_ROOT
 from web.rotation_jobs import _rotation_source_config
-from web.tasks import log_task, run_rotation_job
+from web.tasks import log_task, run_embedding_sync, run_media_sync, run_rotation_job
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # v2 スキーマを起動時に保証
+    # 起動時のデータ整備(スキーマ保証は Alembic = db-init / deploy 时の役割):
+    # 機能カテゴリ辞書の差分同期 + 前プロセス残りの stale run 掃除
     try:
+        from store.pg import open_connection
         from store.repository import Repository
+        from store.schema import sync_feature_dictionary
 
-        repo = Repository()
-        repo.init_db()
+        with open_connection() as conn:
+            sync_feature_dictionary(conn)
         try:
-            aborted = repo.fail_stale_running_runs()
+            aborted = Repository().fail_stale_running_runs()
             if aborted:
                 logging.getLogger(__name__).info(
-                    "Aborted %d stale scrape run(s) left by a previous process.",
+                    "Aborted %d stale scrape run/target row(s) left by a previous process.",
                     aborted,
                 )
         except Exception as cleanup_err:
             logging.getLogger(__name__).warning(
                 "stale scrape run cleanup failed: %s", cleanup_err
             )
-        logging.getLogger(__name__).info("v2 schema ensured on startup.")
+        logging.getLogger(__name__).info("DB startup checks done.")
     except Exception as e:
-        print(f"v2 schema init skipped/failed: {e}")
+        print(f"DB startup checks skipped/failed: {e}")
 
     # 起動時: graph をビルドし、app.state に agent を保存
     try:
@@ -99,6 +102,54 @@ async def lifespan(app: FastAPI):
                 )
                 registered_any = True
                 log_task(f"Rotation job registered: {sid} cron='{cron_expr}'")
+
+            # 意味検索 embedding の日次差分同期 (PG移行 Phase 7a)。
+            # 既定 06:00 = unionmonthly 深夜ローテーション(05時)後。
+            embedding_cron = os.environ.get("EMBEDDING_SYNC_CRON", "0 6 * * *")
+            efields = embedding_cron.split()
+            if len(efields) != 5:
+                log_task(
+                    f"Invalid cron expression for embedding sync: '{embedding_cron}'. Job not registered."
+                )
+            else:
+                scheduler.add_job(
+                    run_embedding_sync,
+                    CronTrigger(
+                        minute=efields[0],
+                        hour=efields[1],
+                        day=efields[2],
+                        month=efields[3],
+                        day_of_week=efields[4],
+                    ),
+                    id="embedding_sync",
+                    name="Embedding Sync (semantic search)",
+                )
+                registered_any = True
+                log_task(f"Embedding sync job registered: cron='{embedding_cron}'")
+
+            # メディア画像の日次取り込み (docs/media-storage-rustfs-plan.md §2.6)。
+            # 既定 04:30 = rotation(05時)・embedding sync(06:00)より前の閑帯。
+            media_cron = os.environ.get("MEDIA_SYNC_CRON", "30 4 * * *")
+            mfields = media_cron.split()
+            if len(mfields) != 5:
+                log_task(
+                    f"Invalid cron expression for media sync: '{media_cron}'. Job not registered."
+                )
+            else:
+                scheduler.add_job(
+                    run_media_sync,
+                    CronTrigger(
+                        minute=mfields[0],
+                        hour=mfields[1],
+                        day=mfields[2],
+                        month=mfields[3],
+                        day_of_week=mfields[4],
+                    ),
+                    id="media_sync",
+                    name="Media Sync (rustfs)",
+                )
+                registered_any = True
+                log_task(f"Media sync job registered: cron='{media_cron}'")
             if registered_any:
                 scheduler.start()
                 log_task("Rotation scheduler started successfully.")
@@ -135,10 +186,12 @@ def create_app() -> FastAPI:
         admin,
         agent,
         analysis,
+        buildings_geojson,
         chat,
         export,
         fe_settings,
         geojson,
+        media,
         properties,
         rotation,
     )
@@ -147,6 +200,9 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(fe_settings.router)
     app.include_router(geojson.router)
+    # 建物単位 GeoJSON (Phase B1・docs/building-aggregation-design.md §6.1)。
+    # 新設のため部屋単位 geojson の直後に登録 (既存 paths の相対順は不変)
+    app.include_router(buildings_geojson.router)
     app.include_router(export.router)
     # 旧定義順 (detail → price-trend → shortlist) を再現するため、properties
     # の shortlist は別 router インスタンス (挙動差なし / OpenAPI 順序維持用)
@@ -158,6 +214,9 @@ def create_app() -> FastAPI:
     app.include_router(admin.router)
     app.include_router(rotation.router)
     app.include_router(admin.geocode_router)
+    # メディア配信 (rustfs プロキシ・docs/media-storage-rustfs-plan.md §2.8)。
+    # 既存 paths の相対順は不変のまま末尾側へ追加。
+    app.include_router(media.router)
 
     # ── Vector tiles (PMTiles → ZXY 配信) ──
     # pmtiles が未導入の環境でもサーバ全体の起動を壊さないよう guarded import

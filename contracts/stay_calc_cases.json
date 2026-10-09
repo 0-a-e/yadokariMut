@@ -1,0 +1,1109 @@
+{
+  "version": 1,
+  "description": "賃料計算エンジン parity テストの共有フィクスチャ。BE domain/pricing.calculate_stay_total と FE lib/rentCalculator.calculateRentTotal(ByDays) が同一ケース・同一期待値を返すことを保証する。plans/campaigns は API wire 形(RentPlan/Campaign)で、両エンジンにそのまま投入する。期待値(warnings 含む)は本ファイルが正本。",
+  "consumers": {
+    "backend": "tests/test_pricing_parity.py",
+    "frontend": "frontend/src/lib/rentCalculator.parity.test.ts"
+  },
+  "cases": [
+    {
+      "name": "exact_band_s_short_7days",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-07",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "s_short",
+          "plan_code": "s_short",
+          "plan_name": "Sショート（1ヶ月未満）",
+          "duration_min_days": 1,
+          "duration_max_days": 29,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 4500,
+          "rent_current_yen": 4500,
+          "management_yen": 500,
+          "cleaning_yen": 15000,
+          "original_daily_rent_yen": 4500,
+          "discounted_daily_rent_yen": 4500,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 15000,
+          "effective_rent_yen": 4500,
+          "effective_daily_rent_yen": 4500,
+          "campaign_applied": false,
+          "campaign_expired": false
+        },
+        {
+          "plan_key": "short",
+          "plan_code": "short",
+          "plan_name": "ショート（1ヶ月~3ヶ月）",
+          "duration_min_days": 30,
+          "duration_max_days": 90,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2800,
+          "rent_current_yen": 2800,
+          "management_yen": 500,
+          "cleaning_yen": 16500,
+          "original_daily_rent_yen": 2800,
+          "discounted_daily_rent_yen": 2800,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 16500,
+          "effective_rent_yen": 2800,
+          "effective_daily_rent_yen": 2800,
+          "campaign_applied": false,
+          "campaign_expired": false
+        },
+        {
+          "plan_key": "middle",
+          "plan_code": "middle",
+          "plan_name": "ミドル（3ヶ月～6ヶ月）",
+          "duration_min_days": 91,
+          "duration_max_days": 180,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2650,
+          "rent_current_yen": 2650,
+          "management_yen": 500,
+          "cleaning_yen": 27500,
+          "original_daily_rent_yen": 2650,
+          "discounted_daily_rent_yen": 2650,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 27500,
+          "effective_rent_yen": 2650,
+          "effective_daily_rent_yen": 2650,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [],
+      "expected": {
+        "ok": true,
+        "stay_days": 7,
+        "plan_key": "s_short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 4500,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 31500,
+          "management_total": 3500,
+          "utilities_total": 0,
+          "cleaning_fee": 15000,
+          "contract_fee": 5500
+        },
+        "grand_total": 55500,
+        "warnings": []
+      }
+    },
+    {
+      "name": "exact_band_short_30days",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-30",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "s_short",
+          "plan_code": "s_short",
+          "plan_name": "Sショート（1ヶ月未満）",
+          "duration_min_days": 1,
+          "duration_max_days": 29,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 4500,
+          "rent_current_yen": 4500,
+          "management_yen": 500,
+          "cleaning_yen": 15000,
+          "original_daily_rent_yen": 4500,
+          "discounted_daily_rent_yen": 4500,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 15000,
+          "effective_rent_yen": 4500,
+          "effective_daily_rent_yen": 4500,
+          "campaign_applied": false,
+          "campaign_expired": false
+        },
+        {
+          "plan_key": "short",
+          "plan_code": "short",
+          "plan_name": "ショート（1ヶ月~3ヶ月）",
+          "duration_min_days": 30,
+          "duration_max_days": 90,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2800,
+          "rent_current_yen": 2800,
+          "management_yen": 500,
+          "cleaning_yen": 16500,
+          "original_daily_rent_yen": 2800,
+          "discounted_daily_rent_yen": 2800,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 16500,
+          "effective_rent_yen": 2800,
+          "effective_daily_rent_yen": 2800,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [],
+      "expected": {
+        "ok": true,
+        "stay_days": 30,
+        "plan_key": "short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 2800,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 84000,
+          "management_total": 15000,
+          "utilities_total": 0,
+          "cleaning_fee": 16500,
+          "contract_fee": 5500
+        },
+        "grand_total": 121000,
+        "warnings": []
+      }
+    },
+    {
+      "name": "fallback_longer_band_and_fee_null",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-30",
+        "contract_fee_yen": null
+      },
+      "plans": [
+        {
+          "plan_key": "middle",
+          "plan_code": "middle",
+          "plan_name": "ミドル（3ヶ月～6ヶ月）",
+          "duration_min_days": 91,
+          "duration_max_days": 180,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2650,
+          "rent_current_yen": 2650,
+          "management_yen": 500,
+          "cleaning_yen": 27500,
+          "original_daily_rent_yen": 2650,
+          "discounted_daily_rent_yen": 2650,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 27500,
+          "effective_rent_yen": 2650,
+          "effective_daily_rent_yen": 2650,
+          "campaign_applied": false,
+          "campaign_expired": false
+        },
+        {
+          "plan_key": "long",
+          "plan_code": "long",
+          "plan_name": "ロング（6ヶ月以上）",
+          "duration_min_days": 181,
+          "duration_max_days": null,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2500,
+          "rent_current_yen": 2500,
+          "management_yen": 500,
+          "cleaning_yen": 38500,
+          "original_daily_rent_yen": 2500,
+          "discounted_daily_rent_yen": 2500,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 38500,
+          "effective_rent_yen": 2500,
+          "effective_daily_rent_yen": 2500,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [],
+      "expected": {
+        "ok": true,
+        "stay_days": 30,
+        "plan_key": "middle",
+        "used_fallback": true,
+        "breakdown": {
+          "rent_daily": 2650,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 79500,
+          "management_total": 15000,
+          "utilities_total": 0,
+          "cleaning_fee": 27500,
+          "contract_fee": null
+        },
+        "grand_total": 122000,
+        "warnings": [
+          "この物件に30日の滞在に対応する料金プラン帯がないため、ミドル（3ヶ月～6ヶ月）の料金で試算しています。",
+          "契約事務手数料が不明(取得元サイトの既定が未登録)のため、総額から除外しています。"
+        ]
+      }
+    },
+    {
+      "name": "fallback_shorter_band",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-01-01",
+        "check_out": "2026-07-19",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "s_short",
+          "plan_code": "s_short",
+          "plan_name": "Sショート（1ヶ月未満）",
+          "duration_min_days": 1,
+          "duration_max_days": 29,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 4500,
+          "rent_current_yen": 4500,
+          "management_yen": 500,
+          "cleaning_yen": 15000,
+          "original_daily_rent_yen": 4500,
+          "discounted_daily_rent_yen": 4500,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 15000,
+          "effective_rent_yen": 4500,
+          "effective_daily_rent_yen": 4500,
+          "campaign_applied": false,
+          "campaign_expired": false
+        },
+        {
+          "plan_key": "short",
+          "plan_code": "short",
+          "plan_name": "ショート（1ヶ月~3ヶ月）",
+          "duration_min_days": 30,
+          "duration_max_days": 90,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2800,
+          "rent_current_yen": 2800,
+          "management_yen": 500,
+          "cleaning_yen": 16500,
+          "original_daily_rent_yen": 2800,
+          "discounted_daily_rent_yen": 2800,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 16500,
+          "effective_rent_yen": 2800,
+          "effective_daily_rent_yen": 2800,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [],
+      "expected": {
+        "ok": true,
+        "stay_days": 200,
+        "plan_key": "short",
+        "used_fallback": true,
+        "breakdown": {
+          "rent_daily": 2800,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 560000,
+          "management_total": 100000,
+          "utilities_total": 0,
+          "cleaning_fee": 16500,
+          "contract_fee": 5500
+        },
+        "grand_total": 682000,
+        "warnings": [
+          "この物件に200日の滞在に対応する料金プラン帯がないため、ショート（1ヶ月~3ヶ月）の料金で試算しています。"
+        ]
+      }
+    },
+    {
+      "name": "per_month_semi_short_20days",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-06-01",
+        "check_out": "2026-06-20",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "semi_short",
+          "plan_code": "semi_short",
+          "plan_name": "セミショート（15日以上1ヶ月未満）",
+          "duration_min_days": 15,
+          "duration_max_days": 29,
+          "available": true,
+          "presentation_unit": "per_month",
+          "rent_original_yen": 90000,
+          "rent_current_yen": 85000,
+          "management_yen": 12000,
+          "cleaning_yen": 20000,
+          "original_daily_rent_yen": 3000,
+          "discounted_daily_rent_yen": 2833,
+          "management_fee_daily_yen": 400,
+          "cleaning_fee_yen": 20000,
+          "effective_rent_yen": 85000,
+          "effective_daily_rent_yen": 2833,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [],
+      "expected": {
+        "ok": true,
+        "stay_days": 20,
+        "plan_key": "semi_short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 2833,
+          "management_daily": 400,
+          "utilities_daily": 0,
+          "rent_total": 56660,
+          "management_total": 8000,
+          "utilities_total": 0,
+          "cleaning_fee": 20000,
+          "contract_fee": 5500
+        },
+        "grand_total": 90160,
+        "warnings": []
+      }
+    },
+    {
+      "name": "utilities_per_month_daily_conversion",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-10",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "s_short",
+          "plan_code": "s_short",
+          "plan_name": "Sショート（1ヶ月未満）",
+          "duration_min_days": 1,
+          "duration_max_days": 29,
+          "available": true,
+          "presentation_unit": "per_month",
+          "rent_original_yen": 84000,
+          "rent_current_yen": 84000,
+          "management_yen": 15000,
+          "utilities_yen": 15000,
+          "utilities_included": false,
+          "cleaning_yen": 16500,
+          "original_daily_rent_yen": 2800,
+          "discounted_daily_rent_yen": 2800,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 16500,
+          "effective_rent_yen": 84000,
+          "effective_daily_rent_yen": 2800,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [],
+      "expected": {
+        "ok": true,
+        "stay_days": 10,
+        "plan_key": "s_short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 2800,
+          "management_daily": 500,
+          "utilities_daily": 500,
+          "rent_total": 28000,
+          "management_total": 5000,
+          "utilities_total": 5000,
+          "cleaning_fee": 16500,
+          "contract_fee": 5500
+        },
+        "grand_total": 60000,
+        "warnings": [
+          "光熱費（15,000円/月）を日額500円で加算しています。"
+        ]
+      }
+    },
+    {
+      "name": "yen_campaign_period_and_amount_caps",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-30",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "short",
+          "plan_code": "short",
+          "plan_name": "ショート（1ヶ月~3ヶ月）",
+          "duration_min_days": 30,
+          "duration_max_days": 90,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2800,
+          "rent_current_yen": 2800,
+          "management_yen": 500,
+          "cleaning_yen": 16500,
+          "original_daily_rent_yen": 2800,
+          "discounted_daily_rent_yen": 2800,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 16500,
+          "effective_rent_yen": 2800,
+          "effective_daily_rent_yen": 2800,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [
+        {
+          "campaign_type": "日額割引",
+          "target_plan_key": "all",
+          "target_plan_code": "all",
+          "discount_unit": "yen",
+          "discount_value": 100,
+          "discount_max_yen": 800,
+          "period_max_days": 10,
+          "starts_on": "2026-04-01",
+          "ends_on": "2026-12-31"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "stay_days": 30,
+        "plan_key": "short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 2774,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 83220,
+          "management_total": 15000,
+          "utilities_total": 0,
+          "cleaning_fee": 16500,
+          "contract_fee": 5500
+        },
+        "grand_total": 120220,
+        "warnings": [
+          "日額割引: 日額100円×10日分を反映"
+        ]
+      }
+    },
+    {
+      "name": "percent_campaign_targeted_middle",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-08-08",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "middle",
+          "plan_code": "middle",
+          "plan_name": "ミドル（3ヶ月～6ヶ月）",
+          "duration_min_days": 91,
+          "duration_max_days": 180,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2650,
+          "rent_current_yen": 2650,
+          "management_yen": 500,
+          "cleaning_yen": 27500,
+          "original_daily_rent_yen": 2650,
+          "discounted_daily_rent_yen": 2650,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 27500,
+          "effective_rent_yen": 2650,
+          "effective_daily_rent_yen": 2650,
+          "campaign_applied": false,
+          "campaign_expired": false
+        },
+        {
+          "plan_key": "long",
+          "plan_code": "long",
+          "plan_name": "ロング（6ヶ月以上）",
+          "duration_min_days": 181,
+          "duration_max_days": null,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2500,
+          "rent_current_yen": 2500,
+          "management_yen": 500,
+          "cleaning_yen": 38500,
+          "original_daily_rent_yen": 2500,
+          "discounted_daily_rent_yen": 2500,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 38500,
+          "effective_rent_yen": 2500,
+          "effective_daily_rent_yen": 2500,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [
+        {
+          "campaign_type": "10%OFF",
+          "target_plan_key": "middle",
+          "target_plan_code": "middle",
+          "discount_unit": "percent",
+          "discount_value": 10,
+          "starts_on": "2026-01-01"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "stay_days": 100,
+        "plan_key": "middle",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 2385,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 238500,
+          "management_total": 50000,
+          "utilities_total": 0,
+          "cleaning_fee": 27500,
+          "contract_fee": 5500
+        },
+        "grand_total": 321500,
+        "warnings": [
+          "10%OFF: 10%OFF×100日分を反映"
+        ]
+      }
+    },
+    {
+      "name": "targeted_campaign_not_applied_to_other_plan",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-08-08",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "other",
+          "plan_code": "other",
+          "plan_name": "ミドル（3ヶ月～6ヶ月）",
+          "duration_min_days": 91,
+          "duration_max_days": 180,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2650,
+          "rent_current_yen": 2650,
+          "management_yen": 500,
+          "cleaning_yen": 27500,
+          "original_daily_rent_yen": 2650,
+          "discounted_daily_rent_yen": 2650,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 27500,
+          "effective_rent_yen": 2650,
+          "effective_daily_rent_yen": 2650,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [
+        {
+          "campaign_type": "10%OFF",
+          "target_plan_key": "middle",
+          "target_plan_code": "middle",
+          "discount_unit": "percent",
+          "discount_value": 10,
+          "starts_on": "2026-01-01"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "stay_days": 100,
+        "plan_key": "other",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 2650,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 265000,
+          "management_total": 50000,
+          "utilities_total": 0,
+          "cleaning_fee": 27500,
+          "contract_fee": 5500
+        },
+        "grand_total": 348000,
+        "warnings": []
+      }
+    },
+    {
+      "name": "package_campaign_all_benefits",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-07",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "s_short",
+          "plan_code": "s_short",
+          "plan_name": "Sショート（1ヶ月未満）",
+          "duration_min_days": 1,
+          "duration_max_days": 29,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 4500,
+          "rent_current_yen": 4500,
+          "management_yen": 500,
+          "cleaning_yen": 15000,
+          "original_daily_rent_yen": 4500,
+          "discounted_daily_rent_yen": 4500,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 15000,
+          "effective_rent_yen": 4500,
+          "effective_daily_rent_yen": 4500,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [
+        {
+          "campaign_type": "パッケージ割引",
+          "target_plan_key": "all",
+          "target_plan_code": "all",
+          "discount_unit": "package",
+          "package_rent_benefit_yen": 7000,
+          "package_cleaning_benefit_yen": 3000,
+          "package_fee_benefit_yen": 2000,
+          "starts_on": "2026-01-01"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "stay_days": 7,
+        "plan_key": "s_short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 3500,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 24500,
+          "management_total": 3500,
+          "utilities_total": 0,
+          "cleaning_fee": 12000,
+          "contract_fee": 3500
+        },
+        "grand_total": 43500,
+        "warnings": [
+          "パッケージ割引: パッケージお得を反映"
+        ]
+      }
+    },
+    {
+      "name": "package_fee_benefit_with_null_fee",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-30",
+        "contract_fee_yen": null
+      },
+      "plans": [
+        {
+          "plan_key": "short",
+          "plan_code": "short",
+          "plan_name": "ショート（1ヶ月~3ヶ月）",
+          "duration_min_days": 30,
+          "duration_max_days": 90,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2800,
+          "rent_current_yen": 2800,
+          "management_yen": 500,
+          "cleaning_yen": 16500,
+          "original_daily_rent_yen": 2800,
+          "discounted_daily_rent_yen": 2800,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 16500,
+          "effective_rent_yen": 2800,
+          "effective_daily_rent_yen": 2800,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [
+        {
+          "campaign_type": "パッケージ割引",
+          "target_plan_key": "all",
+          "target_plan_code": "all",
+          "discount_unit": "package",
+          "package_fee_benefit_yen": 2000,
+          "starts_on": "2026-01-01"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "stay_days": 30,
+        "plan_key": "short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 2800,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 84000,
+          "management_total": 15000,
+          "utilities_total": 0,
+          "cleaning_fee": 16500,
+          "contract_fee": null
+        },
+        "grand_total": 115500,
+        "warnings": [
+          "契約事務手数料が不明(取得元サイトの既定が未登録)のため、総額から除外しています。",
+          "パッケージ割引: パッケージお得を反映"
+        ]
+      }
+    },
+    {
+      "name": "expired_campaign_label_uses_original",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-07",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "s_short",
+          "plan_code": "s_short",
+          "plan_name": "Sショート（1ヶ月未満）",
+          "duration_min_days": 1,
+          "duration_max_days": 29,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 5000,
+          "rent_current_yen": 4500,
+          "management_yen": 500,
+          "cleaning_yen": 15000,
+          "campaign_label": "早割",
+          "original_daily_rent_yen": 5000,
+          "discounted_daily_rent_yen": 4500,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 15000,
+          "effective_rent_yen": 5000,
+          "effective_daily_rent_yen": 5000,
+          "campaign_applied": false,
+          "campaign_expired": true,
+          "expired_campaign_label": "早割"
+        }
+      ],
+      "campaigns": [
+        {
+          "campaign_type": "早割",
+          "target_plan_key": "all",
+          "target_plan_code": "all",
+          "discount_unit": "percent",
+          "discount_value": 10,
+          "starts_on": "2026-01-01",
+          "ends_on": "2026-04-01"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "stay_days": 7,
+        "plan_key": "s_short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 5000,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 35000,
+          "management_total": 3500,
+          "utilities_total": 0,
+          "cleaning_fee": 15000,
+          "contract_fee": 5500
+        },
+        "grand_total": 59000,
+        "warnings": [
+          "期限切れの早割は適用せず、定価ベースで試算しています。"
+        ]
+      }
+    },
+    {
+      "name": "active_campaign_label_reflected",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-30",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "short",
+          "plan_code": "short",
+          "plan_name": "ショート（1ヶ月~3ヶ月）",
+          "duration_min_days": 30,
+          "duration_max_days": 90,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 3000,
+          "rent_current_yen": 2800,
+          "management_yen": 500,
+          "cleaning_yen": 16500,
+          "campaign_label": "時間限定割引",
+          "original_daily_rent_yen": 3000,
+          "discounted_daily_rent_yen": 2800,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 16500,
+          "effective_rent_yen": 2800,
+          "effective_daily_rent_yen": 2800,
+          "campaign_applied": true,
+          "campaign_expired": false,
+          "effective_campaign_label": "時間限定割引"
+        }
+      ],
+      "campaigns": [
+        {
+          "campaign_type": "時間限定割引",
+          "target_plan_key": "all",
+          "target_plan_code": "all",
+          "starts_on": "2026-01-01"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "stay_days": 30,
+        "plan_key": "short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 2800,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 84000,
+          "management_total": 15000,
+          "utilities_total": 0,
+          "cleaning_fee": 16500,
+          "contract_fee": 5500
+        },
+        "grand_total": 121000,
+        "warnings": [
+          "有効なキャンペーン（時間限定割引）を反映しています。"
+        ]
+      }
+    },
+    {
+      "name": "ondate_outside_campaign_window_days_entry",
+      "entry": "days",
+      "input": {
+        "stay_days": 45,
+        "on_date": "2026-07-15",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "short",
+          "plan_code": "short",
+          "plan_name": "ショート（1ヶ月~3ヶ月）",
+          "duration_min_days": 30,
+          "duration_max_days": 90,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2800,
+          "rent_current_yen": 2800,
+          "management_yen": 500,
+          "cleaning_yen": 16500,
+          "original_daily_rent_yen": 2800,
+          "discounted_daily_rent_yen": 2800,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 16500,
+          "effective_rent_yen": 2800,
+          "effective_daily_rent_yen": 2800,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [
+        {
+          "campaign_type": "サマーキャンペーン",
+          "target_plan_key": "all",
+          "target_plan_code": "all",
+          "discount_unit": "yen",
+          "discount_value": 100,
+          "starts_on": "2026-06-01",
+          "ends_on": "2026-07-01"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "stay_days": 45,
+        "plan_key": "short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 2800,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 126000,
+          "management_total": 22500,
+          "utilities_total": 0,
+          "cleaning_fee": 16500,
+          "contract_fee": 5500
+        },
+        "grand_total": 170500,
+        "warnings": []
+      }
+    },
+    {
+      "name": "stay_window_filter_blocks_campaign",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-20",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "s_short",
+          "plan_code": "s_short",
+          "plan_name": "Sショート（1ヶ月未満）",
+          "duration_min_days": 1,
+          "duration_max_days": 29,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 4500,
+          "rent_current_yen": 4500,
+          "management_yen": 500,
+          "cleaning_yen": 15000,
+          "original_daily_rent_yen": 4500,
+          "discounted_daily_rent_yen": 4500,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 15000,
+          "effective_rent_yen": 4500,
+          "effective_daily_rent_yen": 4500,
+          "campaign_applied": false,
+          "campaign_expired": false
+        },
+        {
+          "plan_key": "short",
+          "plan_code": "short",
+          "plan_name": "ショート（1ヶ月~3ヶ月）",
+          "duration_min_days": 30,
+          "duration_max_days": 90,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 2800,
+          "rent_current_yen": 2800,
+          "management_yen": 500,
+          "cleaning_yen": 16500,
+          "original_daily_rent_yen": 2800,
+          "discounted_daily_rent_yen": 2800,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 16500,
+          "effective_rent_yen": 2800,
+          "effective_daily_rent_yen": 2800,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [
+        {
+          "campaign_type": "日額割引",
+          "target_plan_key": "all",
+          "target_plan_code": "all",
+          "discount_unit": "yen",
+          "discount_value": 100,
+          "stay_min_days": 30,
+          "stay_max_days": 60,
+          "starts_on": "2026-01-01"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "stay_days": 20,
+        "plan_key": "s_short",
+        "used_fallback": false,
+        "breakdown": {
+          "rent_daily": 4500,
+          "management_daily": 500,
+          "utilities_daily": 0,
+          "rent_total": 90000,
+          "management_total": 10000,
+          "utilities_total": 0,
+          "cleaning_fee": 15000,
+          "contract_fee": 5500
+        },
+        "grand_total": 120500,
+        "warnings": []
+      }
+    },
+    {
+      "name": "error_checkout_before_checkin",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-07",
+        "check_out": "2026-05-01"
+      },
+      "plans": [
+        {
+          "plan_key": "s_short",
+          "plan_code": "s_short",
+          "plan_name": "Sショート（1ヶ月未満）",
+          "duration_min_days": 1,
+          "duration_max_days": 29,
+          "available": true,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 4500,
+          "rent_current_yen": 4500,
+          "management_yen": 500,
+          "cleaning_yen": 15000,
+          "original_daily_rent_yen": 4500,
+          "discounted_daily_rent_yen": 4500,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 15000,
+          "effective_rent_yen": 4500,
+          "effective_daily_rent_yen": 4500,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [],
+      "expected": {
+        "ok": false,
+        "error": "退去日を入居日以降に設定してください。"
+      }
+    },
+    {
+      "name": "error_no_usable_plans",
+      "entry": "dates",
+      "input": {
+        "check_in": "2026-05-01",
+        "check_out": "2026-05-07",
+        "contract_fee_yen": 5500
+      },
+      "plans": [
+        {
+          "plan_key": "s_short",
+          "plan_code": "s_short",
+          "plan_name": "Sショート（1ヶ月未満）",
+          "duration_min_days": 1,
+          "duration_max_days": 29,
+          "available": false,
+          "presentation_unit": "per_day",
+          "rent_original_yen": 4500,
+          "rent_current_yen": 4500,
+          "management_yen": 500,
+          "cleaning_yen": 15000,
+          "original_daily_rent_yen": 4500,
+          "discounted_daily_rent_yen": 4500,
+          "management_fee_daily_yen": 500,
+          "cleaning_fee_yen": 15000,
+          "effective_rent_yen": 4500,
+          "effective_daily_rent_yen": 4500,
+          "campaign_applied": false,
+          "campaign_expired": false
+        }
+      ],
+      "campaigns": [],
+      "expected": {
+        "ok": false,
+        "error": "計算可能な料金プランがありません。"
+      }
+    }
+  ]
+}

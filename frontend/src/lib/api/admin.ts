@@ -7,12 +7,14 @@
  * エラーは client.ts の ApiError(detail 抽出付き)として投げる。
  */
 import type {
+  AdminStatsResponse,
   RotationSettingsUpdate,
   ScrapeSettingsUpdate,
 } from '../../types.ts';
 import { fetchJson, postJson, type Schemas } from './client.ts';
 
-export type AdminStatsResponse = Schemas['AdminStatsResponse'];
+/** AdminStatsResponse の正本は types.ts(生成 schema のエイリアス面)。旧 import 経路互換のため再 export */
+export type { AdminStatsResponse };
 export type AdminSourcesResponse = Schemas['AdminSourcesResponse'];
 export type RotationStatusResponse = Schemas['RotationStatusResponse'];
 export type ScrapeSettingsResponse = Schemas['ScrapeSettingsResponse'];

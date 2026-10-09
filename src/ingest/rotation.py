@@ -6,12 +6,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Mapping
 
+from domain.tz import JST
 from ingest.pipeline import TargetIngestResult
 
 # A prefecture with this many consecutive failures (or more) is excluded from
 # batch selection until its cooldown window has elapsed since the last attempt.
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
 DEFAULT_FAILURE_COOLDOWN_HOURS = 48
+
+
+def _as_naive_jst(dt: datetime) -> datetime:
+    if dt.tzinfo is not None:
+        return dt.astimezone(JST).replace(tzinfo=None)
+    return dt
 
 
 @dataclass
@@ -48,10 +55,10 @@ def is_suppressed(
     if not last_run:
         return False
     try:
-        last_run_dt = datetime.fromisoformat(str(last_run))
+        last_run_dt = _as_naive_jst(datetime.fromisoformat(str(last_run)))
     except (TypeError, ValueError):
         return False
-    age_hours = (now - last_run_dt).total_seconds() / 3600.0
+    age_hours = (_as_naive_jst(now) - last_run_dt).total_seconds() / 3600.0
     return age_hours < failure_cooldown_hours
 
 

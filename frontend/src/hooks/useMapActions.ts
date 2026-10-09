@@ -1,29 +1,51 @@
-import { useEffect, useRef } from "react";
 import { useFrontendTool } from "@copilotkit/react-core/v2";
 import { z } from "zod/v4";
-import {
+import type {
   BoundsData,
+  BuildingGeoJSON,
   MapFilters,
   PropertyFeature,
-  PropertyGeoJSON,
   ShortlistStatus,
 } from "../types.ts";
-import { applyMapFilters, mergeMapFilters } from "../lib/filterLogic.ts";
+import {
+  AREA_MODE_VALUES,
+  CATALOG_PRICE_UNLIMITED,
+  DEFAULT_AREA_RANGE,
+  PRICE_MODE_VALUES,
+  SHORTLIST_STATUS_FILTER_VALUES,
+  SHORTLIST_STATUS_VALUES,
+  SORT_KEY_VALUES,
+  STAY_PRICE_UNLIMITED,
+} from "../types.ts";
+import {
+  applyBuildingFilters,
+  flattenMatchedUnits,
+  mergeMapFilters,
+} from "../lib/filterLogic.ts";
+import { postBuildingShortlist } from "../lib/api/buildings.ts";
 import { postShortlist } from "../lib/api/properties.ts";
+import { FIT_BOUNDS_PADDING } from "../lib/mapDefaults.ts";
 import type { LayerConfigState } from "../lib/layers/types.ts";
 import { LAYER_TAGS } from "../lib/layers/types.ts";
 import { catalogById, LAYER_CATALOG } from "../lib/layers/catalog.ts";
 import type { LayerActions } from "../lib/layers/state.ts";
 import { flattenOrderIds } from "../lib/layers/state.ts";
+import { useLatestRef } from "./useLatestRef.ts";
 import L from "leaflet";
 
 interface UseMapActionsProps {
-  mapPaneRef: React.MutableRefObject<{ map: L.Map | null; cluster: any }>;
+  mapPaneRef: React.RefObject<{ map: L.Map | null; cluster: any }>;
   filteredFeatures: PropertyFeature[];
-  rawGeojsonRef: React.MutableRefObject<PropertyGeoJSON | null>;
-  filtersRef: React.MutableRefObject<MapFilters>;
+  /**
+   * 建物 Feature の生データ正本(B2-δ §4.6)。applyFilters の建物意味論再実行
+   * (worker と同一の applyBuildingFilters)と selectBuilding の解決に使う。
+   */
+  rawBuildingData: BuildingGeoJSON | null;
+  filtersRef: React.RefObject<MapFilters>;
   mapBounds: BoundsData | null;
   onSelectFeature: (feature: PropertyFeature) => void;
+  /** 建物選択(建物パネル開設は App 側・B2-γ で BuildingPanel へ差し替え) */
+  onSelectBuilding: (buildingId: number) => void;
   layerConfig: LayerConfigState;
   layerActions: LayerActions;
   onPatchFilters: (patch: Partial<MapFilters> & { reset?: boolean }) => void;
@@ -32,64 +54,44 @@ interface UseMapActionsProps {
     status: ShortlistStatus,
     comment?: string | null,
   ) => void;
+  /** 建物ショートリストの楽観反映(App の applyBuildingShortlistLocal) */
+  onBuildingShortlistLocal: (
+    buildingId: number,
+    status: 'saved' | 'none',
+    comment?: string | null,
+  ) => void;
   resolveFeatureById: (id: number) => PropertyFeature | null;
 }
 
-const sortKeySchema = z.enum(["score", "price_asc", "price_desc", "area_desc"]);
-const statusSchema = z.enum(["all", "saved", "unsaved", "hide", "reject"]);
+const sortKeySchema = z.enum(SORT_KEY_VALUES);
+const statusSchema = z.enum(SHORTLIST_STATUS_FILTER_VALUES);
 
 export function useMapActions({
   mapPaneRef,
   filteredFeatures,
-  rawGeojsonRef,
+  rawBuildingData,
   filtersRef,
   mapBounds,
   onSelectFeature,
+  onSelectBuilding,
   layerConfig,
   layerActions,
   onPatchFilters,
   onShortlistLocal,
+  onBuildingShortlistLocal,
   resolveFeatureById,
 }: UseMapActionsProps) {
-  const filteredFeaturesRef = useRef(filteredFeatures);
-  useEffect(() => {
-    filteredFeaturesRef.current = filteredFeatures;
-  }, [filteredFeatures]);
-
-  const onSelectFeatureRef = useRef(onSelectFeature);
-  useEffect(() => {
-    onSelectFeatureRef.current = onSelectFeature;
-  }, [onSelectFeature]);
-
-  const layerConfigRef = useRef(layerConfig);
-  useEffect(() => {
-    layerConfigRef.current = layerConfig;
-  }, [layerConfig]);
-
-  const layerActionsRef = useRef(layerActions);
-  useEffect(() => {
-    layerActionsRef.current = layerActions;
-  }, [layerActions]);
-
-  const onPatchFiltersRef = useRef(onPatchFilters);
-  useEffect(() => {
-    onPatchFiltersRef.current = onPatchFilters;
-  }, [onPatchFilters]);
-
-  const onShortlistLocalRef = useRef(onShortlistLocal);
-  useEffect(() => {
-    onShortlistLocalRef.current = onShortlistLocal;
-  }, [onShortlistLocal]);
-
-  const resolveFeatureByIdRef = useRef(resolveFeatureById);
-  useEffect(() => {
-    resolveFeatureByIdRef.current = resolveFeatureById;
-  }, [resolveFeatureById]);
-
-  const mapBoundsRef = useRef(mapBounds);
-  useEffect(() => {
-    mapBoundsRef.current = mapBounds;
-  }, [mapBounds]);
+  const filteredFeaturesRef = useLatestRef(filteredFeatures);
+  const rawBuildingDataRef = useLatestRef(rawBuildingData);
+  const onSelectFeatureRef = useLatestRef(onSelectFeature);
+  const onSelectBuildingRef = useLatestRef(onSelectBuilding);
+  const layerConfigRef = useLatestRef(layerConfig);
+  const layerActionsRef = useLatestRef(layerActions);
+  const onPatchFiltersRef = useLatestRef(onPatchFilters);
+  const onShortlistLocalRef = useLatestRef(onShortlistLocal);
+  const onBuildingShortlistLocalRef = useLatestRef(onBuildingShortlistLocal);
+  const resolveFeatureByIdRef = useLatestRef(resolveFeatureById);
+  const mapBoundsRef = useLatestRef(mapBounds);
 
   useFrontendTool({
     name: "focusMap",
@@ -137,6 +139,31 @@ export function useMapActions({
   });
 
   useFrontendTool({
+    name: "selectBuilding",
+    description:
+      "指定されたIDの建物を選択状態にし、建物の詳細を表示する。建物単位（topBuildings の id 等）でユーザーに見せたい時に使う。" +
+      "部屋単位の選択は selectProperty を使う。focusMapと組み合わせて使用すること。",
+    parameters: z.object({
+      building_id: z.number().describe("建物のID（建物Featureのproperties.id・topBuildings の id）"),
+    }),
+    handler: async ({ building_id }) => {
+      const building = rawBuildingDataRef.current?.features.find(
+        (f) => f.properties.id === building_id,
+      );
+      if (!building) {
+        return `Building with id ${building_id} not found in loaded map data.`;
+      }
+      onSelectBuildingRef.current(building_id);
+      const name = building.properties.name ?? `id=${building_id}`;
+      const rooms =
+        building.properties.active_units_count ??
+        building.properties.units_count ??
+        building.properties.units.length;
+      return `Building selected: ${name} (${rooms}部屋)`;
+    },
+  });
+
+  useFrontendTool({
     name: "fitMapToFiltered",
     description:
       "現在フィルタリングされている全物件が収まるように、地図の表示範囲を自動調整する。",
@@ -148,7 +175,7 @@ export function useMapActions({
 
       const bounds = cluster.getBounds();
       if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [50, 50] });
+        map.fitBounds(bounds, { padding: FIT_BOUNDS_PADDING });
         return "Map fitted to filtered properties";
       }
       return "No properties to fit";
@@ -332,13 +359,13 @@ export function useMapActions({
     description:
       "地図UIのフィルターを部分更新する。ユーザーが期間・価格・地域などで絞る指示をしたら必ず使う。" +
       "省略フィールドは変更しない。reset=true で既定（期間総額モード）に戻してから適用。" +
-      "priceMode=stay（既定）: checkIn/checkOut の期間総額で比較。maxPrice は期間総額上限（1000000=制限なし）。" +
-      "priceMode=catalog: カタログ最安。maxPrice は月額相当（300000=制限なし）。" +
+      `priceMode=stay（既定）: checkIn/checkOut の期間総額で比較。maxPrice は期間総額上限（${STAY_PRICE_UNLIMITED}=制限なし）。` +
+      `priceMode=catalog: カタログ最安。maxPrice は月額相当（${CATALOG_PRICE_UNLIMITED}=制限なし）。` +
       "日付は YYYY-MM-DD。万円は円に換算。fitMap=true で適用後に地図フィット。",
     parameters: z.object({
       reset: z.boolean().optional().describe("trueなら全フィルターを初期値に戻してから適用"),
       priceMode: z
-        .enum(["stay", "catalog"])
+        .enum(PRICE_MODE_VALUES)
         .optional()
         .describe("stay=期間総額比較 / catalog=カタログ価格"),
       checkIn: z.string().optional().describe("入居日 YYYY-MM-DD（stay で使用）"),
@@ -347,7 +374,7 @@ export function useMapActions({
         .number()
         .optional()
         .describe(
-          "価格上限（円）。stay 時は期間総額（1000000=制限なし）、catalog 時は月額相当（300000=制限なし）",
+          `価格上限（円）。stay 時は期間総額（${STAY_PRICE_UNLIMITED}=制限なし）、catalog 時は月額相当（${CATALOG_PRICE_UNLIMITED}=制限なし）`,
         ),
       minArea: z.number().optional().describe("面積下限㎡"),
       maxArea: z.number().optional().describe("面積上限㎡"),
@@ -368,10 +395,12 @@ export function useMapActions({
       requiredFeatures: z
         .array(z.string())
         .optional()
-        .describe("必須設備（feature_summary部分一致AND）。指定時は配列ごと置換"),
+        .describe(
+          "必須設備（カテゴリcode集合への包含AND・code/ラベル/生値いずれも指定可）。指定時は配列ごと置換",
+        ),
       sortBy: sortKeySchema.optional(),
       areaMode: z
-        .enum(["all", "viewport", "drawn"])
+        .enum(AREA_MODE_VALUES)
         .optional()
         .describe(
           "範囲絞り込み。all=全物件 / viewport=現在の地図表示範囲 / drawn=ユーザーが囲んだ範囲(未描画時はエラー)",
@@ -386,9 +415,7 @@ export function useMapActions({
       if (args.checkOut !== undefined) patch.checkOut = args.checkOut;
       if (args.maxPrice !== undefined) patch.maxPrice = args.maxPrice;
       if (args.minArea !== undefined || args.maxArea !== undefined) {
-        const cur = args.reset
-          ? ([10, 50] as [number, number])
-          : filtersRef.current.areaRange;
+        const cur = args.reset ? DEFAULT_AREA_RANGE : filtersRef.current.areaRange;
         patch.areaRange = [
           args.minArea !== undefined ? args.minArea : cur[0],
           args.maxArea !== undefined ? args.maxArea : cur[1],
@@ -419,11 +446,14 @@ export function useMapActions({
       onPatchFiltersRef.current(patch);
 
       const bounds = next.areaMode === "viewport" ? mapBoundsRef.current : null;
-      const { features, excludedUnestimable } = applyMapFilters(
-        rawGeojsonRef.current,
+      // B2-δ: 再実行も建物意味論(worker と同一の applyBuildingFilters)へ統一。
+      // 応答形式は現行どおり部屋平面(features/件数)を維持する
+      const { buildings, matchedRoomIds, excludedUnestimable } = applyBuildingFilters(
+        rawBuildingDataRef.current,
         next,
         bounds,
       );
+      const features = flattenMatchedUnits(buildings, matchedRoomIds, next.sortBy, next);
 
       if (args.fitMap) {
         const map = mapPaneRef.current?.map;
@@ -431,7 +461,7 @@ export function useMapActions({
         if (map && cluster) {
           setTimeout(() => {
             const b = cluster.getBounds();
-            if (b.isValid()) map.fitBounds(b, { padding: [50, 50] });
+            if (b.isValid()) map.fitBounds(b, { padding: FIT_BOUNDS_PADDING });
           }, 400);
         }
       }
@@ -447,6 +477,7 @@ export function useMapActions({
           prefecture: next.prefecture,
           layout: next.layout,
         },
+        buildingCount: buildings.length,
         filteredCount: features.length,
         excludedUnestimable,
         sampleIds: features.slice(0, 5).map((f) => f.properties.id),
@@ -464,7 +495,7 @@ export function useMapActions({
       "物件のショートリスト状態を更新する（saved/hide/reject/none）。UIとDBを同期するため、ユーザーが保存・見送り等を指示したらMCPのupdate_shortlistではなく必ずこのツールを使う。",
     parameters: z.object({
       id: z.number().describe("物件ID"),
-      status: z.enum(["saved", "hide", "reject", "none"]),
+      status: z.enum(SHORTLIST_STATUS_VALUES),
       comment: z.string().optional(),
     }),
     handler: async ({ id, status, comment }) => {
@@ -476,6 +507,30 @@ export function useMapActions({
         return JSON.stringify({ ok: true, id, status, title, comment: comment ?? null });
       } catch (e) {
         return `Failed to update shortlist: ${e}`;
+      }
+    },
+  });
+
+  useFrontendTool({
+    name: "updateBuildingShortlist",
+    description:
+      "建物のブックマーク(ショートリスト)状態を更新する(saved/none のみ)。UIとDBを同期するため、ユーザーが建物の保存等を指示したらMCPのupdate_building_shortlistではなく必ずこのツールを使う。建物IDは search_properties 応答の建物 id。",
+    parameters: z.object({
+      buildingId: z.number().describe("建物ID(buildings.id)"),
+      status: z.enum(["saved", "none"]),
+      comment: z.string().optional(),
+    }),
+    handler: async ({ buildingId, status, comment }) => {
+      try {
+        await postBuildingShortlist(buildingId, status, comment ?? null);
+        onBuildingShortlistLocalRef.current(buildingId, status, comment ?? null);
+        const b = rawBuildingDataRef.current?.features.find(
+          (f) => f.properties.id === buildingId,
+        );
+        const name = b?.properties.name ?? `building_id=${buildingId}`;
+        return JSON.stringify({ ok: true, buildingId, status, name, comment: comment ?? null });
+      } catch (e) {
+        return `Failed to update building shortlist: ${e}`;
       }
     },
   });

@@ -2,29 +2,6 @@
 # -*- coding: utf-8 -*-
 """API tests for /api/admin/scrape-settings (per-source scrape overrides)."""
 
-import sqlite3
-
-import pytest
-from fastapi.testclient import TestClient
-
-
-from store.schema import init_schema
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    """tmp DB に向けた TestClient。web_server は request 時に DB パス解決する。"""
-    db = str(tmp_path / "yadokari_mut_v2.db")
-    conn = sqlite3.connect(db)
-    try:
-        init_schema(conn)
-    finally:
-        conn.close()
-    monkeypatch.setenv("YADOKARIMUT_V2_DB_PATH", db)
-    from web_server import app
-
-    return TestClient(app)
-
 
 def test_get_scrape_settings_shape(client):
     res = client.get("/api/admin/scrape-settings")

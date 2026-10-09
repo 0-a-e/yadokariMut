@@ -9,10 +9,15 @@ geocode) を web.app.create_app() で再現し、frontend/openapi.json を byte
 from typing import List, Optional
 
 from pydantic import BaseModel
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 import api_models
-from web.tasks import TASK_STATUS, run_geocode_task, run_scrape_task
+from web.tasks import (
+    TASK_STATUS,
+    require_task_idle,
+    run_geocode_task,
+    run_scrape_task,
+)
 
 router = APIRouter()
 geocode_router = APIRouter()
@@ -121,7 +126,11 @@ class ScrapeRequest(BaseModel):
     geocode_limit: int = 200
 
 
-@router.post("/api/admin/scrape", response_model=api_models.ScrapeStartResponse)
+@router.post(
+    "/api/admin/scrape",
+    response_model=api_models.ScrapeStartResponse,
+    dependencies=[Depends(require_task_idle)],
+)
 def trigger_scrape(
     background_tasks: BackgroundTasks,
     body: Optional[ScrapeRequest] = None,
@@ -130,12 +139,6 @@ def trigger_scrape(
     all_pages: Optional[bool] = Query(None),
 ):
     """Trigger multi-source v2 scrape (per-source or bulk)."""
-    if TASK_STATUS["status"] == "running":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Another task is already running: {TASK_STATUS['current_task']}",
-        )
-
     req = body or ScrapeRequest()
     sources = list(req.sources or [])
     if source:
@@ -180,7 +183,11 @@ def trigger_scrape(
     }
 
 
-@geocode_router.post("/api/admin/geocode", response_model=api_models.TaskStartResponse)
+@geocode_router.post(
+    "/api/admin/geocode",
+    response_model=api_models.TaskStartResponse,
+    dependencies=[Depends(require_task_idle)],
+)
 def trigger_geocode(
     background_tasks: BackgroundTasks,
     limit: Optional[int] = 20,
@@ -192,9 +199,6 @@ def trigger_geocode(
     ),
 ):
     """Triggers geocoding of v2 properties in the background (spec §3.3 modes)."""
-    if TASK_STATUS["status"] == "running":
-        raise HTTPException(status_code=409, detail=f"Another task is already running: {TASK_STATUS['current_task']}")
-
     # spec §3.7: filter_expr 拒否 / provider 白色リスト / force≠retry_only 排他の
     # 3 ルールは MCP (mcp_server.geocode_properties) と共通の実装で検証する。
     # ここでは ValueError を手書き 422 に変換する。

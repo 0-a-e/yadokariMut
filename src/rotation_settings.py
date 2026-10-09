@@ -54,12 +54,12 @@ _store = JsonSettingsStore(
 )
 
 
-def get_rotation_settings(default_db_path: Optional[str] = None) -> dict:
+def get_rotation_settings() -> dict:
     """Load saved per-source overrides. Returns {"sources": {}} when unset."""
-    return _store.load(default_db_path)
+    return _store.load()
 
 
-def save_rotation_settings(update: Any, default_db_path: Optional[str] = None) -> dict:
+def save_rotation_settings(update: Any) -> dict:
     """Partial-merge save. Returns the full settings after save.
 
     - update.sources.<id>.<key> = 値   → そのキーのみ上書き
@@ -68,32 +68,32 @@ def save_rotation_settings(update: Any, default_db_path: Optional[str] = None) -
 
     不正な値は ValueError。呼び出し側(web_server)が HTTPException(400) にする。
     """
-    return _store.save(update, default_db_path)
+    return _store.save(update)
 
 
 def resolve_effective_limits(
-    source_id: str, default_db_path: Optional[str] = None
+    source_id: str
 ) -> dict:
     """実効値 {daily_limit, default_est} を返す(保存値 > コード既定).
 
     スケジューラ・手動実行ともジョブ開始時に呼ぶ。SOURCE_CATALOG 外の
     source id も既定値にフォールバックして解決する。
     """
-    saved = get_rotation_settings(default_db_path)["sources"].get(source_id) or {}
+    saved = get_rotation_settings()["sources"].get(source_id) or {}
     return {
         "daily_limit": int(saved.get("daily_limit", DEFAULT_DAILY_LIMIT)),
         "default_est": int(saved.get("default_est", DEFAULT_EST)),
     }
 
 
-def effective_rotation_settings(default_db_path: Optional[str] = None) -> dict:
+def effective_rotation_settings() -> dict:
     """Admin UI 用: ソース別の保存済み上書き + 実効値 + 既定値を返す。"""
     from store.source_catalog import SOURCE_CATALOG
 
     ids = [str(entry["id"]) for entry in SOURCE_CATALOG]
     out: dict[str, dict[str, Any]] = {}
     for sid in ids:
-        saved = get_rotation_settings(default_db_path)["sources"].get(sid) or {}
+        saved = get_rotation_settings()["sources"].get(sid) or {}
         out[sid] = {
             "daily_limit": int(saved.get("daily_limit", DEFAULT_DAILY_LIMIT)),
             "default_est": int(saved.get("default_est", DEFAULT_EST)),

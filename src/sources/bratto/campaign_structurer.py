@@ -75,7 +75,7 @@ def _empty_structure() -> dict[str, Any]:
         "package_fee_benefit_yen": None,
         "package_total_benefit_yen": None,
         "structure_source": "unknown",
-        "parse_ok": 0,
+        "parse_ok": False,
         "parse_warnings": [],
     }
 
@@ -129,7 +129,7 @@ def structure_from_cam_js(cam: dict[str, Any], campaign_type: str | None = None)
     """Map official cam_* fields into our structured schema."""
     out = _empty_structure()
     out["structure_source"] = "cam_js"
-    out["parse_ok"] = 1
+    out["parse_ok"] = True
 
     label = str(cam.get("label") or campaign_type or "").strip()
     ctype = CAM_LABEL_TO_TYPE.get(label, campaign_type)
@@ -159,7 +159,7 @@ def structure_from_cam_js(cam: dict[str, Any], campaign_type: str | None = None)
         out["target_plan_code"] = "all"
 
     if out["discount_value"] is None:
-        out["parse_ok"] = 0
+        out["parse_ok"] = False
         out["parse_warnings"].append("cam_js missing discount")
 
     return out
@@ -322,12 +322,12 @@ def structure_mechanically(
     if "初週" in text and "無料" in text:
         out["discount_unit"] = "free_first_week"
         out["period_max_days"] = out.get("period_max_days") or 7
-        out["parse_ok"] = 1
+        out["parse_ok"] = True
 
     if ctype == "ミドル割" or (not ctype and "ミドルプラン" in text):
         out["target_plan_code"] = "middle"
         if _parse_package_middle(text, out):
-            out["parse_ok"] = 1
+            out["parse_ok"] = True
         else:
             out["parse_warnings"].append("middle package parse failed")
             out["discount_unit"] = out.get("discount_unit") or "package"
@@ -335,7 +335,7 @@ def structure_mechanically(
     elif ctype == "ロング割" or (not ctype and "ロングプラン" in text):
         out["target_plan_code"] = "long"
         if _parse_package_long(text, out):
-            out["parse_ok"] = 1
+            out["parse_ok"] = True
         else:
             out["parse_warnings"].append("long package parse failed")
             out["discount_unit"] = out.get("discount_unit") or "package"
@@ -343,14 +343,14 @@ def structure_mechanically(
     elif ctype == "ポッキリ割" or "ポッキリ" in text:
         out["target_plan_code"] = out.get("target_plan_code") or "short"
         if _parse_pokkiri(text, out):
-            out["parse_ok"] = 1
+            out["parse_ok"] = True
         else:
             out["parse_warnings"].append("pokkiri parse failed")
 
     elif ctype == "早割":
         out["target_plan_code"] = "all"
         if out.get("discount_unit") == "yen" and out.get("discount_value"):
-            out["parse_ok"] = 1
+            out["parse_ok"] = True
             # defaults from dominant template
             out["period_max_days"] = out.get("period_max_days") or 120
             out["discount_max_yen"] = out.get("discount_max_yen") or (
@@ -364,18 +364,18 @@ def structure_mechanically(
     elif ctype == "特別割引":
         out["target_plan_code"] = "s_short"
         if out.get("discount_unit") == "percent" and out.get("discount_value") is not None:
-            out["parse_ok"] = 1
+            out["parse_ok"] = True
             out["period_max_days"] = out.get("period_max_days") or 14
             out["stay_min_days"] = out.get("stay_min_days") or 1
             out["stay_max_days"] = out.get("stay_max_days") or 29
         elif out.get("discount_unit") == "yen" and out.get("discount_value") is not None:
             # e.g. 1日500円割引 / 1万円OFF
-            out["parse_ok"] = 1
+            out["parse_ok"] = True
             if out.get("period_max_days") is None and "1日" not in text:
                 # lump-sum OFF: treat as one-shot max
                 out["discount_max_yen"] = out.get("discount_max_yen") or out["discount_value"]
         elif out.get("discount_unit") == "free_first_week":
-            out["parse_ok"] = 1
+            out["parse_ok"] = True
         else:
             out["parse_warnings"].append("special discount percent not found")
 
@@ -384,10 +384,10 @@ def structure_mechanically(
         out["discount_value"] = out.get("discount_value") or 500
         # stay_min from 60日間以上 / 7日間以上
         if out.get("stay_min_days") and out.get("period_max_days"):
-            out["parse_ok"] = 1
+            out["parse_ok"] = True
             out["target_plan_code"] = "all"
         elif out.get("discount_value"):
-            out["parse_ok"] = 1
+            out["parse_ok"] = True
             out["parse_warnings"].append("500yen partial stay bounds")
         else:
             out["parse_warnings"].append("500yen parse incomplete")
@@ -395,7 +395,7 @@ def structure_mechanically(
     else:
         # generic: accept if we got a unit+value
         if out.get("discount_unit") in ("yen", "percent") and out.get("discount_value") is not None:
-            out["parse_ok"] = 1
+            out["parse_ok"] = True
         elif out.get("target_plan_code"):
             out["parse_warnings"].append("plan only; discount shape unknown")
         else:
@@ -434,7 +434,7 @@ def merge_structures(
             if cam_js.get(key) is not None:
                 merged[key] = cam_js[key]
         merged["structure_source"] = "cam_js+mechanical"
-        merged["parse_ok"] = 1 if cam_js.get("parse_ok") else merged.get("parse_ok", 0)
+        merged["parse_ok"] = bool(cam_js.get("parse_ok")) or bool(merged.get("parse_ok"))
 
     # plan: cam_js type mapping if mechanical missing
     if not merged.get("target_plan_code") and cam_js.get("target_plan_code"):

@@ -1,47 +1,49 @@
-"""Chat thread listing / history / deletion against the LangGraph checkpoint DB."""
+"""Chat thread listing / history / deletion against the LangGraph checkpoint DB (PostgreSQL)."""
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-import aiosqlite
+import psycopg
 
-from agent.checkpointer import checkpoint_db_path, get_checkpointer
+from agent.checkpointer import get_checkpointer
+from store.pg import open_connection
 
 logger = logging.getLogger(__name__)
 
 
-def _checkpoint_db_path() -> str:
-    # チェックポイント DB パスの正本は agent.checkpointer (agent_service と共有)
-    return checkpoint_db_path()
+def _list_threads_sync(limit: int) -> List[Dict[str, Any]]:
+    """checkpoints テーブルから thread_id 一覧(新着順)を取得(同期・to_thread で実行)。
+
+    checkpoint_id は LangGraph 生成の UUID(uuid7 系・時間順序を含む)のため
+    MAX(checkpoint_id) を新しさの実用シグナルとして使う(SQLite 版の
+    MAX(rowid) 相当)。未マイグレーション/未 setup では空リスト。
+    """
+    try:
+        with open_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT thread_id,
+                       COUNT(*) AS checkpoint_count,
+                       MAX(checkpoint_id) AS last_cp
+                FROM checkpoints
+                WHERE checkpoint_ns = '' OR checkpoint_ns IS NULL
+                GROUP BY thread_id
+                ORDER BY last_cp DESC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+    except psycopg.errors.UndefinedTable:
+        return []
+    return [dict(r) for r in rows]
 
 
 async def list_threads(limit: int = 100) -> List[Dict[str, Any]]:
     """List distinct thread_ids from the checkpoints table (newest first)."""
-    path = _checkpoint_db_path()
-    if not os.path.exists(path):
-        return []
-
-    async with aiosqlite.connect(path) as conn:
-        conn.row_factory = aiosqlite.Row
-        # checkpoint_id is UUID-ish but also time-ordered in LangGraph (uuid7-like prefixes).
-        # Use MAX(rowid) as a practical recency signal.
-        cur = await conn.execute(
-            """
-            SELECT thread_id,
-                   COUNT(*) AS checkpoint_count,
-                   MAX(rowid) AS last_rowid
-            FROM checkpoints
-            WHERE checkpoint_ns = '' OR checkpoint_ns IS NULL
-            GROUP BY thread_id
-            ORDER BY last_rowid DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
-        rows = await cur.fetchall()
+    rows = await asyncio.to_thread(_list_threads_sync, limit)
 
     threads: List[Dict[str, Any]] = []
     for row in rows:
@@ -132,7 +134,7 @@ def _message_to_dict(msg: Any) -> Optional[Dict[str, Any]]:
 
 
 async def get_thread_messages(thread_id: str) -> List[Dict[str, Any]]:
-    """Load messages for a thread from the latest checkpoint via AsyncSqliteSaver."""
+    """Load messages for a thread from the latest checkpoint via the checkpointer."""
     try:
         cp = await get_checkpointer()
         config = {"configurable": {"thread_id": thread_id}}
@@ -152,22 +154,23 @@ async def get_thread_messages(thread_id: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _delete_thread_sync(thread_id: str) -> None:
+    with open_connection() as conn:
+        conn.execute("DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,))
+        conn.execute("DELETE FROM checkpoint_blobs WHERE thread_id = %s", (thread_id,))
+        conn.execute("DELETE FROM checkpoint_writes WHERE thread_id = %s", (thread_id,))
+        conn.commit()
+
+
 async def delete_thread(thread_id: str) -> Dict[str, Any]:
     """Delete all checkpoints for a thread."""
     try:
         cp = await get_checkpointer()
         if hasattr(cp, "adelete_thread"):
             await cp.adelete_thread(thread_id)
-        elif hasattr(cp, "delete_thread"):
-            cp.delete_thread(thread_id)
         else:
             # Fallback: raw SQL
-            path = _checkpoint_db_path()
-            if os.path.exists(path):
-                async with aiosqlite.connect(path) as conn:
-                    await conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,))
-                    await conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
-                    await conn.commit()
+            await asyncio.to_thread(_delete_thread_sync, thread_id)
         return {"status": "success", "thread_id": thread_id}
     except Exception as e:
         logger.exception("Failed to delete thread %s", thread_id)

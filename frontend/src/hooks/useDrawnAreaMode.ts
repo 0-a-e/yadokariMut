@@ -3,7 +3,7 @@ import type { MapFilters } from '../types.ts';
 
 interface UseDrawnAreaModeOptions {
   filters: MapFilters;
-  filtersRef: React.MutableRefObject<MapFilters>;
+  filtersRef: React.RefObject<MapFilters>;
   patchFilters: (patch: Partial<MapFilters> & { reset?: boolean }) => void;
   isMobile: boolean;
   /** 描画要求時に地図タブへ切り替える(モバイルのみ) */

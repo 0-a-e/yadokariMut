@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from store.pg import open_connection
 from store.queries._common import (
     SOURCE_DISPLAY,
+    _MEDIA_IMAGE_COLS,
+    _MEDIA_IMAGE_JOIN,
     _repo,
     apply_effective_rent_plans,
+    campaign_row_to_api,
     price_plan_row_to_rent_plan,
+    resolve_contract_fee_yen,
     resolve_property_id,
 )
 from store.queries.price_history import _guard_price_history
@@ -26,90 +31,106 @@ def get_property_detail(
     子テーブルはその id にのみ紐づける(external_id が複数ソースにまたがる場合は
     AmbiguousPropertyLookup)。
     """
-    repo = _repo()
-    conn = repo.connect()
-    try:
+    with open_connection() as conn:
         pid = resolve_property_id(conn, property_id, by=by, source=source)
         if pid is None:
             return None
-        row = conn.execute("SELECT * FROM properties WHERE id = ?", (pid,)).fetchone()
+        row = conn.execute("SELECT * FROM properties WHERE id = %s", (pid,)).fetchone()
         if not row:
             return None
         prop = dict(row)
         # SELECT * の INTEGER(0/1) を API 契約上の bool へ正規化する
         # (_geojson_feature_from_prop の is_active bool 化と同一規約)
-        prop["is_active"] = bool(prop.get("is_active", 1))
+        prop["is_active"] = bool(prop.get("is_active", True))
         site = prop.get("source_site") or ""
         prop["source_property_id"] = prop.get("external_id")
         prop["source_display_name"] = SOURCE_DISPLAY.get(site, site)
+        # DB の生値 (パーサ未投入なら NULL) は実効値 (物件値 > サイト既定 > 5500)
+        # に解決して返す。GeoJSON / MCP の検索結果と同じ解決結果を返すため、
+        # FE 側でサイト値の再解決は不要
+        prop["contract_fee_yen"] = resolve_contract_fee_yen(prop)
 
         prop["accesses"] = [
             dict(r)
             for r in conn.execute(
                 "SELECT line_name, station_name, walk_minutes, raw_text FROM property_accesses "
-                "WHERE property_id = ? ORDER BY sort_order",
+                "WHERE property_id = %s ORDER BY sort_order NULLS FIRST, id",
                 (pid,),
             )
         ]
         prop["images"] = [
             dict(r)
             for r in conn.execute(
-                "SELECT image_url, image_type, alt_text, sort_order FROM property_images "
-                "WHERE property_id = ? ORDER BY sort_order",
+                f"SELECT {_MEDIA_IMAGE_COLS}, pi.alt_text {_MEDIA_IMAGE_JOIN} "
+                "WHERE pi.property_id = %s ORDER BY pi.sort_order NULLS FIRST, pi.id",
                 (pid,),
             )
         ]
         prop["links"] = [
             dict(r)
             for r in conn.execute(
-                "SELECT link_type, url, label FROM property_links WHERE property_id = ?",
+                "SELECT link_type, url, label FROM property_links WHERE property_id = %s ORDER BY id",
                 (pid,),
             )
         ]
         prop["features"] = [
             dict(r)
             for r in conn.execute(
-                "SELECT feature_name, feature_category FROM property_features WHERE property_id = ?",
+                "SELECT feature_name FROM property_features WHERE property_id = %s",
                 (pid,),
             )
         ]
         plan_rows = [
             dict(r)
             for r in conn.execute(
-                "SELECT * FROM price_plans WHERE property_id = ? ORDER BY duration_min_days",
+                "SELECT * FROM price_plans WHERE property_id = %s ORDER BY duration_min_days",
                 (pid,),
             )
         ]
         cam_rows = [
             dict(r)
-            for r in conn.execute("SELECT * FROM campaigns WHERE property_id = ?", (pid,))
+            for r in conn.execute("SELECT * FROM campaigns WHERE property_id = %s", (pid,))
         ]
-        for c in cam_rows:
-            c["target_plan_code"] = c.get("target_plan_key")
-        prop["campaigns"] = cam_rows
+        # legacy alias + target_plan_label は queries 層の共通変換窓口で付与
+        # (入力行は変更しない。SSOT: _common.campaign_row_to_api)
+        prop["campaigns"] = [campaign_row_to_api(c) for c in cam_rows]
         rent_plans = [price_plan_row_to_rent_plan(p) for p in plan_rows]
         prop["rent_plans"] = apply_effective_rent_plans(rent_plans, cam_rows)
 
         sl = conn.execute(
-            "SELECT status, comment, updated_at FROM shortlists WHERE property_id = ?",
+            "SELECT status, comment, updated_at FROM property_shortlists WHERE property_id = %s",
             (pid,),
         ).fetchone()
         prop["shortlist"] = dict(sl) if sl else None
+
+        # 建物文脈 (建物単位集約モデル・設計 §6.2)。properties.building_id は
+        # nullable (名寄せ未完了の部屋は NULL) のため未割当は building=None。
+        # name は buildings.canonical_name (代表建物名)
+        bid = prop.get("building_id")
+        building_section = None
+        if bid is not None:
+            b_row = conn.execute(
+                "SELECT canonical_name, address FROM buildings WHERE id = %s", (bid,)
+            ).fetchone()
+            building_section = {
+                "building_id": bid,
+                "name": b_row["canonical_name"] if b_row else None,
+                "address": b_row["address"] if b_row else None,
+            }
+        prop["building"] = building_section
 
         prop["price_history"], prop["price_history_meta"] = _guard_price_history(
             [
                 dict(r)
                 for r in conn.execute(
                     "SELECT scraped_at, catalog_rent_per_day_yen, min_discounted_monthly_total_yen "
-                    "FROM property_snapshots WHERE property_id = ? ORDER BY scraped_at ASC",
+                    "FROM property_snapshots WHERE property_id = %s ORDER BY scraped_at ASC",
                     (pid,),
                 )
             ],
             prop.get("catalog_rent_per_day_yen"),
         )
         return prop
-    finally:
-        conn.close()
 
 
 def compare_properties(
@@ -200,11 +221,8 @@ def update_shortlist(
     INSERT..ON CONFLICT + commit) は Repository.update_shortlist (store.repository)。
     """
     repo = _repo()
-    conn = repo.connect()
-    try:
+    with open_connection() as conn:
         pid = resolve_property_id(conn, property_id, by=by, source=source)
-    finally:
-        conn.close()
     if pid is None:
         return {"ok": False, "error": "not found"}
     repo.update_shortlist(pid, status, comment)

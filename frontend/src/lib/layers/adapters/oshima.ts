@@ -1,5 +1,6 @@
 import L from 'leaflet';
 import type { LayerAdapter, LayerCatalogEntry } from '../types.ts';
+import { escapeHtml } from '../../utils.ts';
 
 /**
  * オシマランド(大島てる)事故物件マーカーレイヤ。
@@ -199,23 +200,6 @@ function storeTileResponse(batch: readonly string[], json: unknown): void {
 }
 
 // ── ポップアップHTML生成(外部文字列は必ずエスケープ) ────────────────
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (c) => {
-    switch (c) {
-      case '&':
-        return '&amp;';
-      case '<':
-        return '&lt;';
-      case '>':
-        return '&gt;';
-      case '"':
-        return '&quot;';
-      default:
-        return '&#39;';
-    }
-  });
-}
 
 function fieldText(value: unknown): string {
   if (typeof value === 'string') return value;

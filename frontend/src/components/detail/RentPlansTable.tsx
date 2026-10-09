@@ -4,14 +4,13 @@
 import React from 'react';
 import type { RentPlan } from '../../types.ts';
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@/components/ui/table.tsx';
+import { EmptyState } from '@/components/shared/EmptyState.tsx';
+import { formatYen } from '../../lib/format.ts';
+import { planDisplayLabel } from '../../lib/rentCalculator.ts';
 
 export const RentPlansTable: React.FC<{ plans: RentPlan[] }> = ({ plans }) => {
   if (!plans || plans.length === 0) {
-    return (
-      <p className="text-sm leading-[1.6] text-text-muted italic">
-        料金プラン情報がありません
-      </p>
-    );
+    return <EmptyState message="料金プラン情報がありません" />;
   }
 
   return (
@@ -44,7 +43,7 @@ export const RentPlansTable: React.FC<{ plans: RentPlan[] }> = ({ plans }) => {
             const effTotal =
               plan.effective_total_yen ?? plan.discounted_total_yen;
             const dailyVal = effDaily
-              ? `${effDaily.toLocaleString()}円/日`
+              ? `${formatYen(effDaily)}/日`
               : '0円/日';
             const showOriginalStrike =
               plan.original_daily_rent_yen != null &&
@@ -52,14 +51,14 @@ export const RentPlansTable: React.FC<{ plans: RentPlan[] }> = ({ plans }) => {
               plan.original_daily_rent_yen !== effDaily;
             const originalVal = showOriginalStrike ? (
               <span className="line-through text-text-muted text-xs mr-1">
-                {plan.original_daily_rent_yen!.toLocaleString()}円
+                {formatYen(plan.original_daily_rent_yen!)}
               </span>
             ) : null;
             const totalVal =
               effTotal && plan.total_period_days ? (
                 <span className="text-xs text-text-muted block mt-0.5">
                   ({plan.total_period_days}日総額:{' '}
-                  {effTotal.toLocaleString()}円)
+                  {formatYen(effTotal)})
                 </span>
               ) : null;
             const appliedLabel =
@@ -93,17 +92,17 @@ export const RentPlansTable: React.FC<{ plans: RentPlan[] }> = ({ plans }) => {
             );
             mngText =
               plan.management_fee_daily_yen != null
-                ? `${plan.management_fee_daily_yen.toLocaleString()}円/日`
+                ? `${formatYen(plan.management_fee_daily_yen)}/日`
                 : '0円/日';
             clnText =
               plan.cleaning_fee_yen != null
-                ? `${plan.cleaning_fee_yen.toLocaleString()}円`
+                ? formatYen(plan.cleaning_fee_yen)
                 : '0円';
           }
 
           return (
             <TableRow key={idx}>
-              <TableCell className="font-semibold">{plan.plan_name}</TableCell>
+              <TableCell className="font-semibold">{planDisplayLabel(plan)}</TableCell>
               <TableCell>{rentText}</TableCell>
               <TableCell>{mngText}</TableCell>
               <TableCell>{clnText}</TableCell>

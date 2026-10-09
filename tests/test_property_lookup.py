@@ -8,61 +8,69 @@
 id 優先・決定性・曖昧さの明示を検証する。
 """
 
-import os
-import shutil
-import tempfile
 import unittest
-
 
 from fastapi.testclient import TestClient
 
-from domain.models import PropertyDraft
+from helpers import ScopedDb, make_draft
 from store import api_queries
 from store.repository import Repository
 
 from web_server import app
 
 
-def _draft(source_site: str, external_id: str) -> PropertyDraft:
-    return PropertyDraft(
-        source_site=source_site,
-        external_id=external_id,
-        entity_type="room",
-        title=f"{source_site} {external_id}",
-        detail_url=f"https://example.test/{source_site}/{external_id}/",
-        prefecture_name="東京都",
-        prefecture_slug="tokyo",
-        is_active=True,
-    )
-
-
 class PropertyLookupTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls._old_db = os.environ.get("YADOKARIMUT_V2_DB_PATH")
-        cls._tmpdir = tempfile.mkdtemp(prefix="yadm-lookup-")
-        os.environ["YADOKARIMUT_V2_DB_PATH"] = os.path.join(cls._tmpdir, "test_v2.db")
+        cls._db = ScopedDb("lookup")
+        cls.addClassCleanup(cls._db.close)
 
         repo = Repository()
-        repo.init_db()
         # 衝突を作る: id=1 の物件の external_id を "2" にして、id=2 より小さくする。
         # 旧実装(テーブルスキャン=rowid 昇順)は key="2" で id=1 を返していた。
-        cls.b_id = repo.upsert_property(_draft("unionmonthly", "2"))   # id=1
-        cls.a_id = repo.upsert_property(_draft("bratto", "999"))       # id=2
-        cls.c_id = repo.upsert_property(_draft("fakesite", "2"))       # id=3 (同一 external_id 別ソース)
+        cls.b_id = repo.upsert_property(  # id=1
+            make_draft(
+                "2",
+                source_site="unionmonthly",
+                title="unionmonthly 2",
+                detail_url="https://example.test/unionmonthly/2/",
+            )
+        )
+        cls.a_id = repo.upsert_property(  # id=2
+            make_draft(
+                "999",
+                source_site="bratto",
+                title="bratto 999",
+                detail_url="https://example.test/bratto/999/",
+            )
+        )
+        cls.c_id = repo.upsert_property(  # id=3 (同一 external_id 別ソース)
+            make_draft(
+                "2",
+                source_site="fakesite",
+                title="fakesite 2",
+                detail_url="https://example.test/fakesite/2/",
+            )
+        )
         # 存在する id と衝突しない外部 id を 2 ソースに持たせる(曖昧解決の検証用)
-        cls.d_id = repo.upsert_property(_draft("fakesite", "5555"))
-        cls.e_id = repo.upsert_property(_draft("bratto", "5555"))
+        cls.d_id = repo.upsert_property(
+            make_draft(
+                "5555",
+                source_site="fakesite",
+                title="fakesite 5555",
+                detail_url="https://example.test/fakesite/5555/",
+            )
+        )
+        cls.e_id = repo.upsert_property(
+            make_draft(
+                "5555",
+                source_site="bratto",
+                title="bratto 5555",
+                detail_url="https://example.test/bratto/5555/",
+            )
+        )
 
         cls.client = TestClient(app)
-
-    @classmethod
-    def tearDownClass(cls):
-        if cls._old_db is None:
-            os.environ.pop("YADOKARIMUT_V2_DB_PATH", None)
-        else:
-            os.environ["YADOKARIMUT_V2_DB_PATH"] = cls._old_db
-        shutil.rmtree(cls._tmpdir, ignore_errors=True)
 
     # ---- 解決ロジック ----
 
@@ -115,7 +123,7 @@ class PropertyLookupTest(unittest.TestCase):
         conn = Repository().connect()
         try:
             saved = conn.execute(
-                "SELECT property_id FROM shortlists ORDER BY property_id"
+                "SELECT property_id FROM property_shortlists ORDER BY property_id"
             ).fetchall()
         finally:
             conn.close()
@@ -161,7 +169,7 @@ class PropertyLookupTest(unittest.TestCase):
 
         conn = Repository().connect()
         try:
-            rows = conn.execute("SELECT property_id FROM shortlists").fetchall()
+            rows = conn.execute("SELECT property_id FROM property_shortlists").fetchall()
             self.assertEqual([r["property_id"] for r in rows], [self.a_id])
         finally:
             conn.close()

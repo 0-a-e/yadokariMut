@@ -5,14 +5,116 @@
 import unittest
 
 from sources.parsing import (
+    FloorSpec,
+    OrientationSpec,
     parse_access_parts,
     parse_area,
     parse_dates_from_text,
+    parse_floor_text,
     parse_japanese_era,
     parse_money,
+    parse_orientation_text,
     parse_walk_minutes,
+    round_half_up,
     split_access,
 )
+
+
+class TestParseFloorText(unittest.TestCase):
+    """階数パース (docs/floor-number-ssot-plan.md §3.1)。
+
+    入力パターンは 2026-10-08 本番生HTML全件PoC の観測値に基づく
+    (bratto「階建」セル / unionmonthly「所在階」セル)。
+    """
+
+    def test_bratto_concat_room_floor(self):
+        self.assertEqual(parse_floor_text("10階建7階"), FloorSpec(7, 7, 10))
+        self.assertEqual(parse_floor_text("3階建2階"), FloorSpec(2, 2, 3))
+
+    def test_bratto_concat_goshitsu_number(self):
+        # M>=100 は号室番号 (803号室 = 8階)。PoC で不整合 0 を確認済み
+        self.assertEqual(parse_floor_text("9階建803階"), FloorSpec(8, 8, 9))
+        self.assertEqual(parse_floor_text("14階建1302階"), FloorSpec(13, 13, 14))
+        self.assertEqual(parse_floor_text("9階建410階"), FloorSpec(4, 4, 9))
+
+    def test_bratto_building_only(self):
+        self.assertEqual(parse_floor_text("10階建"), FloorSpec(None, None, 10))
+        self.assertEqual(parse_floor_text("２階建"), FloorSpec(None, None, 2))  # 全角
+
+    def test_bratto_multi_floor(self):
+        self.assertEqual(parse_floor_text("2階建1・2階"), FloorSpec(1, 2, 2, multi_floor=True))
+
+    def test_room_floor_exceeds_building_is_rejected(self):
+        # 階数解釈が建物階数を超える / 号室解釾結果が建物階数を超える場合は不成立
+        self.assertEqual(parse_floor_text("9階建11階"), FloorSpec(None, None, 9))
+        self.assertEqual(parse_floor_text("2階建905階"), FloorSpec(None, None, 2))
+
+    def test_union_shozokai(self):
+        self.assertEqual(parse_floor_text("6階"), FloorSpec(6, 6, None))
+        self.assertEqual(parse_floor_text("6階/11階建"), FloorSpec(6, 6, 11))
+
+    def test_basement(self):
+        self.assertEqual(parse_floor_text("地下1階"), FloorSpec(-1, -1, None))
+        self.assertEqual(parse_floor_text("B3F"), FloorSpec(-3, -3, None))
+
+    def test_empty_and_unmatched(self):
+        self.assertEqual(parse_floor_text(""), FloorSpec())
+        self.assertEqual(parse_floor_text(None), FloorSpec())
+        self.assertEqual(parse_floor_text("   "), FloorSpec())
+        self.assertEqual(parse_floor_text("階建"), FloorSpec())
+        self.assertEqual(parse_floor_text("最上階"), FloorSpec())
+
+
+class TestParseOrientationText(unittest.TestCase):
+    """向き角度パース (docs/orientation-model-plan.md §3)。
+
+    入力は 2026-10-08 本番生HTML全件PoC の観測 12 種 + 16 風位の残りを含む。
+    """
+
+    def test_observed_primary_winds(self):
+        # 観測 8 正名
+        expected = {
+            "南": 180, "東": 90, "南西": 225, "西": 270,
+            "南東": 135, "北東": 45, "北西": 315, "北": 0,
+        }
+        for raw, deg in expected.items():
+            self.assertEqual(parse_orientation_text(raw), OrientationSpec(raw, deg), raw)
+
+    def test_observed_aliases(self):
+        # alias 吸収(東南→南東・東北→北東)。text(原文)は呼び出し側が保持する
+        self.assertEqual(parse_orientation_text("東南"), OrientationSpec("南東", 135))
+        self.assertEqual(parse_orientation_text("東北"), OrientationSpec("北東", 45))
+
+    def test_observed_16_wind_granularity(self):
+        # 16 風位粒度の実在値(潰さず保持)
+        self.assertEqual(parse_orientation_text("南南西"), OrientationSpec("南南西", 203))
+        self.assertEqual(parse_orientation_text("北北東"), OrientationSpec("北北東", 23))
+
+    def test_all_16_winds_covered(self):
+        # 未観測 4 種を含む 16 風位が全て閉集合で定義されている
+        expected = {
+            "北": 0, "北北東": 23, "北東": 45, "東北東": 68,
+            "東": 90, "東南東": 113, "南東": 135, "南南東": 158,
+            "南": 180, "南南西": 203, "南西": 225, "西南西": 248,
+            "西": 270, "西北西": 293, "北西": 315, "北北西": 338,
+        }
+        for raw, deg in expected.items():
+            spec = parse_orientation_text(raw)
+            self.assertEqual((spec.label, spec.deg), (raw, deg), raw)
+
+    def test_unknown_is_tolerant(self):
+        self.assertEqual(parse_orientation_text("角部屋"), OrientationSpec())
+        self.assertEqual(parse_orientation_text(""), OrientationSpec())
+        self.assertEqual(parse_orientation_text(None), OrientationSpec())
+        self.assertEqual(parse_orientation_text("南向き"), OrientationSpec())
+
+    def test_round_half_up(self):
+        # 半上げ一元(round() の half-to-even は使わない): 22.5→23 / 202.5→203
+        self.assertEqual(round_half_up(22.5), 23)
+        self.assertEqual(round_half_up(157.5), 158)
+        self.assertEqual(round_half_up(202.5), 203)
+        self.assertEqual(round_half_up(337.5), 338)
+        self.assertEqual(round_half_up(0.5), 1)
 
 
 class TestParseMoney(unittest.TestCase):
@@ -92,6 +194,18 @@ class TestParseJapaneseEra(unittest.TestCase):
         self.assertEqual(parse_japanese_era("200612"), (2006, 12))
         self.assertEqual(parse_japanese_era("2024年11月"), (2024, 11))
         self.assertEqual(parse_japanese_era("2024年"), (2024, None))
+
+    def test_western_bare_year(self):
+        # bratto で実測された「年」接尾辞なしの西暦のみ表記
+        self.assertEqual(parse_japanese_era("2019"), (2019, None))
+        self.assertEqual(parse_japanese_era("2021"), (2021, None))
+        # 月付きの既存解釈を壊さない
+        self.assertEqual(parse_japanese_era("2024年11月"), (2024, 11))
+
+    def test_era_omitted_2digit_year_stays_unparsable(self):
+        # 元号省略の「18年」は紀年法が確定できないため None のまま
+        self.assertEqual(parse_japanese_era("18年"), (None, None))
+        self.assertEqual(parse_japanese_era("23年"), (None, None))
 
     def test_unparsable(self):
         self.assertEqual(parse_japanese_era(""), (None, None))

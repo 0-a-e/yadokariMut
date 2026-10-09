@@ -15,8 +15,20 @@ import {
 import { Button } from '@/components/ui/button.tsx';
 import { Badge } from '@/components/ui/badge.tsx';
 import { Slider } from '@/components/ui/slider.tsx';
-import { Menu, MenuTrigger, MenuContent, MenuItem } from '@/components/ui/menu.tsx';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu.tsx';
 import { cn } from '@/lib/utils.ts';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select.tsx';
 import { DND_HANDLE_ATTR } from '../../lib/layers/dnd.ts';
 import type { LayerActions } from '../../lib/layers/state.ts';
 import type { FeSettings } from '../../lib/feSettings.ts';
@@ -30,6 +42,7 @@ import {
 } from '../../lib/layers/types.ts';
 import { LayerLegendPopover } from './LayerLegendPopover.tsx';
 import { LayerSettingsDialog } from './LayerSettingsDialog.tsx';
+import { PropertiesLayerSettingsDialog } from './PropertiesLayerSettingsDialog.tsx';
 
 /** useSortable のバインディング(attributes/listeners)の型 */
 type SortableBindings = Pick<ReturnType<typeof useSortable>, 'attributes' | 'listeners'>;
@@ -39,6 +52,12 @@ type SortableBindings = Pick<ReturnType<typeof useSortable>, 'attributes' | 'lis
 let lastDragEndAt = 0;
 
 /** DnD終了直後であることを記録。LayerPanel の onDragEnd/onDragCancel から呼ぶ */
+/**
+ * グループ割当セレクトの「グループなし」を表す値。
+ * 空文字は base-ui Select の未選択表現と衝突し得るため sentinel を使い、
+ * レイヤ状態へは null を渡す(ネイティブ select 時代の value="" 相当)。
+ */
+const GROUP_NONE = '__none__';
 export function markDragEnd(): void {
   lastDragEndAt = Date.now();
 }
@@ -65,6 +84,80 @@ function DragHandle({ label }: { label: string }) {
     </button>
   );
 }
+
+/** 行種共通: 表示切替ボタン。グループヘッダーは stopDrag/expanded を渡す */
+const VisibilityToggle: React.FC<{
+  label: string;
+  visible: boolean;
+  onToggle: () => void;
+  onPointerDown?: (e: React.PointerEvent) => void;
+  expanded?: boolean;
+}> = ({ label, visible, onToggle, onPointerDown, expanded }) => (
+  <Button
+    variant="ghost"
+    size="icon-xs"
+    aria-label={label}
+    aria-expanded={expanded}
+    title={visible ? '非表示にする' : '表示する'}
+    className={cn(
+      'shrink-0',
+      visible ? 'text-text' : 'text-text-muted/60 hover:text-text-muted',
+    )}
+    onPointerDown={onPointerDown}
+    onClick={onToggle}
+  >
+    {visible ? <FaEye /> : <FaEyeSlash />}
+  </Button>
+);
+
+/** 行種共通: 設定ボタン(設定モーダルは行ローカルstateで開く) */
+const SettingsButton: React.FC<{
+  label: string;
+  title: string;
+  onOpen: () => void;
+}> = ({ label, title, onOpen }) => (
+  <Button
+    variant="ghost"
+    size="icon-xs"
+    aria-label={label}
+    title={title}
+    className="shrink-0 text-text-muted/70 hover:text-primary"
+    onClick={onOpen}
+  >
+    <FaGear />
+  </Button>
+);
+
+/** 行種共通: 不透明度スライダー+%表示(行の2行目レイアウト) */
+const OpacitySliderRow: React.FC<{
+  label: string;
+  opacity: number;
+  onChange: (v: number) => void;
+}> = ({ label, opacity, onChange }) => {
+  const opacityPct = Math.round(opacity * 100);
+  return (
+    <div className="flex items-center gap-1">
+      <Slider
+        className="mx-3 min-w-0 grow"
+        aria-label={`${label}の不透明度`}
+        value={[opacityPct]}
+        onValueChange={(vals) => {
+          const v = Array.isArray(vals) ? vals[0] : vals;
+          if (typeof v === 'number') onChange(v / 100);
+        }}
+        min={0}
+        max={100}
+        step={1}
+      />
+      <span
+        className="w-8 shrink-0 text-right text-[9px] tabular-nums text-text-muted"
+        title="不透明度"
+      >
+        {opacityPct}%
+      </span>
+    </div>
+  );
+};
 
 /** 有効/無効レイヤ行の共通props(設定モーダル伝達を含む) */
 interface LayerRowFeSettingsProps {
@@ -101,8 +194,12 @@ export const EnabledLayerRowContent: React.FC<EnabledLayerRowProps> = ({
   feSettings,
   onFeSettingsChange,
 }) => {
+  /** セレクトの値→ラベル対応(base-ui の items。選択中ラベルの表示に使う) */
+  const groupItemMap: Record<string, string> = {
+    [GROUP_NONE]: 'グループなし',
+    ...Object.fromEntries(groups.map((g) => [g.id, g.name])),
+  };
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const opacityPct = Math.round(layer.opacity * 100);
   const tagLabel = entry?.tags[0] ? LAYER_TAG_LABELS[entry.tags[0]] : null;
 
   // 名前部分: 凡例ポップオーバー(description/legend)と note ツールチップは
@@ -132,19 +229,11 @@ export const EnabledLayerRowContent: React.FC<EnabledLayerRowProps> = ({
         {/* 1行目: 操作系 */}
         <div className="flex min-w-0 items-center gap-1.5">
           <DragHandle label={`${name}をドラッグ(順序変更・グループ移動・無効化)`} />
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label={layer.visible ? `${name}を非表示` : `${name}を表示`}
-            title={layer.visible ? '非表示にする' : '表示する'}
-            className={cn(
-              'shrink-0',
-              layer.visible ? 'text-text' : 'text-text-muted/60 hover:text-text-muted',
-            )}
-            onClick={() => layerActions.setLayerVisible(layer.id, !layer.visible)}
-          >
-            {layer.visible ? <FaEye /> : <FaEyeSlash />}
-          </Button>
+          <VisibilityToggle
+            label={layer.visible ? `${name}を非表示` : `${name}を表示`}
+            visible={layer.visible}
+            onToggle={() => layerActions.setLayerVisible(layer.id, !layer.visible)}
+          />
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             {nameBlock}
             {tagLabel && (
@@ -154,34 +243,39 @@ export const EnabledLayerRowContent: React.FC<EnabledLayerRowProps> = ({
             )}
           </div>
           {groups.length > 0 && (
-            <select
-              aria-label={`${name}のグループ`}
-              title="グループ割当"
-              value={layer.groupId ?? ''}
-              onChange={(e) => layerActions.assignLayerGroup(layer.id, e.target.value || null)}
-              className={cn(
-                'h-5 max-w-24 shrink-0 rounded-md border border-border bg-white/[0.04] px-1',
-                'text-[10px] text-text-muted outline-none focus:border-primary',
-              )}
+            <Select
+              items={groupItemMap}
+              value={layer.groupId ?? GROUP_NONE}
+              onValueChange={(value) => {
+                if (typeof value !== 'string') return;
+                layerActions.assignLayerGroup(layer.id, value === GROUP_NONE ? null : value);
+              }}
             >
-              <option value="">グループなし</option>
-              {groups.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger
+                size="sm"
+                aria-label={`${name}のグループ`}
+                title="グループ割当"
+                className="h-5 max-w-24 shrink-0 px-1 text-[10px] text-text-muted [&_svg]:size-3"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value={GROUP_NONE} className="text-xs">
+                  グループなし
+                </SelectItem>
+                {groups.map((g) => (
+                  <SelectItem key={g.id} value={g.id} className="text-xs">
+                    {g.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           )}
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label={`${name}の設定`}
+          <SettingsButton
+            label={`${name}の設定`}
             title="レイヤ設定"
-            className="shrink-0 text-text-muted/70 hover:text-primary"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <FaGear />
-          </Button>
+            onOpen={() => setSettingsOpen(true)}
+          />
           <Button
             variant="ghost"
             size="icon-xs"
@@ -194,26 +288,11 @@ export const EnabledLayerRowContent: React.FC<EnabledLayerRowProps> = ({
           </Button>
         </div>
         {/* 2行目: 不透明度スライダー+%表示 */}
-        <div className="flex items-center gap-1">
-          <Slider
-            className="mx-3 min-w-0 grow"
-            aria-label={`${name}の不透明度`}
-            value={[opacityPct]}
-            onValueChange={(vals) => {
-              const v = Array.isArray(vals) ? vals[0] : vals;
-              if (typeof v === 'number') layerActions.setLayerOpacity(layer.id, v / 100);
-            }}
-            min={0}
-            max={100}
-            step={1}
-          />
-          <span
-            className="w-8 shrink-0 text-right text-[9px] tabular-nums text-text-muted"
-            title="不透明度"
-          >
-            {opacityPct}%
-          </span>
-        </div>
+        <OpacitySliderRow
+          label={name}
+          opacity={layer.opacity}
+          onChange={(v) => layerActions.setLayerOpacity(layer.id, v)}
+        />
       </div>
       <LayerSettingsDialog
         layerId={layer.id}
@@ -351,8 +430,8 @@ const BaseSwapMenu: React.FC<{ currentId: string; layerActions: LayerActions }> 
   currentId,
   layerActions,
 }) => (
-  <Menu>
-    <MenuTrigger
+  <DropdownMenu>
+    <DropdownMenuTrigger
       render={
         <Button
           variant="ghost"
@@ -365,9 +444,9 @@ const BaseSwapMenu: React.FC<{ currentId: string; layerActions: LayerActions }> 
         </Button>
       }
     />
-    <MenuContent align="end">
+    <DropdownMenuContent align="end">
       {baseEntries.map((e) => (
-        <MenuItem
+        <DropdownMenuItem
           key={e.id}
           onClick={() => layerActions.selectBase(e.id as BaseLayerId)}
           className={cn('gap-1.5', e.id === currentId && 'text-accent')}
@@ -378,10 +457,10 @@ const BaseSwapMenu: React.FC<{ currentId: string; layerActions: LayerActions }> 
             <span className="size-2.5 shrink-0" />
           )}
           <span className="min-w-0 truncate">{e.name}</span>
-        </MenuItem>
+        </DropdownMenuItem>
       ))}
-    </MenuContent>
-  </Menu>
+    </DropdownMenuContent>
+  </DropdownMenu>
 );
 
 /**
@@ -399,7 +478,6 @@ export const BaseLayerRow: React.FC<EnabledLayerRowProps & { isSwapTarget?: bool
   isSwapTarget,
 }) => {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const opacityPct = Math.round(layer.opacity * 100);
 
   return (
     <div
@@ -419,57 +497,29 @@ export const BaseLayerRow: React.FC<EnabledLayerRowProps & { isSwapTarget?: bool
           >
             基本地図
           </Badge>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label={layer.visible ? `${name}を非表示` : `${name}を表示`}
-            title={layer.visible ? '非表示にする' : '表示する'}
-            className={cn(
-              'shrink-0',
-              layer.visible ? 'text-text' : 'text-text-muted/60 hover:text-text-muted',
-            )}
-            onClick={() => layerActions.setLayerVisible(layer.id, !layer.visible)}
-          >
-            {layer.visible ? <FaEye /> : <FaEyeSlash />}
-          </Button>
+          <VisibilityToggle
+            label={layer.visible ? `${name}を非表示` : `${name}を表示`}
+            visible={layer.visible}
+            onToggle={() => layerActions.setLayerVisible(layer.id, !layer.visible)}
+          />
           <LayerLegendPopover
             name={name}
             entry={entry}
             nameClassName="min-w-0 flex-1 truncate text-xs text-text-muted"
           />
           <BaseSwapMenu currentId={layer.id} layerActions={layerActions} />
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label={`${name}の設定`}
+          <SettingsButton
+            label={`${name}の設定`}
             title="レイヤ設定"
-            className="shrink-0 text-text-muted/70 hover:text-primary"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <FaGear />
-          </Button>
+            onOpen={() => setSettingsOpen(true)}
+          />
         </div>
         {/* 2行目: 不透明度スライダー+%表示 */}
-        <div className="flex items-center gap-1">
-          <Slider
-            className="mx-3 min-w-0 grow"
-            aria-label={`${name}の不透明度`}
-            value={[opacityPct]}
-            onValueChange={(vals) => {
-              const v = Array.isArray(vals) ? vals[0] : vals;
-              if (typeof v === 'number') layerActions.setLayerOpacity(layer.id, v / 100);
-            }}
-            min={0}
-            max={100}
-            step={1}
-          />
-          <span
-            className="w-8 shrink-0 text-right text-[9px] tabular-nums text-text-muted"
-            title="不透明度"
-          >
-            {opacityPct}%
-          </span>
-        </div>
+        <OpacitySliderRow
+          label={name}
+          opacity={layer.opacity}
+          onChange={(v) => layerActions.setLayerOpacity(layer.id, v)}
+        />
       </div>
       <LayerSettingsDialog
         layerId={layer.id}
@@ -484,15 +534,17 @@ export const BaseLayerRow: React.FC<EnabledLayerRowProps & { isSwapTarget?: bool
 
 /**
  * 物件ピン行(最前面固定の特殊行。BaseLayerRow=最下層固定の対称)。
- * 検索結果の動的データのためスタック外で常駐し、表示切替と不透明度のみ
+ * 検索結果の動的データのためスタック外で常駐し、表示切替・不透明度・設定のみ
  * 操作可(ドラッグ/無効化/グループ参加は不可。カタログエントリが無いため
- * 設定モーダル・凡例ポップオーバーも無し)。
+ * 凡例ポップオーバーは無し。設定は PropertiesLayerSettingsDialog: global保存)。
  */
 export const PropertiesLayerRow: React.FC<{
   layer: LayerRuntime;
   layerActions: LayerActions;
-}> = ({ layer, layerActions }) => {
-  const opacityPct = Math.round(layer.opacity * 100);
+  feSettings: FeSettings;
+  onFeSettingsChange: (update: FeSettings) => Promise<FeSettings | null>;
+}> = ({ layer, layerActions, feSettings, onFeSettingsChange }) => {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const name = '物件ピン';
 
   return (
@@ -507,48 +559,36 @@ export const PropertiesLayerRow: React.FC<{
           >
             物件
           </Badge>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label={layer.visible ? `${name}を非表示` : `${name}を表示`}
-            title={layer.visible ? '非表示にする' : '表示する'}
-            className={cn(
-              'shrink-0',
-              layer.visible ? 'text-text' : 'text-text-muted/60 hover:text-text-muted',
-            )}
-            onClick={() => layerActions.setPropertiesVisible(!layer.visible)}
-          >
-            {layer.visible ? <FaEye /> : <FaEyeSlash />}
-          </Button>
+          <VisibilityToggle
+            label={layer.visible ? `${name}を非表示` : `${name}を表示`}
+            visible={layer.visible}
+            onToggle={() => layerActions.setPropertiesVisible(!layer.visible)}
+          />
           <span
             className="min-w-0 flex-1 truncate text-xs text-text-muted"
             title="サイドバーの検索結果に一致する物件ピン(最前面固定)"
           >
             {name}
           </span>
+          <SettingsButton
+            label={`${name}の設定`}
+            title="物件ピンの設定"
+            onOpen={() => setSettingsOpen(true)}
+          />
         </div>
         {/* 2行目: 不透明度スライダー+%表示 */}
-        <div className="flex items-center gap-1">
-          <Slider
-            className="mx-3 min-w-0 grow"
-            aria-label={`${name}の不透明度`}
-            value={[opacityPct]}
-            onValueChange={(vals) => {
-              const v = Array.isArray(vals) ? vals[0] : vals;
-              if (typeof v === 'number') layerActions.setPropertiesOpacity(v / 100);
-            }}
-            min={0}
-            max={100}
-            step={1}
-          />
-          <span
-            className="w-8 shrink-0 text-right text-[9px] tabular-nums text-text-muted"
-            title="不透明度"
-          >
-            {opacityPct}%
-          </span>
-        </div>
+        <OpacitySliderRow
+          label={name}
+          opacity={layer.opacity}
+          onChange={(v) => layerActions.setPropertiesOpacity(v)}
+        />
       </div>
+      <PropertiesLayerSettingsDialog
+        feSettings={feSettings}
+        onUpdate={onFeSettingsChange}
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+      />
     </div>
   );
 };
@@ -640,20 +680,13 @@ export const GroupHeaderContent: React.FC<{
       <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[9px]" title="メンバー数">
         {memberCount}
       </Badge>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        aria-label={`${group.name}の表示切替`}
-        title={group.visible ? '非表示にする' : '表示する'}
-        className={cn(
-          'shrink-0',
-          group.visible ? 'text-text' : 'text-text-muted/60 hover:text-text-muted',
-        )}
+      <VisibilityToggle
+        label={`${group.name}の表示切替`}
+        visible={group.visible}
+        onToggle={() => layerActions?.setGroupVisible(group.id, !group.visible)}
         onPointerDown={stopDrag}
-        onClick={() => layerActions?.setGroupVisible(group.id, !group.visible)}
-      >
-        {group.visible ? <FaEye /> : <FaEyeSlash />}
-      </Button>
+        expanded={!collapsed}
+      />
       <span className="flex w-16 shrink-0 items-center" onPointerDown={stopDrag}>
         <Slider
           className="w-full"

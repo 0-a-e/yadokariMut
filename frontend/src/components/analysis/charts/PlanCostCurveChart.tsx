@@ -10,7 +10,7 @@ import {
   YAxis,
 } from 'recharts';
 import type { PlanCurveRow } from '../../../lib/analysis/planCurve.ts';
-import { PLAN_LABELS, type PlanCode } from '../../../lib/rentCalculator.ts';
+import { formatYen } from '../../../lib/format.ts';
 // 色・軸・tooltip・凡例の共通定義は chartTheme へ切り出し
 import {
   AXIS_TICK,
@@ -18,8 +18,9 @@ import {
   COLOR_WARNING,
   PLAN_COLORS,
   TooltipCard,
+  TooltipRow,
   TrendLegend,
-  formatYen,
+  formatYenCompact,
   planColor,
 } from '../../shared/charts/chartTheme.tsx';
 
@@ -27,6 +28,8 @@ interface PlanCostCurveChartProps {
   rows: PlanCurveRow[];
   selectedDays: number;
   onSelectDays?: (days: number) => void;
+  /** plan_code → 表示ラベル(plan_label ベース・設計 §3.6)。未指定は code 表示 */
+  labels?: Record<string, string>;
 }
 
 /** チャート用に values をフラット化した1点。planCode/total/perDay は tooltip 表示用に同居させる */
@@ -38,22 +41,17 @@ interface CurvePoint {
   [code: string]: number | string | null;
 }
 
-/** PLAN_LABELS に無いコード(semi_short 等)のフォールバック表示名 */
-const EXTRA_PLAN_LABELS: Record<string, string> = {
-  semi_short: 'セミショート',
-};
-
-/** プランコードの表示名(PLAN_LABELS → セミショート等の補完 → コードそのまま) */
-function planLabel(code: string): string {
-  return PLAN_LABELS[code as PlanCode] ?? EXTRA_PLAN_LABELS[code] ?? code;
-}
+/** プラン表示名は wire の plan_label(BE 解決)+帯レンジ合成(設計 §3.6)。
+ *  曲線データ(planCurve)の planName から code → ラベルを引く。未登録は code。 */
 
 function CurveTooltip({
   active,
   payload,
+  labels,
 }: {
   active?: boolean;
   payload?: Array<{ payload: CurvePoint }>;
+  labels?: Record<string, string>;
 }) {
   if (!active || !payload || payload.length === 0) return null;
   const p = payload[0]?.payload;
@@ -61,26 +59,13 @@ function CurveTooltip({
   return (
     <TooltipCard>
       <div className="font-semibold text-text mb-1">{p.days.toLocaleString()}日</div>
-      <div className="flex items-center gap-1.5">
-        <span
-          className="inline-block size-2 rounded-full"
-          style={{ background: planColor(p.planCode) }}
-        />
-        <span className="text-text-muted">適用プラン</span>
-        <span className="font-semibold text-text ml-auto pl-3">{planLabel(p.planCode)}</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="text-text-muted">総額</span>
-        <span className="font-semibold text-text ml-auto pl-3">
-          {p.total.toLocaleString()}円
-        </span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="text-text-muted">実質1日単価</span>
-        <span className="font-semibold text-text ml-auto pl-3">
-          {p.perDay.toLocaleString()}円
-        </span>
-      </div>
+      <TooltipRow
+        label="適用プラン"
+        color={planColor(p.planCode)}
+        value={labels?.[p.planCode] ?? p.planCode}
+      />
+      <TooltipRow label="総額" value={formatYen(p.total)} />
+      <TooltipRow label="実質1日単価" value={formatYen(p.perDay)} />
     </TooltipCard>
   );
 }
@@ -89,11 +74,7 @@ function CurveTooltip({
  * 滞在日数×実質1日単価のカーブ。プラン別に Line を分け、30日/91日/181日境界の
  * 段差(まとめ買い割引)を見せる。選択中の日数は Warning 色の縦破線で示す。
  */
-const PlanCostCurveChart: React.FC<PlanCostCurveChartProps> = ({
-  rows,
-  selectedDays,
-  onSelectDays,
-}) => {
+const PlanCostCurveChart: React.FC<PlanCostCurveChartProps> = ({ rows, selectedDays, onSelectDays, labels }) => {
   if (rows.length === 0) return null;
 
   // dataKey はネスト不可のため values を1点ずつフラット形状に展開する
@@ -112,6 +93,7 @@ const PlanCostCurveChart: React.FC<PlanCostCurveChartProps> = ({
 
   // 表示対象のプランコード(バンド順。未知コードが混在した場合は末尾に追加)
   const presentCodes = new Set(rows.map((r) => r.planCode));
+  const planLabel = (code: string): string => labels?.[code] ?? code;
   const codes = Object.keys(PLAN_COLORS).filter((c) => presentCodes.has(c));
   for (const c of presentCodes) {
     if (!codes.includes(c)) codes.push(c);
@@ -142,7 +124,7 @@ const PlanCostCurveChart: React.FC<PlanCostCurveChartProps> = ({
               axisLine={{ stroke: COLOR_GRID }}
             />
             <YAxis
-              tickFormatter={formatYen}
+              tickFormatter={formatYenCompact}
               tick={AXIS_TICK}
               width={64}
               axisLine={false}
@@ -150,7 +132,7 @@ const PlanCostCurveChart: React.FC<PlanCostCurveChartProps> = ({
               domain={['auto', 'auto']}
             />
             <Tooltip
-              content={<CurveTooltip />}
+              content={<CurveTooltip labels={labels} />}
               cursor={{ stroke: COLOR_GRID, strokeDasharray: '3 3' }}
               isAnimationActive={false}
             />

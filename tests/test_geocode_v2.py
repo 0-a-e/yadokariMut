@@ -8,13 +8,11 @@ tmp v2 DB + geocode_address のスタブでオフライン検証する。
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
 import unittest
 from unittest import mock
 
 
-from domain.models import PropertyDraft  # noqa: E402
+from helpers import ScopedDb, make_draft, make_tokyo_draft  # noqa: E402
 from store import geocode_v2  # noqa: E402
 from store.geocode_v2 import geocode_missing_v2  # noqa: E402
 from store.geocoder import GeocodingSystemError  # noqa: E402
@@ -23,21 +21,7 @@ from store.repository import Repository  # noqa: E402
 
 def _repo() -> Repository:
     # env は都度読み(他テストモジュールと同一プロセスで走るため)
-    return Repository(os.environ.get("YADOKARIMUT_V2_DB_PATH"))
-
-
-def _draft(external_id: str) -> PropertyDraft:
-    return PropertyDraft(
-        source_site="fakesite",
-        external_id=external_id,
-        entity_type="room",
-        title=f"物件 {external_id}",
-        detail_url=f"https://example.test/{external_id}/",
-        prefecture_name="東京都",
-        prefecture_slug="tokyo",
-        is_active=True,
-        price_plans=[],
-    )
+    return Repository()
 
 
 def _seed(
@@ -50,20 +34,20 @@ def _seed(
 ) -> int:
     """Insert a property row with explicit geocode columns. Returns property id."""
     repo = _repo()
-    repo.upsert_property(_draft(external_id))
+    repo.upsert_property(make_draft(external_id))
     conn = repo.connect()
     try:
         conn.execute(
             """
             UPDATE properties
-            SET address = ?, lat = ?, lng = ?, geocode_source = ?, geocode_confidence = NULL
-            WHERE external_id = ?
+            SET address = %s, lat = %s, lng = %s, geocode_source = %s, geocode_confidence = NULL
+            WHERE external_id = %s
             """,
             (address, lat, lng, source, external_id),
         )
         conn.commit()
         row = conn.execute(
-            "SELECT id FROM properties WHERE external_id = ?", (external_id,)
+            "SELECT id FROM properties WHERE external_id = %s", (external_id,)
         ).fetchone()
         return int(row["id"])
     finally:
@@ -74,7 +58,7 @@ def _row(pid: int) -> dict:
     conn = _repo().connect()
     try:
         row = conn.execute(
-            "SELECT * FROM properties WHERE id = ?", (pid,)
+            "SELECT * FROM properties WHERE id = %s", (pid,)
         ).fetchone()
         return dict(row)
     finally:
@@ -84,23 +68,15 @@ def _row(pid: int) -> dict:
 class GeocodeMissingV2Test(unittest.TestCase):
     def setUp(self):
         # tmp DB を都度作り、他テストモジュールの env 変更と隔離する
-        self._old_db = os.environ.get("YADOKARIMUT_V2_DB_PATH")
-        self._tmpdir = tempfile.mkdtemp(prefix="yadm-geocode-")
-        os.environ["YADOKARIMUT_V2_DB_PATH"] = os.path.join(self._tmpdir, "test_v2.db")
-        _repo().init_db()
+        self._db = ScopedDb("geocode")
+        self.addCleanup(self._db.close)
+
         conn = _repo().connect()
         try:
             conn.execute("DELETE FROM properties")
             conn.commit()
         finally:
             conn.close()
-
-    def tearDown(self):
-        if self._old_db is None:
-            os.environ.pop("YADOKARIMUT_V2_DB_PATH", None)
-        else:
-            os.environ["YADOKARIMUT_V2_DB_PATH"] = self._old_db
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     # ------------------------------------------------------------------
     # モード別 WHERE 対象選択 (§3.3)
@@ -301,6 +277,36 @@ class GeocodeMissingV2Test(unittest.TestCase):
         self.assertEqual(stats["skipped"], 4)
         self.assertEqual(_row(p_ok)["geocode_source"], "google")
 
+    def test_skipped_total_and_consecutive_are_distinct_on_abort(self):
+        """打切り時は skipped(累計)と consecutive_system_errors(連続数)が別値になる。
+
+        予期せぬ例外 1 件(連続カウンタをリセット)の後にシステムエラー 3 連続で
+        打ち切る → skipped=4 / consecutive=3。警告文が skipped を連続数として
+        表示する流用バグの退化防止(H6)。
+        """
+        for i in range(4):
+            _seed(f"d{i}", address=f"addr-d{i}")
+
+        outcomes = iter(
+            [ValueError("program bug")] + [GeocodingSystemError("err")] * 3
+        )
+
+        def scripted(address, provider=None):
+            out = next(outcomes)
+            if isinstance(out, Exception):
+                raise out
+            return out
+
+        with mock.patch("store.geocode_v2.geocode_address", side_effect=scripted), \
+                mock.patch("store.geocode_v2.time.sleep"):
+            stats = geocode_missing_v2(limit=None)
+
+        self.assertTrue(stats["aborted"])
+        self.assertEqual(stats["skipped"], 4)
+        self.assertEqual(stats["consecutive_system_errors"], 3)
+        self.assertEqual(stats["processed"], 4)
+        self.assertEqual(stats["remaining"], 0)
+
     def test_unexpected_exception_skips_without_write_and_continues(self):
         p1 = _seed("x1", address="addr-x1")
         p2 = _seed("x2", address="addr-x2")
@@ -392,6 +398,96 @@ class GeocodeMissingV2Test(unittest.TestCase):
             geocode_missing_v2(force=True, retry_only=True)
 
 
+class GeocodeWarningsFormatterTest(unittest.TestCase):
+    """警告文言の正本テスト (H6 / spec §3.5・§3.8)。
+
+    cli / mcp_server / web tasks は geocode_result_warnings +
+    format_geocode_warnings 経由でのみ文言を生成する。
+    """
+
+    # spec §3.8 契約文言: 一文字も変更禁止
+    SKIPPED_SENTENCE = (
+        "warn: 2 件はプロバイダ障害等のため記録なしスキップ。"
+        "時間を置いて再実行してください"
+    )
+
+    def test_warnings_structure_skipped_only(self):
+        warnings = geocode_v2.geocode_result_warnings({"skipped": 2})
+        self.assertEqual(warnings, [{"code": "skipped", "count": 2}])
+
+    def test_warnings_structure_aborted_with_consecutive(self):
+        warnings = geocode_v2.geocode_result_warnings(
+            {"skipped": 4, "aborted": True, "consecutive_system_errors": 3}
+        )
+        self.assertEqual(
+            warnings,
+            [
+                {"code": "skipped", "count": 4},
+                {"code": "aborted", "consecutive": 3},
+            ],
+        )
+
+    def test_warnings_structure_aborted_without_consecutive_key(self):
+        """打切り連続数キーの無い旧 stats は打切り条件値(_CONSECUTIVE_SYSTEM_ERROR_LIMIT)へ。"""
+        warnings = geocode_v2.geocode_result_warnings({"skipped": 3, "aborted": True})
+        self.assertEqual(
+            warnings,
+            [
+                {"code": "skipped", "count": 3},
+                {"code": "aborted", "consecutive": 3},
+            ],
+        )
+
+    def test_warnings_structure_empty(self):
+        self.assertEqual(geocode_v2.geocode_result_warnings({}), [])
+        self.assertEqual(geocode_v2.geocode_result_warnings({"skipped": 0}), [])
+        self.assertEqual(
+            geocode_v2.geocode_result_warnings({"aborted": False, "skipped": 0}), []
+        )
+
+    def test_format_ja_and_en_snapshot(self):
+        warnings = [
+            {"code": "skipped", "count": 2},
+            {"code": "aborted", "consecutive": 3},
+        ]
+        ja = geocode_v2.format_geocode_warnings(warnings, lang="ja")
+        en = geocode_v2.format_geocode_warnings(warnings, lang="en")
+
+        # skipped 行は spec §3.8 契約により ja/en とも同一の日本語
+        self.assertEqual(ja[0], self.SKIPPED_SENTENCE)
+        self.assertEqual(en[0], self.SKIPPED_SENTENCE)
+
+        # aborted 行は言語別。連続数を正しく参照する
+        # (旧 tasks.py の skipped 流用表示を禁止する退化防止)
+        self.assertEqual(
+            ja[1],
+            "warn: 連続 3 回のプロバイダ障害のため"
+            "サーキットブレーカにより打ち切りしました",
+        )
+        self.assertEqual(
+            en[1],
+            "warn: geocode aborted by circuit breaker "
+            "after 3 consecutive provider system errors",
+        )
+
+    def test_format_default_lang_is_ja(self):
+        warnings = [{"code": "aborted", "consecutive": 3}]
+        self.assertEqual(
+            geocode_v2.format_geocode_warnings(warnings),
+            geocode_v2.format_geocode_warnings(warnings, lang="ja"),
+        )
+
+    def test_format_unknown_lang_falls_back_to_ja(self):
+        self.assertEqual(
+            geocode_v2.format_geocode_warnings(
+                [{"code": "aborted", "consecutive": 3}], lang="xx"
+            ),
+            geocode_v2.format_geocode_warnings(
+                [{"code": "aborted", "consecutive": 3}], lang="ja"
+            ),
+        )
+
+
 def _all_rows() -> list[dict]:
     conn = _repo().connect()
     try:
@@ -402,3 +498,42 @@ def _all_rows() -> list[dict]:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeocodeBuildingsTest(unittest.TestCase):
+    """B2-ε 建物単位化: 座標欠落建物の geocode + 部屋への代表座標 backfill."""
+
+    def setUp(self):
+        self._db = ScopedDb("geocode-buildings")
+        self.addCleanup(self._db.close)
+        self.repo = Repository()
+        # 同一住所・座標なしの 2 部屋 → 建物 1 つ(座標 NULL)へ集約される
+        self.repo.upsert_property(
+            make_tokyo_draft("bgeo-101", lat=None, lng=None)
+        )
+        self.repo.upsert_property(
+            make_tokyo_draft("bgeo-102", lat=None, lng=None)
+        )
+
+    def test_building_geocode_backfills_rooms(self):
+        """建物 geocode 成功時に所属部屋(座標 NULL 行)へ代表座標が伝播する."""
+        with mock.patch(
+            "store.geocode_v2.geocode_address",
+            return_value=(35.66, 139.70, "google", 0.9),
+        ):
+            stats = geocode_v2.geocode_missing_v2()
+        self.assertEqual(stats["success"], 1)
+        with self.repo.connect() as conn:
+            building = dict(conn.execute("SELECT * FROM buildings").fetchone())
+            self.assertEqual((building["lat"], building["lng"]), (35.66, 139.70))
+            self.assertEqual(building["geocode_source"], "google")
+            rooms = list(
+                conn.execute(
+                    "SELECT external_id, lat, lng FROM properties ORDER BY id"
+                )
+            )
+            for room in rooms:
+                self.assertEqual((room["lat"], room["lng"]), (35.66, 139.70))
+        # 内訳が targets に保持される(トップレベルは合計)
+        self.assertEqual(stats["targets"]["buildings"]["success"], 1)
+        self.assertEqual(stats["targets"]["rooms"]["total_found"], 0)

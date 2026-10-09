@@ -2,33 +2,14 @@
 # -*- coding: utf-8 -*-
 """API tests for /api/export/kml (Google Earth 用 KML エクスポート)."""
 
-import sqlite3
 import xml.etree.ElementTree as ET
 
 import pytest
-from fastapi.testclient import TestClient
-
 
 from domain.models import PricePlan, PropertyDraft
 from store.repository import Repository
-from store.schema import init_schema
 
 KML_NS = "{http://www.opengis.net/kml/2.2}"
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    """tmp DB に向けた TestClient。web_server は request 時に DB パス解決する。"""
-    db = str(tmp_path / "yadokari_mut_v2.db")
-    conn = sqlite3.connect(db)
-    try:
-        init_schema(conn)
-    finally:
-        conn.close()
-    monkeypatch.setenv("YADOKARIMUT_V2_DB_PATH", db)
-    from web_server import app
-
-    return TestClient(app)
 
 
 @pytest.fixture()
@@ -112,6 +93,28 @@ def test_export_kml_basic(client, seeded_ids):
     assert ext["is_active"] == "True"
 
 
+def test_export_kml_displays_dict_resolved_plan_label(client, seeded_ids):
+    """プラン表示は plan_label (辞書解決・レンジ無し) を正とする (設計 §3.6 / §4.3).
+
+    シードは plan_key='short' / plan_name='ショット' (生値)。KML のプラン列・
+    最安賃料行とも plan_name 生値ではなく辞書ラベル「ショート」で表示され、
+    ExtendedData にも min_plan_label が載ること。
+    """
+    res = client.post("/api/export/kml", json={"ids": [seeded_ids["normal"]]})
+    assert res.status_code == 200
+    pm = _placemarks(res.text)[0]
+    desc = pm.find(f"{KML_NS}description").text
+    # 辞書ラベルで表示される (プラン列 + 最安賃料行)
+    assert "ショート" in desc
+    # plan_name 生値「ショット」は表示に使われない (未知コード時のみのフォールバック)
+    assert "ショット" not in desc
+    ext = {
+        d.get("name"): d.find(f"{KML_NS}value").text
+        for d in pm.findall(f"{KML_NS}ExtendedData/{KML_NS}Data")
+    }
+    assert ext["min_plan_label"] == "ショート"
+
+
 def test_export_kml_style_by_status(client, seeded_ids):
     from store import api_queries
 
@@ -180,6 +183,57 @@ def test_get_properties_by_ids_dedupes_and_preserves_order(client, seeded_ids):
         [seeded_ids["inactive"], seeded_ids["normal"], seeded_ids["inactive"]]
     )
     assert [r["id"] for r in rows] == [seeded_ids["inactive"], seeded_ids["normal"]]
+
+
+def test_get_properties_by_ids_carries_feature_categories(client, seeded_ids):
+    """get_properties_by_ids (KML/FE エクスポート経路) も feature_categories を搭載する.
+
+    検索 SQL 化 (決定 10) 後の配信契約 (設計 §3.3): category 列直読み (決定 4) の
+    充足可能 code 集合 (複合 code + 導出の親/横断 code・辞書順) を
+    search_properties と同一構成で載せる。
+    """
+    from domain.feature_categories import lookup_feature_category
+    from domain.models import PropertyFeature
+    from store import api_queries
+
+    repo = Repository()
+    pid = repo.upsert_property(
+        PropertyDraft(
+            source_site="fakesite",
+            external_id="kml-cats",
+            entity_type="room",
+            title="物件 kml-cats",
+            detail_url="https://example.test/kml-cats/",
+            prefecture_name="東京都",
+            prefecture_slug="tokyo",
+            lat=35.68,
+            lng=139.72,
+            price_plans=[
+                PricePlan(
+                    plan_key="short",
+                    plan_name="ショット",
+                    duration_min_days=30,
+                    duration_max_days=89,
+                    presentation_unit="per_day",
+                    rent_current_yen=5000,
+                )
+            ],
+            features=[
+                PropertyFeature(
+                    feature_name="駐輪可（無料）",
+                    category=lookup_feature_category("駐輪可（無料）").code,
+                )
+            ],
+        )
+    )
+
+    rows = api_queries.get_properties_by_ids([pid])
+    assert len(rows) == 1
+    assert rows[0]["feature_categories"] == [
+        "bicycle_parking",
+        "bicycle_parking.fee_free",
+        "fee_free",
+    ]
 
 
 def test_export_kml_file_wrapper_for_mcp(client, seeded_ids, tmp_path):

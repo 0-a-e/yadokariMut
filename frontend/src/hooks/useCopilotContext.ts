@@ -1,6 +1,15 @@
 import { useAgentContext } from "@copilotkit/react-core/v2";
-import { BoundsData, MapFilters, PropertyFeature } from "../types.ts";
+import type {
+  BoundsData,
+  BuildingFeature,
+  MapFilters,
+  PropertyFeature,
+} from "../types.ts";
+import { CATALOG_PRICE_UNLIMITED, STAY_PRICE_UNLIMITED } from "../types.ts";
 import { calcStayDays } from "../lib/rentCalculator.ts";
+import { formatRentBand } from "../lib/format.ts";
+import { isListed } from "../lib/filterLogic.ts";
+import { DEFAULT_CENTER } from "../lib/mapDefaults.ts";
 import type { LayerConfigState } from "../lib/layers/types.ts";
 import { flattenStack } from "../lib/layers/state.ts";
 import { catalogById } from "../lib/layers/catalog.ts";
@@ -26,12 +35,14 @@ export function useCopilotMapContext(
     groups: [],
     properties: { id: "properties", visible: true, opacity: 1 },
   },
+  /** フィルタ結果の採用建物（建物代表値ソート済み・Phase B2-δ §4.6） */
+  filteredBuildings: BuildingFeature[] = [],
 ) {
   useAgentContext({
     description:
       "現在のマップ表示範囲（中心緯度経度とズームレベル）。ユーザーがどのエリアを見ているかを示す。",
     value: {
-      center: mapState.center ?? [35.6812, 139.7671],
+      center: mapState.center ?? DEFAULT_CENTER,
       zoom: mapState.zoom,
       bounds: mapBounds
         ? {
@@ -60,7 +71,7 @@ export function useCopilotMapContext(
           walkMinutes: selectedFeature.properties.min_walk_minutes ?? null,
           score: selectedFeature.properties.total_score ?? null,
           shortlistStatus: selectedFeature.properties.shortlist_status,
-          isActive: selectedFeature.properties.is_active !== false,
+          isActive: isListed(selectedFeature.properties),
         }
       : null,
   });
@@ -75,10 +86,12 @@ export function useCopilotMapContext(
   useAgentContext({
     description:
       "地図UIフィルター。applyFilters で変更する。" +
-      "priceMode=stay では checkIn/checkOut 期間の試算総額で比較・maxPriceは期間総額上限（1000000=制限なし）。" +
-      "priceMode=catalog ではカタログ最安（maxPrice 300000=制限なし）。" +
+      `priceMode=stay では checkIn/checkOut 期間の試算総額で比較・maxPriceは期間総額上限（${STAY_PRICE_UNLIMITED}=制限なし）。` +
+      `priceMode=catalog ではカタログ最安（maxPrice ${CATALOG_PRICE_UNLIMITED}=制限なし）。` +
       "savedIds は現在のフィルタ結果に含まれる保存済み物件。isActive=false はサイト掲載終了（必ずユーザーに伝える）。" +
-      "比較時は showComparison に stayTotalYen を載せる。",
+      "savedBuildings はブックマーク済み建物(建物単位の保存・部屋の保存とは独立)。" +
+      "比較時は showComparison に stayTotalYen を載せる。" +
+      "建物単位で提示する場合は topBuildings を参照し、選択は selectBuilding・一覧表示は showBuildings を使う。",
     value: {
       priceMode: filters.priceMode,
       checkIn: filters.checkIn,
@@ -118,8 +131,26 @@ export function useCopilotMapContext(
         catalogDailyYen: f.properties.min_daily_rent ?? null,
         score: f.properties.total_score ?? null,
         shortlistComment: f.properties.shortlist_comment ?? null,
-        isActive: f.properties.is_active !== false,
+        isActive: isListed(f.properties),
       })),
+      // ── 建物単位 context(Phase B2-δ §4.6) ──
+      visibleBuildingIds: filteredBuildings.slice(0, 15).map((b) => b.properties.id),
+      topBuildings: filteredBuildings.slice(0, 5).map((b) => ({
+        id: b.properties.id,
+        name: b.properties.name ?? null,
+        unitsCount: b.properties.active_units_count ?? b.properties.units_count ?? 0,
+        rentBand: formatRentBand(b.properties.min_daily_rent, b.properties.max_daily_rent),
+        minWalkMinutes: b.properties.min_walk_minutes ?? null,
+      })),
+      savedBuildings: filteredBuildings
+        .filter((b) => b.properties.shortlist_status === 'saved')
+        .slice(0, 10)
+        .map((b) => ({
+          id: b.properties.id,
+          name: b.properties.name ?? null,
+          unitsCount: b.properties.active_units_count ?? b.properties.units_count ?? 0,
+          comment: b.properties.shortlist_comment ?? null,
+        })),
     },
   });
 

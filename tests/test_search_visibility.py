@@ -4,41 +4,22 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 import unittest
 
 
-_TMPDIR = tempfile.mkdtemp(prefix="yadm-vis-")
-os.environ["YADOKARIMUT_V2_DB_PATH"] = os.path.join(_TMPDIR, "test_v2.db")
-
-
-from domain.models import PropertyDraft  # noqa: E402
+from helpers import ScopedDb, make_draft  # noqa: E402
 from store import api_queries  # noqa: E402
 from store.repository import Repository  # noqa: E402
 
 
-def _draft(external_id: str, *, active: bool = True, pref: str = "東京都") -> PropertyDraft:
-    return PropertyDraft(
-        source_site="fakesite",
-        external_id=external_id,
-        entity_type="room",
-        title=f"物件 {external_id}",
-        detail_url=f"https://example.test/{external_id}/",
-        prefecture_name=pref,
-        prefecture_slug="tokyo",
-        is_active=active,
-        price_plans=[],
-    )
-
-
 class SearchVisibilityTest(unittest.TestCase):
     def setUp(self):
+        self._db = ScopedDb("vis")
+        self.addCleanup(self._db.close)
         self.repo = Repository()
-        self.repo.init_db()
         conn = self.repo.connect()
         try:
-            conn.execute("DELETE FROM shortlists")
+            conn.execute("DELETE FROM property_shortlists")
             conn.execute("DELETE FROM properties")
             conn.commit()
         finally:
@@ -47,16 +28,16 @@ class SearchVisibilityTest(unittest.TestCase):
         for eid, active in [("active1", True), ("active2", True),
                             ("inactive1", False), ("inactive2", False),
                             ("inactive3", False)]:
-            self.repo.upsert_property(_draft(eid, active=active))
+            self.repo.upsert_property(make_draft(eid, is_active=active))
         conn = self.repo.connect()
         try:
             for eid, st in [("active1", "saved"), ("inactive1", "saved"),
                             ("inactive2", "reject")]:
                 pid = conn.execute(
-                    "SELECT id FROM properties WHERE external_id = ?", (eid,)
+                    "SELECT id FROM properties WHERE external_id = %s", (eid,)
                 ).fetchone()[0]
                 conn.execute(
-                    "INSERT INTO shortlists (property_id, status, updated_at) VALUES (?, ?, ?)",
+                    "INSERT INTO property_shortlists (property_id, status, updated_at) VALUES (%s, %s, %s)",
                     (pid, st, "2026-09-07T00:00:00"),
                 )
             conn.commit()

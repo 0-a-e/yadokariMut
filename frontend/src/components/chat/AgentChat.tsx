@@ -9,6 +9,8 @@ import { z } from "zod";
 import "@copilotkit/react-core/v2/styles.css";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Card, CardContent } from "@/components/ui/card.tsx";
+import { EmptyState } from "@/components/shared/EmptyState.tsx";
+import { LoadingState } from "@/components/shared/LoadingState.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import {
@@ -19,11 +21,14 @@ import {
   FaComments,
   FaClockRotateLeft,
   FaXmark,
+  FaBuilding,
 } from "react-icons/fa6";
 import { createId } from "@/lib/utils.ts";
 import { formatSessionTime } from "../../lib/format.ts";
+// 比較行定義の正本(状態行は lib/shortlist.ts の fmtStatus でラベル変換される)
+import { AGENT_COMPARISON_ROWS } from "../../lib/comparisonRows.ts";
+import type { ChatSessionMeta } from "../../lib/chatSessions.ts";
 import {
-  ChatSessionMeta,
   deleteServerThread,
   fetchServerThreads,
   fetchThreadMessages,
@@ -39,12 +44,15 @@ interface AgentChatProps {
   threadId: string;
   onThreadChange: (threadId: string) => void;
   onSelectFeature: (id: number) => void;
+  /** 建物選択(Phase B2-δ §4.6・App 側の暫定実装経由で部屋パネルを開く) */
+  onSelectBuilding: (buildingId: number) => void;
 }
 
 export const AgentChat: React.FC<AgentChatProps> = ({
   threadId,
   onThreadChange,
   onSelectFeature,
+  onSelectBuilding,
 }) => {
   const { agent } = useAgent({ agentId: "yadokari_agent" });
   const [sessions, setSessions] = useState<ChatSessionMeta[]>(() => loadSessionMeta());
@@ -288,6 +296,7 @@ export const AgentChat: React.FC<AgentChatProps> = ({
       "Markdown表の代わりにこのツールを呼ぶこと。期間総額は stayTotalYen、カタログ日額は catalogDailyYen または rent に載せる。",
     parameters: z.object({
       title: z.string().optional(),
+      // フィールド名は ComparisonPropertyInput (lib/comparisonRows.ts) に合わせる
       properties: z.array(
         z.object({
           id: z.number(),
@@ -297,11 +306,14 @@ export const AgentChat: React.FC<AgentChatProps> = ({
           stayTotalYen: z.number().optional(),
           stayDays: z.number().optional(),
           layout: z.string().optional(),
-          area: z.number().optional(),
+          areaM2: z.number().optional(),
+          floorNumber: z.number().nullable().optional(),
+          floorNumberMax: z.number().nullable().optional(),
+          orientationDeg: z.number().nullable().optional(),
           walkMinutes: z.number().nullable().optional(),
           score: z.number().optional(),
           address: z.string().optional(),
-          features: z.string().optional(),
+          featureSummary: z.string().optional(),
           shortlistStatus: z.string().optional(),
         })
       ),
@@ -321,53 +333,6 @@ export const AgentChat: React.FC<AgentChatProps> = ({
         );
       }
       if (status !== ToolCallStatus.Complete || !args.properties?.length) return null;
-
-      type CompProp = {
-        id: number;
-        title: string;
-        rent?: number;
-        catalogDailyYen?: number;
-        stayTotalYen?: number;
-        stayDays?: number;
-        layout?: string;
-        area?: number;
-        walkMinutes?: number | null;
-        score?: number;
-        address?: string;
-        features?: string;
-        shortlistStatus?: string;
-      };
-      const rows: { label: string; get: (p: CompProp) => string }[] = [
-        { label: "物件", get: (p) => p.title || `ID ${p.id}` },
-        {
-          label: "期間総額",
-          get: (p) => {
-            if (p.stayTotalYen == null) return "—";
-            const days = p.stayDays != null ? `（${p.stayDays}日）` : "";
-            return `${p.stayTotalYen.toLocaleString()}円${days}`;
-          },
-        },
-        {
-          label: "カタログ日額",
-          get: (p) => {
-            const daily = p.catalogDailyYen ?? p.rent;
-            return daily != null ? `${daily.toLocaleString()}円/日` : "—";
-          },
-        },
-        { label: "間取り", get: (p) => p.layout || "—" },
-        { label: "面積", get: (p) => (p.area != null ? `${p.area}㎡` : "—") },
-        {
-          label: "徒歩",
-          get: (p) => (p.walkMinutes != null ? `${p.walkMinutes}分` : "—"),
-        },
-        {
-          label: "スコア",
-          get: (p) => (p.score != null ? p.score.toFixed(1) : "—"),
-        },
-        { label: "住所", get: (p) => p.address || "—" },
-        { label: "設備", get: (p) => p.features || "—" },
-        { label: "状態", get: (p) => p.shortlistStatus || "—" },
-      ];
 
       return (
         <div className="my-2 w-full overflow-x-auto rounded-lg bg-black/20 border border-border p-2">
@@ -397,8 +362,8 @@ export const AgentChat: React.FC<AgentChatProps> = ({
               </tr>
             </thead>
             <tbody>
-              {rows.slice(1).map((row) => (
-                <tr key={row.label} className="border-b border-border/50">
+              {AGENT_COMPARISON_ROWS.map((row) => (
+                <tr key={row.key} className="border-b border-border/50">
                   <td className="p-2 text-text-muted sticky left-0 bg-[#1a1c26] font-medium">
                     {row.label}
                   </td>
@@ -415,6 +380,102 @@ export const AgentChat: React.FC<AgentChatProps> = ({
       );
     },
   }, [onSelectFeature]);
+
+  // ── 建物一覧カード(Phase B2-δ §4.6・showProperties と同型) ──
+  useFrontendTool({
+    name: "showBuildings",
+    description:
+      "建物の一覧をチャットUI上にカードで表示する。建物単位でユーザーに提示する場合は、Markdownでテキスト出力する代わりに必ずこのツールを呼ぶこと。" +
+      "部屋単位の一覧は showProperties を使う。rentBand は「4,800円〜7,500円/日」形式の帯表示文字列。",
+    parameters: z.object({
+      buildings: z.array(
+        z.object({
+          id: z.number(),
+          name: z.string(),
+          unitsCount: z.number().optional(),
+          rentBand: z.string().optional(),
+          minWalkMinutes: z.number().nullable().optional(),
+        })
+      ),
+      title: z.string().optional(),
+    }),
+    handler: async (args) => {
+      return `Displayed ${args.buildings?.length ?? 0} buildings in the chat.`;
+    },
+    render: ({ args, status }) => {
+      if (
+        status === ToolCallStatus.InProgress ||
+        status === ToolCallStatus.Executing
+      ) {
+        return (
+          <div className="flex flex-col gap-2 p-3 my-2">
+            <Skeleton className="h-4 w-3/4" />
+            <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-3 w-5/6" />
+          </div>
+        );
+      }
+
+      if (status === ToolCallStatus.Complete && args.buildings) {
+        return (
+          <div className="flex flex-col gap-2 my-2 w-full">
+            {args.title && (
+              <h3 className="text-sm font-bold text-accent mb-1 flex items-center gap-1.5">
+                <FaBuilding className="text-orange-500" /> {args.title}
+              </h3>
+            )}
+            <div className="flex flex-col gap-2.5 max-h-[300px] overflow-y-auto pr-1 scrollbar-thin">
+              {args.buildings.map((b) => (
+                <Card key={b.id} size="sm" className="hover:bg-white/[0.06] bg-black/25 border-border">
+                  <CardContent className="p-3 flex flex-col gap-2">
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="text-sm font-bold text-text line-clamp-1">{b.name}</span>
+                      <Badge
+                        variant="outline"
+                        className="text-xs shrink-0 border-primary/30 text-primary bg-primary/20"
+                      >
+                        ID: {b.id}
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-text-muted">
+                      <div>
+                        部屋数:{" "}
+                        <span className="text-text font-semibold">
+                          {b.unitsCount != null ? `${b.unitsCount}部屋` : "N/A"}
+                        </span>
+                      </div>
+                      <div>
+                        徒歩:{" "}
+                        <span className="text-text font-semibold">
+                          {b.minWalkMinutes != null ? `${b.minWalkMinutes}分` : "N/A"}
+                        </span>
+                      </div>
+                      {b.rentBand && (
+                        <div className="col-span-2">
+                          最安帯: <span className="text-text">{b.rentBand}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex justify-end items-center mt-1 pt-1.5 border-t border-white/5">
+                      <Button
+                        variant="link"
+                        size="xs"
+                        className="text-accent hover:underline p-0 h-auto"
+                        onClick={() => onSelectBuilding(b.id)}
+                      >
+                        <FaMapLocationDot className="mr-1" /> 地図で見る
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        );
+      }
+      return null;
+    },
+  }, [onSelectBuilding]);
 
   const currentTitle =
     sessions.find((s) => s.id === threadId)?.title || `会話 ${threadId.slice(0, 8)}…`;
@@ -482,10 +543,10 @@ export const AgentChat: React.FC<AgentChatProps> = ({
           </div>
           <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5">
             {loadingSessions && sessions.length === 0 && (
-              <p className="text-xs text-text-muted p-3">読み込み中…</p>
+              <LoadingState className="text-xs p-3" />
             )}
             {!loadingSessions && sessions.length === 0 && (
-              <p className="text-xs text-text-muted p-3">まだ会話がありません</p>
+              <EmptyState message="まだ会話がありません" className="text-xs p-3" />
             )}
             {sessions.map((s) => {
               const active = s.id === threadId;
@@ -530,9 +591,10 @@ export const AgentChat: React.FC<AgentChatProps> = ({
       )}
 
       {hydrating && (
-        <div className="px-3 py-1 text-[10px] text-text-muted bg-black/30 border-b border-border">
-          履歴を読み込み中…
-        </div>
+        <LoadingState
+          label="履歴を読み込み中…"
+          className="px-3 py-1 text-[10px] bg-black/30 border-b border-border"
+        />
       )}
 
       <CopilotChat

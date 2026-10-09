@@ -1,22 +1,22 @@
+import { Progress } from '@/components/ui/progress.tsx';
 import type { GeojsonLoadProgressState } from '@/lib/geojsonStream.ts';
 
 /**
  * 初期ロード中(ページ表示〜物件情報表示)の進捗オーバーレイ。
  *
  * ストリーム読み込み中は「受信件数/総件数」の確定バー、
- * フォールバック先の一括/ローカル読み込み中は非確定(アニメーション)バーを表示する。
+ * フォールバック先の一括読み込み中は非確定(アニメーション)バーを表示する。
  * 総件数(total)は NDJSON meta 行の概算値(post-filter未反映)のため、
  * 受信数が総数を超え得る。percent は min(100, …) でクリップして吸収する。
+ * バー本体は hextaUI `progress`(base-ui)。value を渡さない場合は不定表現になる。
  */
 export function GeojsonLoadProgress({ progress }: { progress: GeojsonLoadProgressState }) {
   const label =
     progress.phase === 'stream'
       ? progress.total != null
-        ? `物件情報を読み込み中… ${progress.received.toLocaleString()} / ${progress.total.toLocaleString()} 件`
-        : `物件情報を読み込み中… ${progress.received.toLocaleString()} 件`
-      : progress.phase === 'bulk'
-        ? '物件情報を一括読み込み中…'
-        : 'ローカルデータを読み込み中…';
+        ? `物件情報(建物)を読み込み中… ${progress.received.toLocaleString()} / ${progress.total.toLocaleString()} 件`
+        : `物件情報(建物)を読み込み中… ${progress.received.toLocaleString()} 件`
+      : '物件情報(建物)を一括読み込み中…';
 
   const percent =
     progress.phase === 'stream' && progress.total != null && progress.total > 0
@@ -32,16 +32,10 @@ export function GeojsonLoadProgress({ progress }: { progress: GeojsonLoadProgres
       <div className="bg-[#12141c]/95 backdrop-blur-md border border-border rounded-lg px-4 py-2.5 shadow-xl w-[300px] max-w-[calc(100vw-2rem)]">
         <p className="text-xs text-text-muted mb-2 text-center truncate">{label}</p>
         {percent != null ? (
-          <div className="h-1.5 rounded-full bg-border overflow-hidden">
-            <div
-              className="h-full bg-primary transition-[width] duration-200 ease-out"
-              style={{ width: `${percent}%` }}
-            />
-          </div>
+          <Progress value={percent} aria-label={label} />
         ) : (
-          <div className="h-1.5 rounded-full bg-border overflow-hidden relative">
-            <div className="absolute inset-y-0 left-0 w-1/3 bg-primary animate-[geojson-indeterminate_1.2s_ease-in-out_infinite]" />
-          </div>
+          // value=null で base-ui が不定(indeterminate)表現になる
+          <Progress value={null} aria-label={label} />
         )}
       </div>
     </div>

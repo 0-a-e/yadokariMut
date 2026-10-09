@@ -2,15 +2,12 @@
 # -*- coding: utf-8 -*-
 """分析系APIのテスト (価格履歴の品質ガード + /api/analysis/price-trend)."""
 
-import os
-import shutil
-import tempfile
 import unittest
 
 
 from fastapi.testclient import TestClient
 
-from domain.models import PricePlan, PropertyDraft
+from helpers import ScopedDb, insert_snapshot, make_tokyo_draft
 from store.repository import Repository
 
 # web_server はインポート時にエンドポイントを定義するのみ。
@@ -18,38 +15,15 @@ from store.repository import Repository
 from web_server import app
 
 
-def _draft(source_site: str, external_id: str, rent: int) -> PropertyDraft:
-    return PropertyDraft(
+def _draft(source_site: str, external_id: str, rent: int):
+    """本テスト専用の既定 (lat/lng 固定・municipality 未設定) を helpers に委譲する."""
+    return make_tokyo_draft(
+        external_id,
         source_site=source_site,
-        external_id=external_id,
-        entity_type="room",
-        title=f"物件 {external_id}",
-        detail_url=f"https://example.test/{external_id}/",
-        prefecture_name="東京都",
-        prefecture_slug="tokyo",
-        address="東京都渋谷区神宮前1-2-3",
         lat=35.66,
         lng=139.70,
-        is_active=True,
-        price_plans=[
-            PricePlan(
-                plan_key="short",
-                plan_name="ショット",
-                duration_min_days=30,
-                duration_max_days=89,
-                presentation_unit="per_day",
-                rent_current_yen=rent,
-            )
-        ],
-    )
-
-
-def _snap(conn, property_id: int, scraped_at: str, value: int | None, is_active: int = 1):
-    conn.execute(
-        "INSERT INTO property_snapshots "
-        "(property_id, scraped_at, is_active, catalog_rent_per_day_yen) "
-        "VALUES (?, ?, ?, ?)",
-        (property_id, scraped_at, is_active, value),
+        rent_current_yen=rent,
+        municipality=None,
     )
 
 
@@ -58,32 +32,22 @@ class TestPriceHistoryGuard(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._old_db = os.environ.get("YADOKARIMUT_V2_DB_PATH")
-        cls._tmpdir = tempfile.mkdtemp(prefix="yadm-analysis-")
-        os.environ["YADOKARIMUT_V2_DB_PATH"] = os.path.join(cls._tmpdir, "test_v2.db")
+        cls._db = ScopedDb("analysis")
+        cls.addClassCleanup(cls._db.close)
 
         repo = Repository()
-        repo.init_db()
         cls.prop_id = repo.upsert_property(_draft("bratto", "guard-1", 5000))
         # upsert 時に自動生成されるスナップショットを消し、検証用の系列を手で置く
         conn = repo.connect()
         conn.execute("DELETE FROM property_snapshots")
         cur = conn.cursor()
-        _snap(conn, cls.prop_id, "2026-08-01T10:00:00", 5000)
-        _snap(conn, cls.prop_id, "2026-08-02T10:00:00", 4500)
-        _snap(conn, cls.prop_id, "2026-08-02T18:00:00", 4600)
-        _snap(conn, cls.prop_id, "2026-08-03T10:00:00", 300)  # v1.0 低値破損相当
+        insert_snapshot(conn, cls.prop_id, "2026-08-01T10:00:00", 5000)
+        insert_snapshot(conn, cls.prop_id, "2026-08-02T10:00:00", 4500)
+        insert_snapshot(conn, cls.prop_id, "2026-08-02T18:00:00", 4600)
+        insert_snapshot(conn, cls.prop_id, "2026-08-03T10:00:00", 300)  # v1.0 低値破損相当
         conn.commit()
         conn.close()
         cls.client = TestClient(app)
-
-    @classmethod
-    def tearDownClass(cls):
-        if cls._old_db is None:
-            os.environ.pop("YADOKARIMUT_V2_DB_PATH", None)
-        else:
-            os.environ["YADOKARIMUT_V2_DB_PATH"] = cls._old_db
-        shutil.rmtree(cls._tmpdir, ignore_errors=True)
 
     def test_guard_drops_corrupt_rows(self):
         res = self.client.get(f"/api/properties/{self.prop_id}")
@@ -97,15 +61,16 @@ class TestPriceHistoryGuard(unittest.TestCase):
         meta = data["price_history_meta"]
         self.assertEqual(meta["total_count"], 4)
         self.assertEqual(meta["dropped_count"], 1)
-        self.assertEqual(meta["first_at"], "2026-08-01T10:00:00")
-        self.assertEqual(meta["last_at"], "2026-08-02T18:00:00")
+        # timestamptz 化 (Phase 6c) で +09:00 付き isoformat (D9-5)
+        self.assertEqual(meta["first_at"], "2026-08-01T10:00:00+09:00")
+        self.assertEqual(meta["last_at"], "2026-08-02T18:00:00+09:00")
 
     def test_guard_ref_fallback_to_series_median(self):
         """現行値が無効な場合は系列自身の正値中央値にフォールバックする."""
         repo = Repository()
         conn = repo.connect()
         conn.execute(
-            "UPDATE properties SET catalog_rent_per_day_yen = NULL WHERE id = ?",
+            "UPDATE properties SET catalog_rent_per_day_yen = NULL WHERE id = %s",
             (self.prop_id,),
         )
         conn.commit()
@@ -117,7 +82,7 @@ class TestPriceHistoryGuard(unittest.TestCase):
             self.assertEqual(len(data["price_history"]), 3)
         finally:
             conn.execute(
-                "UPDATE properties SET catalog_rent_per_day_yen = 5000 WHERE id = ?",
+                "UPDATE properties SET catalog_rent_per_day_yen = 5000 WHERE id = %s",
                 (self.prop_id,),
             )
             conn.commit()
@@ -128,12 +93,12 @@ class TestPriceHistoryGuard(unittest.TestCase):
         repo = Repository()
         conn = repo.connect()
         conn.execute(
-            "UPDATE properties SET catalog_rent_per_day_yen = NULL WHERE id = ?",
+            "UPDATE properties SET catalog_rent_per_day_yen = NULL WHERE id = %s",
             (self.prop_id,),
         )
         conn.execute(
             "UPDATE property_snapshots SET catalog_rent_per_day_yen = -100 "
-            "WHERE property_id = ?",
+            "WHERE property_id = %s",
             (self.prop_id,),
         )
         conn.commit()
@@ -145,13 +110,13 @@ class TestPriceHistoryGuard(unittest.TestCase):
             self.assertEqual(data["price_history_meta"]["dropped_count"], 4)
         finally:
             conn.execute(
-                "UPDATE properties SET catalog_rent_per_day_yen = 5000 WHERE id = ?",
+                "UPDATE properties SET catalog_rent_per_day_yen = 5000 WHERE id = %s",
                 (self.prop_id,),
             )
             conn.execute(
                 "UPDATE property_snapshots SET catalog_rent_per_day_yen = CASE "
                 "WHEN scraped_at = '2026-08-03T10:00:00' THEN 300 ELSE catalog_rent_per_day_yen END "
-                "WHERE property_id = ?",
+                "WHERE property_id = %s",
                 (self.prop_id,),
             )
             # CASE で書き戻した負値 -100 を元の値へ戻す
@@ -160,7 +125,7 @@ class TestPriceHistoryGuard(unittest.TestCase):
                 "WHEN scraped_at = '2026-08-01T10:00:00' THEN 5000 "
                 "WHEN scraped_at = '2026-08-02T10:00:00' THEN 4500 "
                 "ELSE 4600 END "
-                "WHERE property_id = ? AND scraped_at != '2026-08-03T10:00:00'",
+                "WHERE property_id = %s AND scraped_at != '2026-08-03T10:00:00'",
                 (self.prop_id,),
             )
             conn.commit()
@@ -172,36 +137,26 @@ class TestPriceTrendApi(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._old_db = os.environ.get("YADOKARIMUT_V2_DB_PATH")
-        cls._tmpdir = tempfile.mkdtemp(prefix="yadm-trend-")
-        os.environ["YADOKARIMUT_V2_DB_PATH"] = os.path.join(cls._tmpdir, "test_v2.db")
+        cls._db = ScopedDb("trend")
+        cls.addClassCleanup(cls._db.close)
 
         repo = Repository()
-        repo.init_db()
         cls.prop_a = repo.upsert_property(_draft("bratto", "trend-a", 5000))
         cls.prop_b = repo.upsert_property(_draft("unionmonthly", "trend-b", 4000))
         conn = repo.connect()
         conn.execute("DELETE FROM property_snapshots")
         # bratto: 08-02 に同日2回取得(最新の 4600 を代表値に)、08-03 は破損値で除外
-        _snap(conn, cls.prop_a, "2026-08-01T10:00:00", 5000)
-        _snap(conn, cls.prop_a, "2026-08-02T10:00:00", 4500)
-        _snap(conn, cls.prop_a, "2026-08-02T18:00:00", 4600)
-        _snap(conn, cls.prop_a, "2026-08-03T10:00:00", 300)
+        insert_snapshot(conn, cls.prop_a, "2026-08-01T10:00:00", 5000)
+        insert_snapshot(conn, cls.prop_a, "2026-08-02T10:00:00", 4500)
+        insert_snapshot(conn, cls.prop_a, "2026-08-02T18:00:00", 4600)
+        insert_snapshot(conn, cls.prop_a, "2026-08-03T10:00:00", 300)
         # unionmonthly: 08-02 に値上げ
-        _snap(conn, cls.prop_b, "2026-08-01T10:00:00", 4000)
-        _snap(conn, cls.prop_b, "2026-08-02T10:00:00", 4400)
-        _snap(conn, cls.prop_b, "2026-08-03T10:00:00", 4400)
+        insert_snapshot(conn, cls.prop_b, "2026-08-01T10:00:00", 4000)
+        insert_snapshot(conn, cls.prop_b, "2026-08-02T10:00:00", 4400)
+        insert_snapshot(conn, cls.prop_b, "2026-08-03T10:00:00", 4400)
         conn.commit()
         conn.close()
         cls.client = TestClient(app)
-
-    @classmethod
-    def tearDownClass(cls):
-        if cls._old_db is None:
-            os.environ.pop("YADOKARIMUT_V2_DB_PATH", None)
-        else:
-            os.environ["YADOKARIMUT_V2_DB_PATH"] = cls._old_db
-        shutil.rmtree(cls._tmpdir, ignore_errors=True)
 
     def _get(self, **params):
         return self.client.get("/api/analysis/price-trend", params=params)
@@ -327,37 +282,27 @@ class TestPriceTrendPrefectureFilter(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._old_db = os.environ.get("YADOKARIMUT_V2_DB_PATH")
-        cls._tmpdir = tempfile.mkdtemp(prefix="yadm-trend-pref-")
-        os.environ["YADOKARIMUT_V2_DB_PATH"] = os.path.join(cls._tmpdir, "test_v2.db")
+        cls._db = ScopedDb("trend-pref")
+        cls.addClassCleanup(cls._db.close)
 
         repo = Repository()
-        repo.init_db()
         cls.prop_tokyo = repo.upsert_property(_draft("bratto", "pref-tokyo", 5000))
         cls.prop_osaka = repo.upsert_property(_draft("unionmonthly", "pref-osaka", 4000))
         conn = repo.connect()
         # unionmonthly 側は大阪府の物件として差し替える(_draft は東京都で生成するため)
         conn.execute(
             "UPDATE properties SET prefecture_name = '大阪府', prefecture_slug = 'osaka' "
-            "WHERE id = ?",
+            "WHERE id = %s",
             (cls.prop_osaka,),
         )
         conn.execute("DELETE FROM property_snapshots")
-        _snap(conn, cls.prop_tokyo, "2026-08-01T10:00:00", 5000)
-        _snap(conn, cls.prop_tokyo, "2026-08-02T10:00:00", 4600)
-        _snap(conn, cls.prop_osaka, "2026-08-01T10:00:00", 4000)
-        _snap(conn, cls.prop_osaka, "2026-08-02T10:00:00", 4400)
+        insert_snapshot(conn, cls.prop_tokyo, "2026-08-01T10:00:00", 5000)
+        insert_snapshot(conn, cls.prop_tokyo, "2026-08-02T10:00:00", 4600)
+        insert_snapshot(conn, cls.prop_osaka, "2026-08-01T10:00:00", 4000)
+        insert_snapshot(conn, cls.prop_osaka, "2026-08-02T10:00:00", 4400)
         conn.commit()
         conn.close()
         cls.client = TestClient(app)
-
-    @classmethod
-    def tearDownClass(cls):
-        if cls._old_db is None:
-            os.environ.pop("YADOKARIMUT_V2_DB_PATH", None)
-        else:
-            os.environ["YADOKARIMUT_V2_DB_PATH"] = cls._old_db
-        shutil.rmtree(cls._tmpdir, ignore_errors=True)
 
     def _get(self, **params):
         return self.client.get("/api/analysis/price-trend", params=params)

@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   calcStayDays,
-  preferredPlanCodeForDays,
   selectPlanByDays,
   calculateRentTotal,
   calculateRentTotalByDays,
-  CONTRACT_FEE_YEN,
+  planDisplayLabel,
   type CalculatorPlan,
 } from './rentCalculator.ts';
 
@@ -13,6 +12,10 @@ const allPlans: CalculatorPlan[] = [
   {
     plan_code: 's_short',
     plan_name: 'Sショート1ヶ月未満',
+    plan_label: 'Sショート',
+    duration_text: '1ヶ月未満',
+    duration_min_days: 1,
+    duration_max_days: 29,
     available: true,
     discounted_daily_rent_yen: 4100,
     management_fee_daily_yen: 1250,
@@ -21,6 +24,10 @@ const allPlans: CalculatorPlan[] = [
   {
     plan_code: 'short',
     plan_name: 'ショート1ヶ月~3ヶ月',
+    plan_label: 'ショート',
+    duration_text: '1〜3ヶ月',
+    duration_min_days: 30,
+    duration_max_days: 89,
     available: true,
     discounted_daily_rent_yen: 2800,
     management_fee_daily_yen: 1250,
@@ -29,6 +36,10 @@ const allPlans: CalculatorPlan[] = [
   {
     plan_code: 'middle',
     plan_name: 'ミドル3ヶ月～6ヶ月',
+    plan_label: 'ミドル',
+    duration_text: '3〜6ヶ月',
+    duration_min_days: 90,
+    duration_max_days: 179,
     available: true,
     discounted_daily_rent_yen: 2650,
     management_fee_daily_yen: 1250,
@@ -37,6 +48,10 @@ const allPlans: CalculatorPlan[] = [
   {
     plan_code: 'long',
     plan_name: 'ロング6ヶ月以上',
+    plan_label: 'ロング',
+    duration_text: '6ヶ月以上',
+    duration_min_days: 180,
+    duration_max_days: null,
     available: true,
     discounted_daily_rent_yen: 2500,
     management_fee_daily_yen: 1250,
@@ -57,18 +72,6 @@ describe('calcStayDays', () => {
   });
 });
 
-describe('preferredPlanCodeForDays', () => {
-  it('maps stay length to BraTTo plan bands', () => {
-    expect(preferredPlanCodeForDays(1)).toBe('s_short');
-    expect(preferredPlanCodeForDays(29)).toBe('s_short');
-    expect(preferredPlanCodeForDays(30)).toBe('short');
-    expect(preferredPlanCodeForDays(90)).toBe('short');
-    expect(preferredPlanCodeForDays(91)).toBe('middle');
-    expect(preferredPlanCodeForDays(180)).toBe('middle');
-    expect(preferredPlanCodeForDays(181)).toBe('long');
-  });
-});
-
 describe('selectPlanByDays', () => {
   it('selects preferred band when available', () => {
     const s = selectPlanByDays(allPlans, 14)!;
@@ -82,7 +85,6 @@ describe('selectPlanByDays', () => {
   it('falls back to longer/shorter bands', () => {
     const noSShort = allPlans.filter((p) => p.plan_code !== 's_short');
     const s = selectPlanByDays(noSShort, 14)!;
-    expect(s.preferred).toBe('s_short');
     expect(s.selectedCode).toBe('short');
     expect(s.usedFallback).toBe(true);
   });
@@ -94,6 +96,8 @@ describe('calculateRentTotal', () => {
       {
         plan_code: 'short',
         plan_name: 'ショート',
+        duration_min_days: 30,
+        duration_max_days: 89,
         available: true,
         original_daily_rent_yen: 4600,
         discounted_daily_rent_yen: 3600,
@@ -122,6 +126,8 @@ describe('calculateRentTotal', () => {
       {
         plan_code: 'short',
         plan_name: 'ショート',
+        duration_min_days: 30,
+        duration_max_days: 89,
         available: true,
         original_daily_rent_yen: 4000,
         discounted_daily_rent_yen: 3500,
@@ -139,7 +145,6 @@ describe('calculateRentTotal', () => {
       campaigns: [
         {
           campaign_type: '早割',
-          is_active: true,
           target_plan_code: 'all',
           discount_unit: 'yen',
           discount_value: 500,
@@ -161,12 +166,13 @@ describe('calculateRentTotal', () => {
       checkIn: '2026-05-01',
       checkOut: '2026-05-30',
       plans: allPlans,
+      contractFeeYen: 5500,
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.stayDays).toBe(30);
       expect(r.selectedPlanCode).toBe('short');
-      expect(r.grandTotal).toBe((2800 + 1250) * 30 + 16500 + CONTRACT_FEE_YEN);
+      expect(r.grandTotal).toBe((2800 + 1250) * 30 + 16500 + 5500);
       expect(r.breakdown.rentTotal).toBe(2800 * 30);
       expect(r.breakdown.managementTotal).toBe(1250 * 30);
       expect(r.breakdown.cleaningFee).toBe(16500);
@@ -186,8 +192,9 @@ describe('calculateRentTotal', () => {
       expect(r.stayDays).toBe(14);
       expect(r.usedFallback).toBe(true);
       expect(r.selectedPlanCode).toBe('short');
-      expect(r.grandTotal).toBe((2800 + 1250) * 14 + 16500 + CONTRACT_FEE_YEN);
-      expect(r.fallbackNote).toContain('Sショート');
+      // 手数料未指定 = 算出不能 → 総額から除外
+      expect(r.grandTotal).toBe((2800 + 1250) * 14 + 16500);
+      expect(r.fallbackNote).toContain('ショート');
     }
   });
 
@@ -214,7 +221,6 @@ describe('calculateRentTotalByDays', () => {
   /** 既存テストの「structured yen discount」フィクスチャを流用したキャンペーン */
   const earlyBirdCampaign = {
     campaign_type: '早割',
-    is_active: true,
     target_plan_code: 'all',
     discount_unit: 'yen',
     discount_value: 500,
@@ -245,6 +251,8 @@ describe('calculateRentTotalByDays', () => {
       {
         plan_code: 'short',
         plan_name: 'ショート',
+        duration_min_days: 30,
+        duration_max_days: 89,
         available: true,
         original_daily_rent_yen: 4000,
         discounted_daily_rent_yen: 3500,
@@ -371,6 +379,20 @@ describe('duration帯データ駆動のプラン選択(乖離1: Union非対称�
     expect(r300.ok && r300.selectedPlan.plan_key).toBe('long');
   });
 
+  it('resolves semi_short via plan_label wire vocabulary (semi_short誤表示の回帰)', () => {
+    // 修正前: PLAN_LABELS が閉集合で normalizePlanCode の plan_name 再導出に落ち、
+    // 「セミショート（15日以上-1ヶ月未満）」が s_short に誤分類されていた(-α で発火した
+    // 表示バグ)。第1.7段本体は表示の正を BE 解決の plan_label とし再導出を廃止した。
+    const r = calculateRentTotalByDays({ stayDays: 20, plans: unionPlans, onDate: '2026-07-01' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.selectedPlan.plan_key).toBe('semi_short');
+      expect(r.selectedPlanCode).toBe('semi_short');
+      // 表示経路(RentSimulator / filterLogic.planLabel)は planDisplayLabel を使う
+      expect(planDisplayLabel(r.selectedPlan)).toContain('セミショート');
+    }
+  });
+
   it('falls back to the closest longer band when no band contains the stay', () => {
     // 100日だが middle が unavailable → 210-729 の long で代替(BE select_plan_for_stay 準拠)
     const noMiddle = unionPlans.filter((p) => p.plan_key !== 'middle');
@@ -383,15 +405,16 @@ describe('duration帯データ駆動のプラン選択(乖離1: Union非対称�
     }
   });
 
-  it('keeps the legacy string-band path for plans without duration data', () => {
-    // duration_min_days が無い物件は従来の BraTTo 文字列バンド推定(既存テスト互換)
-    const noDuration = allPlans.map((p) => ({ ...p }));
+  it('duration データのないプランのみは計算不能(レガシー文字列バンド経路は削除済み)', () => {
+    // BE が duration なしデータを生産不能(本番 0 件)のため推定経路は廃止した(設計 §3.6)。
+    // 壊れたデータが混入した場合は明示的な計算不能として返す。
+    const noDuration = allPlans.map((p) => ({
+      ...p,
+      duration_min_days: undefined,
+      duration_max_days: undefined,
+    }));
     const r = calculateRentTotalByDays({ stayDays: 45, plans: noDuration, onDate: '2026-07-01' });
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.selectedPlanCode).toBe('short');
-      expect(r.usedFallback).toBe(false);
-    }
+    expect(r.ok).toBe(false);
   });
 });
 
@@ -403,9 +426,7 @@ describe('光熱費の加算(乖離2: utilities_included=false)', () => {
       // short(30-89) 選択: 月額9000円 → 日額 floor(9000/30)=300
       expect(r.breakdown.utilitiesDaily).toBe(300);
       expect(r.breakdown.utilitiesTotal).toBe(300 * 60);
-      expect(r.grandTotal).toBe(
-        (3000 + 500) * 60 + 300 * 60 + 20000 + CONTRACT_FEE_YEN
-      );
+      expect(r.grandTotal).toBe((3000 + 500) * 60 + 300 * 60 + 20000);
       expect(r.warnings.some((w) => w.includes('光熱費'))).toBe(true);
     }
   });
@@ -423,7 +444,7 @@ describe('光熱費の加算(乖離2: utilities_included=false)', () => {
   });
 });
 
-describe('契約事務手数料の上書き(乖離3: contract_fee_yen)', () => {
+describe('契約事務手数料(乖離3: contract_fee_yen)', () => {
   it('uses the property contract_fee_yen when provided', () => {
     const r = calculateRentTotalByDays({
       stayDays: 30,
@@ -437,7 +458,7 @@ describe('契約事務手数料の上書き(乖離3: contract_fee_yen)', () => {
     }
   });
 
-  it('falls back to the default 5500 when null or undefined', () => {
+  it('treats null/undefined fee as unknown: excluded from total with a warning', () => {
     const withNull = calculateRentTotalByDays({
       stayDays: 30,
       plans: unionPlans,
@@ -449,15 +470,23 @@ describe('契約事務手数料の上書き(乖離3: contract_fee_yen)', () => {
       plans: unionPlans,
       onDate: '2026-07-01',
     });
-    expect(withNull.ok && withNull.breakdown.contractFee).toBe(CONTRACT_FEE_YEN);
-    expect(without.ok && without.breakdown.contractFee).toBe(CONTRACT_FEE_YEN);
+    for (const r of [withNull, without]) {
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.breakdown.contractFee).toBeNull();
+        expect(r.warnings.some((w) => w.includes('契約事務手数料') && w.includes('不明'))).toBe(
+          true,
+        );
+      }
+    }
+    // unionMonthly short = (3000+500)*30 + 光熱300*30 + 清掃20000。手数料は加算されない
+    expect(withNull.ok && withNull.grandTotal).toBe((3000 + 500) * 30 + 300 * 30 + 20000);
   });
 
   it('threads contract_fee_yen from property properties via computeStayEstimate', async () => {
     const { computeStayEstimate } = await import('./filterLogic.ts');
     const props = {
       id: 1,
-      room_id: 'r1',
       title: 't',
       detail_url: 'u',
       address: 'a',
@@ -480,9 +509,29 @@ describe('契約事務手数料の上書き(乖離3: contract_fee_yen)', () => {
     } as Parameters<typeof computeStayEstimate>[0];
     const est = computeStayEstimate(props, '2026-07-01', '2026-07-30');
     expect(est.ok).toBe(true);
-    // GeoJSON 由来(contract_fee_yen 無し)では 5500 のまま
+    // GeoJSON 由来(contract_fee_yen 無し)は算出不能 → 手数料は加算されない
     const { contract_fee_yen: _omit, ...geoProps } = props;
     const estGeo = computeStayEstimate(geoProps as typeof props, '2026-07-01', '2026-07-30');
-    expect(est.stayTotalYen).toBe(estGeo.stayTotalYen! + (9900 - CONTRACT_FEE_YEN));
+    expect(est.stayTotalYen).toBe(estGeo.stayTotalYen! + 9900);
+  });
+});
+
+describe('planDisplayLabel(設計§3.6: plan_label+帯レンジ合成)', () => {
+  it('synthesizes range from duration_text (既存表示と同等・承認3)', () => {
+    expect(
+      planDisplayLabel({
+        plan_label: 'セミショート',
+        duration_text: '15日以上-1ヶ月未満',
+        plan_name: 'セミショート（15日以上-1ヶ月未満）',
+      })
+    ).toBe('セミショート（15日以上-1ヶ月未満）');
+  });
+
+  it('falls back to raw plan_name when plan_label is missing', () => {
+    expect(planDisplayLabel({ plan_name: '特殊プラン' })).toBe('特殊プラン');
+  });
+
+  it('omits range when duration_text is absent', () => {
+    expect(planDisplayLabel({ plan_label: 'ロング', plan_name: 'ロング6ヶ月以上' })).toBe('ロング');
   });
 });

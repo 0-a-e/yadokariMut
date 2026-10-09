@@ -9,6 +9,7 @@ import {
   YAxis,
 } from 'recharts';
 import { cn } from '@/lib/utils.ts';
+import { formatYen } from '../../../lib/format.ts';
 import type { HistoryChartPoint } from '../../../lib/analysis/propertyHistory.ts';
 import { formatDate } from '../../../lib/analysis/propertyHistory.ts';
 // 色・軸・tooltip・凡例の共通定義は chartTheme を利用(PriceTrendChart と同じ規約レイヤ)
@@ -18,9 +19,10 @@ import {
   COLOR_GRID,
   COLOR_MUTED,
   TooltipCard,
+  TooltipRow,
   TrendLegend,
   formatTick,
-  formatYen,
+  formatYenCompact,
 } from '../../shared/charts/chartTheme.tsx';
 
 /** 市場中央値の1点(PropertyPriceTab が usePriceTrend の carried 系列から生成する) */
@@ -72,30 +74,24 @@ function PriceTooltip({
       {/* ts はローカル時刻由来のため、一度 ISO に戻してから共通の formatDate で整形する */}
       <div className="font-semibold text-text mb-1">{formatDate(new Date(p.ts).toISOString())}</div>
       {p.daily != null && (
-        <div className="flex items-center gap-1.5">
-          <span className="inline-block size-2 rounded-full" style={{ background: COLOR_ACCENT }} />
-          <span className="text-text-muted">この物件の日額</span>
-          <span className="font-semibold text-text ml-auto pl-3">
-            {p.daily.toLocaleString()}円
-          </span>
-        </div>
+        <TooltipRow
+          label="この物件の日額"
+          color={COLOR_ACCENT}
+          value={formatYen(p.daily)}
+        />
       )}
       {p.daily != null && p.diff != null && p.diff !== 0 && (
         <div className={cn('text-right font-medium', diffClass(p.diff))}>
-          {p.diff < 0 ? '▼' : '▲'} {Math.abs(p.diff).toLocaleString()}円
+          {p.diff < 0 ? '▼' : '▲'} {formatYen(Math.abs(p.diff))}
         </div>
       )}
       {p.marketMedian != null && (
-        <div className="flex items-center gap-1.5">
-          <span
-            className="inline-block w-4 border-t-2 border-dashed"
-            style={{ borderColor: COLOR_MUTED }}
-          />
-          <span className="text-text-muted">同県の中央値(推計)</span>
-          <span className="font-semibold text-text ml-auto pl-3">
-            {p.marketMedian.toLocaleString()}円
-          </span>
-        </div>
+        <TooltipRow
+          label="同県の中央値(推計)"
+          color={COLOR_MUTED}
+          dashed
+          value={formatYen(p.marketMedian)}
+        />
       )}
     </TooltipCard>
   );
@@ -156,7 +152,7 @@ const PropertyPriceChart: React.FC<PropertyPriceChartProps> = ({ points, market 
               minTickGap={24}
             />
             <YAxis
-              tickFormatter={formatYen}
+              tickFormatter={formatYenCompact}
               tick={AXIS_TICK}
               width={64}
               axisLine={false}

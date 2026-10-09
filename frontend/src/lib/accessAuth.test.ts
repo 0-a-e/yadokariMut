@@ -34,15 +34,15 @@ describe('isAuthRedirectResponse', () => {
 });
 
 describe('isGuardedUrl', () => {
-  it('同一オリジンの /api と /map.geojson をガード対象とする', () => {
+  it('同一オリジンの /api をガード対象とする', () => {
     expect(isGuardedUrl('/api/properties', ORIGIN)).toBe(true);
     expect(isGuardedUrl('/api/', ORIGIN)).toBe(true);
     expect(isGuardedUrl(`${ORIGIN}/api/properties/1`, ORIGIN)).toBe(true);
-    expect(isGuardedUrl('/map.geojson', ORIGIN)).toBe(true);
   });
 
   it('API パス以外・別オリジン・不正 URL はガード対象外とする', () => {
     expect(isGuardedUrl('/', ORIGIN)).toBe(false);
+    expect(isGuardedUrl('/map.geojson', ORIGIN)).toBe(false);
     expect(isGuardedUrl('/assets/index.js', ORIGIN)).toBe(false);
     expect(isGuardedUrl('https://example.com/api/properties', ORIGIN)).toBe(false);
     expect(isGuardedUrl('not a url', ORIGIN)).toBe(false);

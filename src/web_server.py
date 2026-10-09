@@ -8,7 +8,6 @@ Docker CMD (`uvicorn web_server:app`)・tests・scripts/export_openapi が
 """
 
 from web.app import app  # noqa: F401
-from web.routers.geojson import get_geojson_data  # noqa: F401
 from web.rotation_jobs import (  # noqa: F401
     _rotation_failure_policy,
     _rotation_pref_catalog,

@@ -10,7 +10,6 @@ from domain.models import (
     PropertyLink,
 )
 from domain.pricing import (
-    CONTRACT_FEE_YEN,
     MONTH_DAYS,
     CalcError,
     StayCalcResult,
@@ -30,7 +29,6 @@ __all__ = [
     "PropertyFeature",
     "PropertyImage",
     "PropertyLink",
-    "CONTRACT_FEE_YEN",
     "MONTH_DAYS",
     "CalcError",
     "StayCalcResult",

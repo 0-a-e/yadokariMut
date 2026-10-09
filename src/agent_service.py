@@ -11,10 +11,9 @@ from langchain.agents import create_agent
 from langchain_deepseek import ChatDeepSeek
 from copilotkit import CopilotKitMiddleware
 
-from agent.checkpointer import (
-    _CHECKPOINT_DB,  # noqa: F401 — 再輸出 (テストや既存参照の互換用)
-    _cleanup_checkpointer,  # noqa: F401
-    get_checkpointer,  # noqa: F401
+from agent.checkpointer import (  # noqa: F401 — 再輸出 (テストや既存参照の互換用)
+    _cleanup_checkpointer,
+    get_checkpointer,
 )
 from agent.patches import apply_agent_patches
 
@@ -27,7 +26,9 @@ MCPツールでローカルDBを検索・詳細取得・比較し、フロント
 【役割分担】
 - 画面の絞り込み・見え方 → 必ず applyFilters（地図サイドバーのフィルタを変更。期間・priceMode 含む）
 - DB上の根拠付き候補出し → search_properties / get_property_detail / compare_properties
+- 曖昧な希望（雰囲気・立地の質・「静かなところ」等の構造フィルタで表現できない条件）→ search_properties の natural_query（自然文意味検索・結果は意味的な近さ順。構造フィルタと併用可）
 - ショートリストのUI同期 → 必ず updateShortlist（MCP の update_shortlist は使わない）
+- 建物のブックマークUI同期 → 必ず updateBuildingShortlist（MCP の update_building_shortlist は使わない・建物側は saved/none のみ）
 - 一覧カード → showProperties / 比較表 → showComparison（Markdown表は禁止）。比較時は stayTotalYen と catalogDailyYen を可能な限り埋める
 
 【価格・単位】
@@ -41,6 +42,7 @@ MCPツールでローカルDBを検索・詳細取得・比較し、フロント
 【フロントエンドツール】
 - applyFilters: 地図フィルタの部分更新。priceMode=stay|catalog、checkIn/checkOut（YYYY-MM-DD）、maxPrice（stay=期間総額上限/1000000=制限なし）。reset=true で初期化。fitMap=true でフィット。
 - updateShortlist: saved/hide/reject/none をDBとUIに反映
+- updateBuildingShortlist: 建物の saved/none をDBとUIに反映
 - focusMap / selectProperty / fitMapToFiltered / setMapProvider（dark/pale/std/satellite）
 - レイヤ操作: addMapLayer / removeMapLayer / setMapLayerVisibility / setMapLayerOpacity / setMapLayerOrder。物件の災害リスク確認には flood_l2（洪水浸水想定）や dosekiryu（土石流警戒区域）等を addMapLayer で重ね、確認後は removeMapLayer で戻す
 - setMapLayerOrder の layerIds は現在有効な全レイヤIDを過不足なく指定する（先頭=最前面。context の地図レイヤ構成を参照）

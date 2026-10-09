@@ -1,20 +1,26 @@
 /**
- * サイドバーのフィルタ操作系UI(ご利用期間〜詳細フィルタ/リセット)。
+ * サイドバーのフィルタ操作系UI(利用期間〜詳細フィルタ/リセット)。
  * 開閉の有無(セクション全体の折りたたみ)は Sidebar 側が管理し、
  * 詳細フィルタの開閉状態のみここで localStorage に永続化する。
+ * 並び替えは建物数行の Select へ移設(Sidebar 側)。
  */
 import React, { useMemo, useState, useEffect } from 'react';
-import {
-  CATALOG_PRICE_UNLIMITED,
-  FEATURE_TOGGLE_OPTIONS,
+import type {
   AreaMode,
   ListingVisibilityFilter,
   MapFilters,
   ShortlistStatusFilter,
-  SortKey,
+} from '../../types.ts';
+import {
+  CATALOG_PRICE_UNLIMITED,
+  DEFAULT_AREA_RANGE,
+  FEATURE_TOGGLE_OPTIONS,
   STAY_PRICE_UNLIMITED,
 } from '../../types.ts';
 import { isPriceUnlimited, stayBandSummary } from '../../lib/filterLogic.ts';
+// 状態ラベルはショートリスト語彙の正本(lib/shortlist.ts)から参照する。
+// unsaved(未分類フィルタ)は none と同義のため none のラベルを共有する。
+import { SHORTLIST_STATUS_LABELS } from '../../lib/shortlist.ts';
 import { Button } from '@/components/ui/button.tsx';
 import { Input } from '@/components/ui/input.tsx';
 import { Slider } from '@/components/ui/slider.tsx';
@@ -24,7 +30,18 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible.tsx';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group.tsx';
+import {
+  SingleToggleGroup,
+  ToggleGroup,
+  ToggleGroupItem,
+} from '@/components/ui/toggle-group.tsx';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select.tsx';
 import {
   FaBookmark,
   FaExpand,
@@ -38,6 +55,11 @@ import {
 import { cn } from '@/lib/utils.ts';
 
 const FILTERS_OPEN_KEY = 'yadokari:sidebar:filters-open';
+
+const PRICE_MODE_OPTIONS: { value: MapFilters['priceMode']; label: string }[] = [
+  { value: 'stay', label: '期間総額' },
+  { value: 'catalog', label: 'カタログ' },
+];
 
 const LAYOUT_OPTIONS: { value: string; label: string }[] = [
   { value: 'all', label: 'すべて' },
@@ -53,10 +75,10 @@ const STATUS_OPTIONS: {
   icon?: 'saved' | 'hide' | 'reject';
 }[] = [
   { key: 'all', label: 'すべて' },
-  { key: 'saved', label: '保存', icon: 'saved' },
-  { key: 'unsaved', label: '未分類' },
-  { key: 'hide', label: '非表示', icon: 'hide' },
-  { key: 'reject', label: '見送り', icon: 'reject' },
+  { key: 'saved', label: SHORTLIST_STATUS_LABELS.saved, icon: 'saved' },
+  { key: 'unsaved', label: SHORTLIST_STATUS_LABELS.none },
+  { key: 'hide', label: SHORTLIST_STATUS_LABELS.hide, icon: 'hide' },
+  { key: 'reject', label: SHORTLIST_STATUS_LABELS.reject, icon: 'reject' },
 ];
 
 const LISTING_VISIBILITY_OPTIONS: {
@@ -68,25 +90,61 @@ const LISTING_VISIBILITY_OPTIONS: {
   { value: 'inactive', label: '非掲載' },
 ];
 
-function sortOptions(priceMode: MapFilters['priceMode']): { value: SortKey; label: string }[] {
-  return [
-    { value: 'score', label: 'スコア' },
-    {
-      value: 'price_asc',
-      label: priceMode === 'stay' ? '総額↑' : '安い順',
-    },
-    {
-      value: 'price_desc',
-      label: priceMode === 'stay' ? '総額↓' : '高い順',
-    },
-    { value: 'area_desc', label: '広い順' },
-  ];
-}
+/**
+ * 都道府県セレクトの「すべて」を表す値。
+ * 空文字は base-ui Select の未選択表現と衝突し得るため sentinel を使い、
+ * フィルタ値へは null を渡す(ネイティブ select 時代の value="" 相当)。
+ */
+const PREFECTURE_ALL = '__all__';
 
-/** Secondary filters tucked into Collapsible (not period / price / sort / keyword). */
+/** ショートリスト切替用(icon を label に埋め込んだ SingleToggleGroup 用オプション) */
+const STATUS_TOGGLE_OPTIONS: {
+  value: ShortlistStatusFilter;
+  label: React.ReactNode;
+}[] = STATUS_OPTIONS.map(({ key, label, icon }) => ({
+  value: key,
+  label: (
+    <>
+      {icon === 'saved' && <FaBookmark style={{ color: 'var(--success)' }} />}
+      {icon === 'hide' && <FaEyeSlash />}
+      {icon === 'reject' && <FaCircleXmark />}
+      {label}
+    </>
+  ),
+}));
+
+/** 絞り込み範囲切替用(icon を label に埋め込んだ SingleToggleGroup 用オプション) */
+const AREA_MODE_OPTIONS: { value: AreaMode; label: React.ReactNode }[] = [
+  { value: 'all', label: '全体' },
+  {
+    value: 'viewport',
+    label: (
+      <>
+        <FaExpand />
+        表示範囲
+      </>
+    ),
+  },
+  {
+    value: 'drawn',
+    label: (
+      <>
+        <FaVectorSquare />
+        囲む
+      </>
+    ),
+  },
+];
+
+/** Secondary filters tucked into Collapsible (not period / price / keyword). */
 function countActiveDetailFilters(filters: MapFilters): number {
   let n = 0;
-  if (filters.areaRange[0] !== 10 || filters.areaRange[1] !== 50) n += 1;
+  if (
+    filters.areaRange[0] !== DEFAULT_AREA_RANGE[0] ||
+    filters.areaRange[1] !== DEFAULT_AREA_RANGE[1]
+  ) {
+    n += 1;
+  }
   if (filters.maxWalkMinutes != null) n += 1;
   if (filters.minScore != null) n += 1;
   if (filters.layout !== 'all') n += 1;
@@ -133,6 +191,11 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
   prefectureOptions,
   sourceOptions = [],
 }) => {
+  /** セレクトの値→ラベル対応(base-ui の items。選択中ラベルの表示に使う) */
+  const prefectureItemMap: Record<string, string> = {
+    [PREFECTURE_ALL]: 'すべて',
+    ...Object.fromEntries(prefectureOptions.map((p) => [p, p])),
+  };
   const [filtersOpen, setFiltersOpen] = useState(() => {
     try {
       return localStorage.getItem(FILTERS_OPEN_KEY) === '1';
@@ -168,7 +231,7 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
       <div className="rounded-xl border border-border/80 bg-white/[0.03] p-3 flex flex-col gap-2.5">
         <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[1px] text-text-muted">
           <FaCalendarDays className="text-accent" />
-          ご利用期間
+          利用期間
         </div>
         <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end max-[380px]:grid-cols-1">
           <label className="flex flex-col gap-1 min-w-0">
@@ -205,26 +268,15 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
             {stayMode ? ' · 期間総額で比較中' : ' · カタログ価格で表示中'}
           </p>
         )}
-        <ToggleGroup
-          multiple={false}
-          value={[filters.priceMode]}
-          onValueChange={(vals) => {
-            const next = vals[0] as MapFilters['priceMode'] | undefined;
-            if (next === 'stay' || next === 'catalog') {
-              onFiltersChange({ priceMode: next });
-            }
-          }}
+        <SingleToggleGroup
+          options={PRICE_MODE_OPTIONS}
+          value={filters.priceMode}
+          onChange={(priceMode) => onFiltersChange({ priceMode })}
           variant="outline"
           size="sm"
           className="flex flex-wrap w-full max-w-full"
-        >
-          <ToggleGroupItem value="stay" className="flex-1 text-xs">
-            期間総額
-          </ToggleGroupItem>
-          <ToggleGroupItem value="catalog" className="flex-1 text-xs">
-            カタログ
-          </ToggleGroupItem>
-        </ToggleGroup>
+          itemClassName="flex-1 text-xs"
+        />
       </div>
 
       <FilterSection
@@ -253,44 +305,16 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
         />
       </FilterSection>
 
-      <FilterSection label="並び替え">
-        <ToggleGroup
-          multiple={false}
-          value={[filters.sortBy]}
-          onValueChange={(vals) => {
-            const next = vals[0] as SortKey | undefined;
-            if (next) onFiltersChange({ sortBy: next });
-          }}
-          variant="outline"
-          size="sm"
-          className="flex flex-wrap w-full max-w-full"
-        >
-          {sortOptions(filters.priceMode).map(({ value, label }) => (
-            <ToggleGroupItem key={value} value={value} className="text-xs">
-              {label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      </FilterSection>
-
       <FilterSection label="掲載状態">
-        <ToggleGroup
-          multiple={false}
-          value={[filters.listingVisibility]}
-          onValueChange={(vals) => {
-            const next = vals[0] as ListingVisibilityFilter | undefined;
-            if (next) onFiltersChange({ listingVisibility: next });
-          }}
+        <SingleToggleGroup
+          options={LISTING_VISIBILITY_OPTIONS}
+          value={filters.listingVisibility}
+          onChange={(listingVisibility) => onFiltersChange({ listingVisibility })}
           variant="outline"
           size="sm"
           className="flex flex-wrap w-full max-w-full"
-        >
-          {LISTING_VISIBILITY_OPTIONS.map(({ value, label }) => (
-            <ToggleGroupItem key={value} value={value} className="text-xs">
-              {label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+          itemClassName="text-xs"
+        />
       </FilterSection>
 
       {/* ── Secondary: Collapsible (not Accordion — single expand block) ── */}
@@ -364,40 +388,38 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
           </FilterSection>
 
           <FilterSection label="間取り">
-            <ToggleGroup
-              multiple={false}
-              value={[filters.layout]}
-              onValueChange={(vals) => {
-                const next = vals[0];
-                if (next) onFiltersChange({ layout: next });
-              }}
+            <SingleToggleGroup
+              options={LAYOUT_OPTIONS}
+              value={filters.layout}
+              onChange={(layout) => onFiltersChange({ layout })}
               variant="outline"
               size="sm"
               className="flex flex-wrap w-full max-w-full"
-            >
-              {LAYOUT_OPTIONS.map(({ value, label }) => (
-                <ToggleGroupItem key={value} value={value} className="text-xs">
-                  {label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
+              itemClassName="text-xs"
+            />
           </FilterSection>
 
           <FilterSection label="都道府県">
-            <select
-              className="h-9 w-full rounded-lg border border-border bg-white/[0.04] px-3 text-sm text-text outline-none focus:border-primary"
-              value={filters.prefecture ?? ''}
-              onChange={(e) =>
-                onFiltersChange({ prefecture: e.target.value ? e.target.value : null })
-              }
+            <Select
+              items={prefectureItemMap}
+              value={filters.prefecture ?? PREFECTURE_ALL}
+              onValueChange={(value) => {
+                if (typeof value !== 'string') return;
+                onFiltersChange({ prefecture: value === PREFECTURE_ALL ? null : value });
+              }}
             >
-              <option value="">すべて</option>
-              {prefectureOptions.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger size="default" aria-label="都道府県" className="w-full text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={PREFECTURE_ALL}>すべて</SelectItem>
+                {prefectureOptions.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {p}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </FilterSection>
 
           {sourceOptions.length > 0 && (
@@ -433,63 +455,36 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
               size="sm"
               className="flex flex-wrap w-full max-w-full"
             >
-              {FEATURE_TOGGLE_OPTIONS.map((name) => (
-                <ToggleGroupItem key={name} value={name} className="text-xs">
-                  {name}
+              {FEATURE_TOGGLE_OPTIONS.map((opt) => (
+                <ToggleGroupItem key={opt.value} value={opt.value} className="text-xs">
+                  {opt.label}
                 </ToggleGroupItem>
               ))}
             </ToggleGroup>
           </FilterSection>
 
           <FilterSection label="ショートリスト">
-            <ToggleGroup
-              multiple={false}
-              value={[filters.status]}
-              onValueChange={(vals) => {
-                const next = vals[0] as ShortlistStatusFilter | undefined;
-                if (next) onFiltersChange({ status: next });
-              }}
+            <SingleToggleGroup
+              options={STATUS_TOGGLE_OPTIONS}
+              value={filters.status}
+              onChange={(status) => onFiltersChange({ status })}
               variant="outline"
               size="sm"
               className="flex flex-wrap w-full max-w-full"
-            >
-              {STATUS_OPTIONS.map(({ key, label, icon }) => (
-                <ToggleGroupItem key={key} value={key} className="text-xs gap-1">
-                  {icon === 'saved' && (
-                    <FaBookmark style={{ color: 'var(--success)' }} />
-                  )}
-                  {icon === 'hide' && <FaEyeSlash />}
-                  {icon === 'reject' && <FaCircleXmark />}
-                  {label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
+              itemClassName="text-xs gap-1"
+            />
           </FilterSection>
 
           <FilterSection label="絞り込み範囲">
-            <ToggleGroup
-              multiple={false}
-              value={[filters.areaMode]}
-              onValueChange={(vals) => {
-                const next = vals[0] as AreaMode | undefined;
-                if (next) onFiltersChange({ areaMode: next });
-              }}
+            <SingleToggleGroup
+              options={AREA_MODE_OPTIONS}
+              value={filters.areaMode}
+              onChange={(areaMode) => onFiltersChange({ areaMode })}
               variant="outline"
               size="sm"
               className="flex w-full"
-            >
-              <ToggleGroupItem value="all" className="flex-1 text-xs">
-                全体
-              </ToggleGroupItem>
-              <ToggleGroupItem value="viewport" className="flex-1 text-xs gap-1">
-                <FaExpand />
-                表示範囲
-              </ToggleGroupItem>
-              <ToggleGroupItem value="drawn" className="flex-1 text-xs gap-1">
-                <FaVectorSquare />
-                囲む
-              </ToggleGroupItem>
-            </ToggleGroup>
+              itemClassName="flex-1 text-xs gap-1"
+            />
             {filters.areaMode === 'drawn' && (
               <p className="text-xs text-text-muted m-0">
                 {filters.drawnPolygon

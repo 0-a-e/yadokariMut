@@ -3,7 +3,7 @@ import { Dialog as DialogPrimitive } from '@base-ui/react/dialog';
 import { Button } from '@/components/ui/button.tsx';
 import { FaChevronLeft, FaChevronRight } from 'react-icons/fa6';
 import { Carousel, CarouselContent, CarouselItem, type CarouselApi } from '@/components/ui/carousel.tsx';
-import { CarouselDots } from '@/components/shared/CarouselDots.tsx';
+import { CarouselThumbnails } from '@/components/shared/CarouselThumbnails.tsx';
 import { useHorizontalWheelNav } from '../../hooks/useHorizontalWheelNav.ts';
 import { useSwipeDismiss } from '../../hooks/useSwipeDismiss.ts';
 
@@ -44,18 +44,9 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
     return () => { alive = false; };
   }, [isOpen, images]);
 
-  // 閉じたら全面アンマウントされるため、startIndexは毎回のオープンで効く
+  // 閉じたら全面アンマウントされるため、defaultIndexは毎回のオープンで効く
   const scrollPrev = useCallback(() => carouselApi?.scrollPrev(), [carouselApi]);
   const scrollNext = useCallback(() => carouselApi?.scrollNext(), [carouselApi]);
-
-  // emblaの選択スナップ → カウンタ表示
-  useEffect(() => {
-    if (!carouselApi) return;
-    setSlideIndex(carouselApi.selectedScrollSnap());
-    const onSelect = (api: NonNullable<CarouselApi>) => setSlideIndex(api.selectedScrollSnap());
-    carouselApi.on('select', onSelect);
-    return () => { carouselApi.off('select', onSelect); };
-  }, [carouselApi]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -85,8 +76,8 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
   });
 
   // ── モバイル: 上下スワイプで閉じる(Xは廃止) ──
-  // embla(axis: x + touch-action: pan-y)が縦ドラッグを無視するため横スワイプとの共存は
-  // dominance ゲートで足りる。ステージは fadeWithDrag で指に追従して薄れる
+  // 横スクロール(scroll-snap + touch-action既定)が横ドラッグを握るため縦スワイプとの
+  // 共存は dominance ゲートで足りる。ステージは fadeWithDrag で指に追従して薄れる
   const swipe = useSwipeDismiss({
     enabled: isOpen,
     direction: 'vertical',
@@ -161,14 +152,18 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
                 拡大する(90vw×80dvh上限)。枠内に余白が出ない。幅=高さ制約とアスペクトから
                 導出し、--lb-arの遷移で切替時に枠がモーフする。モバイルは全画面で枠・角丸・影なし */}
             <Carousel
+              spacing="none"
+              rewind={images.length > 1}
+              defaultIndex={initialIndex}
+              onIndexChange={setSlideIndex}
               setApi={setCarouselApi}
-              opts={{ loop: images.length > 1, startIndex: initialIndex, align: 'start' }}
               style={{ '--lb-ar': aspects[slideIndex] ?? 1.5 } as React.CSSProperties}
-              className="[--lb-ar:1.5] w-[min(90vw,calc(80dvh*var(--lb-ar)))] max-w-[90%] aspect-[var(--lb-ar)] overflow-hidden rounded-lg border border-border bg-black/40 shadow-[0_0_30px_rgba(0,0,0,0.8)] transition-[--lb-ar] duration-300 ease-out [&_[data-slot=carousel-content]]:h-full max-md:w-full max-md:max-w-full max-md:h-dvh max-md:rounded-none max-md:border-0 max-md:shadow-none"
+              className="[--lb-ar:1.5] w-[min(90vw,calc(80dvh*var(--lb-ar)))] max-w-[90%] aspect-[var(--lb-ar)] overflow-hidden rounded-lg border border-border bg-black/40 shadow-[0_0_30px_rgba(0,0,0,0.8)] transition-[--lb-ar] duration-300 ease-out [&_[data-slot=carousel-content]]:h-full [&_[data-slot=carousel-container]]:h-full [&_[data-slot=carousel-item]]:h-full max-md:w-full max-md:max-w-full max-md:h-dvh max-md:rounded-none max-md:border-0 max-md:shadow-none"
             >
-              <CarouselContent className="h-full ml-0">
+              {/* viewport の -m-1/p-1(フォーカスリング余白)は full-bleed 画像のため無効化 */}
+              <CarouselContent viewportClassName="-m-0 p-0" className="h-full">
                 {images.map((url, index) => (
-                  <CarouselItem key={index} className="pl-0 basis-full h-full flex items-center justify-center">
+                  <CarouselItem key={index} className="basis-full h-full ps-0 flex items-center justify-center">
                     {/* ステージが現スライドのアスペクトに一致するため現画像は余白なしで満たる。
                         object-containは隣接スライド(異アスペクト)のスライドイン中のガード */}
                     <img
@@ -182,7 +177,7 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
               </CarouselContent>
               {images.length > 1 && (
                 <>
-                  {/* 左右ボタンはデスクトップのみ。モバイルはスワイプ+ドット */}
+                  {/* 左右ボタンはデスクトップのみ。モバイルはスワイプ+サムネイル */}
                   {/* 押下時は移動させず背景色でフィードバックする (button.tsx の active:translate-y-px を ! で打ち消す) */}
                   <Button
                     variant="ghost"
@@ -200,18 +195,17 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
                   >
                     <FaChevronRight />
                   </Button>
-                  <CarouselDots
-                    count={images.length}
-                    activeIndex={slideIndex}
-                    onSelect={(index) => carouselApi?.scrollTo(index)}
-                    className="md:hidden bottom-[calc(env(safe-area-inset-bottom,0px)+0.75rem)]"
+                  {/* 下部固定サムネイル+枚数カウンタはモバイル/PC 共通(PC もモバイルと同じ仕様ベース) */}
+                  <CarouselThumbnails
+                    images={images}
+                    className="bottom-[calc(env(safe-area-inset-bottom,0px)+0.75rem)]"
                   />
                 </>
               )}
             </Carousel>
-            {/* 物件名+カウンタはデスクトップのみ(モバイルはドットで代替) */}
-            <div className="mt-4 max-md:hidden text-text text-sm font-medium text-center [text-shadow:0_2px_4px_rgba(0,0,0,0.8)]">
-              {title} ({slideIndex + 1} / {images.length})
+            {/* 物件名/建物名は画像上部(画像外)に PC のみ(モバイルは「上下スワイプで閉じる」ヒントのみ) */}
+            <div className="absolute -top-8 left-1/2 -translate-x-1/2 hidden md:block text-white text-sm font-medium [text-shadow:0_2px_4px_rgba(0,0,0,0.8)] whitespace-nowrap">
+              {title}
             </div>
           </div>
         </DialogPrimitive.Popup>

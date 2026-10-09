@@ -1,10 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import {
-  PriceHistoryMeta,
-  PropertyFeature,
-  ShortlistStatus,
-} from '../../types.ts';
-import { fetchPropertyDetail, postShortlist } from '../../lib/api/properties.ts';
+import type { PropertyFeature, ShortlistStatus } from '../../types.ts';
+import { postShortlist } from '../../lib/api/properties.ts';
 import { Badge } from '@/components/ui/badge.tsx';
 import { Card, CardContent } from '@/components/ui/card.tsx';
 import { Button } from '@/components/ui/button.tsx';
@@ -21,12 +17,23 @@ import { ImageCarousel } from './ImageCarousel.tsx';
 import { RentPlansTable } from './RentPlansTable.tsx';
 import { CampaignCards } from './CampaignCards.tsx';
 import { PriceHistorySection, priceDeltaFromHistory } from './PriceHistorySection.tsx';
-import { computeStayEstimate } from '../../lib/filterLogic.ts';
+import { EmptyState } from '@/components/shared/EmptyState.tsx';
+import { computeStayEstimate, isListed } from '../../lib/filterLogic.ts';
+import {
+  roomFloorLabel,
+  roomOrientationLabel,
+  orientationRotationDeg,
+} from '../../lib/room.ts';
+import { fmtStatus } from '../../lib/shortlist.ts';
+import { formatYen, formatDailyRentDisplay, formatPlanTotalDisplay, formatStayHeader } from '../../lib/format.ts';
 import { notify } from '../../lib/notify.ts';
+import { mediaImagePairs } from '../../lib/media.ts';
 import { useIsMobile } from '../../hooks/useIsMobile.ts';
 import { useSwipeDismiss } from '../../hooks/useSwipeDismiss.ts';
+import { usePropertyDetail } from '../../hooks/usePropertyDetail.ts';
 import {
   FaXmark,
+  FaArrowLeftLong,
   FaStar,
   FaBookmark,
   FaEyeSlash,
@@ -38,6 +45,7 @@ import {
   FaTriangleExclamation,
   FaChartLine,
 } from 'react-icons/fa6';
+import { Compass } from 'lucide-react';
 
 interface DetailPanelProps {
   feature: PropertyFeature | null;
@@ -51,18 +59,19 @@ interface DetailPanelProps {
   checkIn: string;
   checkOut: string;
   onDatesChange: (checkIn: string, checkOut: string) => void;
-  /** Merge lazy detail fields into parent state (comment / price_history / contract fee). */
+  /** Merge lazy detail fields into parent state (comment / price_history). */
   onDetailPatch?: (
     propertyId: number,
     patch: {
       shortlist_comment?: string | null;
       shortlist_status?: ShortlistStatus;
       price_history?: PropertyFeature['properties']['price_history'];
-      contract_fee_yen?: number | null;
     },
   ) => void;
   /** 物件分析モーダルをこの物件で開く */
   onOpenAnalysis?: (propertyId: number) => void;
+  /** 「← 建物の部屋一覧」導線(?b= 文脈があるときのみ表示・Phase B2-γ) */
+  onBackToBuilding?: () => void;
 }
 
 export const DetailPanel: React.FC<DetailPanelProps> = ({
@@ -75,20 +84,22 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
   onDatesChange,
   onDetailPatch,
   onOpenAnalysis,
+  onBackToBuilding,
 }) => {
-  const [detailLoading, setDetailLoading] = useState(false);
+  const { detail, loading: detailLoading } = usePropertyDetail(feature?.properties.id);
   /** 価格履歴の品質ガードメタ(詳細APIの price_history_meta。表示中物件のもの) */
-  const [priceHistoryMeta, setPriceHistoryMeta] = useState<PriceHistoryMeta | null>(null);
+  const priceHistoryMeta = detail?.price_history_meta ?? null;
   const [commentDraft, setCommentDraft] = useState('');
   const [commentSaving, setCommentSaving] = useState(false);
   const [commentDirty, setCommentDirty] = useState(false);
   const commentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastFetchedIdRef = useRef<number | null>(null);
   /** 詳細APIで確認した掲載状態（GeoJSONより新しい。null=未取得でGeoJSON値にフォールバック） */
-  const [unlistedInfo, setUnlistedInfo] = useState<{
-    isActive: boolean;
-    fetchedAt: string | null;
-  } | null>(null);
+  const unlistedInfo = detail
+    ? {
+        isActive: detail.is_active ?? true,
+        fetchedAt: detail.detail_scraped_at ?? detail.last_seen_at ?? null,
+      }
+    : null;
 
   // ── モバイル下スワイプで閉じる ──
   // コンテンツ最上部(scrollTop===0)でのみ発始し、スクロールと両立させる
@@ -109,63 +120,26 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
     isDismissValid: () => feature?.properties.id === dismissingIdRef.current,
   });
 
-  // Lazy-fetch detail (price_history + shortlist.comment)
+  // 物件切替時に下書きを親値へリセット
   useEffect(() => {
-    if (!feature) {
-      lastFetchedIdRef.current = null;
-      return;
-    }
-    const id = feature.properties.id;
-    const alreadyHasHistory =
-      Array.isArray(feature.properties.price_history) &&
-      feature.properties.price_history.length > 0;
-    const alreadyHasComment = feature.properties.shortlist_comment != null;
-    // Still refetch when switching ids; skip only if same id already fetched this mount
-    if (lastFetchedIdRef.current === id && (alreadyHasHistory || alreadyHasComment)) {
-      setCommentDraft(feature.properties.shortlist_comment ?? '');
-      setCommentDirty(false);
-      return;
-    }
-
-    let cancelled = false;
-    setDetailLoading(true);
-    setPriceHistoryMeta(null);
+    if (!feature) return;
     setCommentDraft(feature.properties.shortlist_comment ?? '');
     setCommentDirty(false);
-
-    (async () => {
-      try {
-        const data = await fetchPropertyDetail(id);
-        if (cancelled) return;
-        lastFetchedIdRef.current = id;
-        const status = (data.shortlist?.status as ShortlistStatus | undefined) ?? undefined;
-        const comment = data.shortlist?.comment ?? null;
-        const history = data.price_history ?? [];
-        setPriceHistoryMeta(data.price_history_meta ?? null);
-        setUnlistedInfo({
-          isActive: data.is_active ?? true,
-          fetchedAt: data.detail_scraped_at ?? data.last_seen_at ?? null,
-        });
-        setCommentDraft(comment ?? '');
-        onDetailPatch?.(id, {
-          shortlist_comment: comment,
-          shortlist_status: status,
-          price_history: history,
-          contract_fee_yen: data.contract_fee_yen ?? null,
-        });
-      } catch (e) {
-        console.warn('property detail fetch failed', e);
-      } finally {
-        if (!cancelled) setDetailLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
     // Only re-run when selected property changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feature?.properties.id]);
+
+  // 詳細取得結果を親stateへ書き戻す(comment / price_history のマージ)
+  useEffect(() => {
+    if (!detail || detail.id !== feature?.properties.id) return;
+    const status = (detail.shortlist?.status as ShortlistStatus | undefined) ?? undefined;
+    const comment = detail.shortlist?.comment ?? null;
+    onDetailPatch?.(detail.id, {
+      shortlist_comment: comment,
+      shortlist_status: status,
+      price_history: detail.price_history ?? [],
+    });
+  }, [detail, onDetailPatch]);
 
   // Keep draft in sync if parent patches comment while not dirty
   useEffect(() => {
@@ -179,12 +153,30 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
     };
   }, []);
 
-  const images = useMemo(() => {
+  /**
+   * カルーセル(thumb)/ライトボックス(オリジナル)の URL ペア列。
+   * 詳細 API の画像行(media_id 付き)を優先し、未取得・空なら GeoJSON 側の URL 文字列へ
+   * フォールバックする(media_id 無し=バックフィル未了・メディア機能無効は従来どおり外部 URL)。
+   */
+  const galleryImages = useMemo(() => {
+    const rows = detail?.images;
+    if (rows && rows.length > 0) {
+      return mediaImagePairs(
+        [...rows].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
+      );
+    }
     const imgs = feature?.properties.images;
-    if (imgs && imgs.length > 0) return imgs;
-    const thumb = feature?.properties.thumbnail_url;
-    return thumb ? [thumb] : [];
-  }, [feature]);
+    const urls =
+      imgs && imgs.length > 0
+        ? imgs
+        : feature?.properties.thumbnail_url
+          ? [feature.properties.thumbnail_url]
+          : [];
+    return urls.map((url) => ({ thumbUrl: url, fullUrl: url }));
+  }, [feature, detail]);
+
+  const images = useMemo(() => galleryImages.map((p) => p.thumbUrl), [galleryImages]);
+  const fullImages = useMemo(() => galleryImages.map((p) => p.fullUrl), [galleryImages]);
 
   const hasActiveCampaign = useMemo(() => {
     // BE campaigns テーブルに is_active 列は無い(常時有効)。掲載中判定は日付で行う
@@ -194,7 +186,9 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
 
   // 掲載終了判定: 詳細APIの結果を優先し、未取得時はGeoJSONの値にフォールバック
   const isUnlisted =
-    unlistedInfo != null ? !unlistedInfo.isActive : feature?.properties.is_active === false;
+    unlistedInfo != null
+      ? !unlistedInfo.isActive
+      : feature != null && !isListed(feature.properties);
   const unlistedFetchedAt =
     unlistedInfo?.fetchedAt ?? feature?.properties.last_seen_at ?? null;
 
@@ -278,23 +272,16 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
     typeof props.point_text === 'string'
       ? props.point_text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
       : '';
-  const displayDaily = props.min_daily_rent
-    ? `${props.min_daily_rent.toLocaleString()}円/日`
-    : '詳細参照';
-  const displayTotal = props.min_plan_total
-    ? `(プラン総額: ${props.min_plan_total.toLocaleString()}円)`
-    : '';
-  const stayHeader =
-    est?.ok && est.stayTotalYen != null
-      ? `${est.stayTotalYen.toLocaleString()}円（${est.stayDays}日）`
-      : null;
+  const displayDaily = formatDailyRentDisplay(props.min_daily_rent);
+  const displayTotal = formatPlanTotalDisplay(props.min_plan_total);
+  const stayHeader = formatStayHeader(est);
 
-  const statusMap: Record<string, string> = {
-    saved: '保存済み',
-    hide: '非表示',
-    reject: '見送り',
-    none: '未分類',
-  };
+  // 所在階・向きは props(RoomView)の整数列から表示正本(lib/room.ts)で導出する。
+  // 追加フェッチは行わず、値が無い項目はセルごと非表示にする(設計 §4.2)
+  const floorLabel = roomFloorLabel(props);
+  const orientationLabel = roomOrientationLabel(props);
+  const orientationDeg = orientationRotationDeg(props.orientation_deg);
+
   // BE 応答の shortlist_status は string。実値は ShortlistStatus 4 値に収まるため scoped cast
   const currentStatus = (props.shortlist_status || 'none') as ShortlistStatus;
 
@@ -365,7 +352,12 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
               </span>
             </div>
           )}
-          <ImageCarousel images={images} propertyId={props.id} onImageClick={onImageClick} />
+          <ImageCarousel
+            images={images}
+            fullImages={fullImages}
+            propertyId={props.id}
+            onImageClick={onImageClick}
+          />
 
           <div className="flex flex-col gap-4 px-5 pb-5 max-md:px-4 max-md:pb-4">
             <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -381,7 +373,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
                   variant="secondary"
                   className="text-xs font-semibold bg-success/20 text-success border-success/40"
                 >
-                  {priceDelta.delta.toLocaleString()}円 前回比
+                  {formatYen(priceDelta.delta)} 前回比
                 </Badge>
               )}
               {priceDelta && priceDelta.delta > 0 && (
@@ -389,10 +381,22 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
                   variant="secondary"
                   className="text-xs font-semibold bg-warning/15 text-warning border-warning/40"
                 >
-                  +{priceDelta.delta.toLocaleString()}円 前回比
+                  +{formatYen(priceDelta.delta)} 前回比
                 </Badge>
               )}
             </div>
+
+            {onBackToBuilding && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-fit px-2 -ml-2 text-text-muted hover:text-text shrink-0"
+                onClick={onBackToBuilding}
+              >
+                <FaArrowLeftLong className="mr-1.5" />
+                建物の部屋一覧へ
+              </Button>
+            )}
 
             <h2 className="text-lg font-bold leading-[1.4] shrink-0">
               {props.title || '無題の物件'}
@@ -432,9 +436,31 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
                 <div className="flex flex-col gap-0.5">
                   <span className="text-xs text-text-muted uppercase">ステータス</span>
                   <span className="text-sm font-semibold">
-                    {statusMap[currentStatus] || '未分類'}
+                    {fmtStatus(currentStatus)}
                   </span>
                 </div>
+                {/* 所在階・向き: データがある場合のみセルを描画する(§4.2)。 */}
+                {floorLabel && (
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-xs text-text-muted uppercase">所在階</span>
+                    <span className="text-sm font-semibold">{floorLabel}</span>
+                  </div>
+                )}
+                {orientationLabel && (
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-xs text-text-muted uppercase">向き</span>
+                    <span className="flex items-center gap-1 text-sm font-semibold">
+                      {orientationDeg != null && (
+                        <Compass
+                          className="size-3.5 shrink-0 text-text-muted"
+                          style={{ transform: `rotate(${orientationDeg}deg)` }}
+                          aria-hidden="true"
+                        />
+                      )}
+                      {orientationLabel}
+                    </span>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -588,7 +614,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-sm text-text-muted italic">アクセス情報がありません</p>
+                    <EmptyState message="アクセス情報がありません" />
                   )}
                 </AccordionContent>
               </AccordionItem>
@@ -607,7 +633,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
                       ))}
                     </div>
                   ) : (
-                    <p className="text-sm text-text-muted italic">設備情報がありません</p>
+                    <EmptyState message="設備情報がありません" />
                   )}
                 </AccordionContent>
               </AccordionItem>
@@ -626,9 +652,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({
                     ) : hasPriceHistory && priceHistory ? (
                       <PriceHistorySection history={priceHistory} meta={priceHistoryMeta} />
                     ) : (
-                      <p className="text-sm text-text-muted italic">
-                        比較できる履歴がまだありません（2回以上の収集が必要）
-                      </p>
+                      <EmptyState message="比較できる履歴がまだありません（2回以上の収集が必要）" />
                     )}
                   </AccordionContent>
                 </AccordionItem>

@@ -1,7 +1,7 @@
 /**
  * Cloudflare Access のセッション切れ検出と再ログイン。
  *
- * 本アプリは同一オリジンの /api 以下（および /map.geojson）へ素の fetch で
+ * 本アプリは同一オリジンの /api 以下へ素の fetch で
  * アクセスする。Access のセッションが切れるとこれらのリクエストは
  * cloudflareaccess.com のログインページへ 302 されるが、既定の
  * redirect: 'follow' では fetch がリダイレクトを追いかけて CORS 違反の
@@ -33,7 +33,7 @@ export function isAuthRedirectResponse(
 }
 
 /**
- * ガード対象 URL（同一オリジンの /api と /map.geojson）かを判定する（純関数）。
+ * ガード対象 URL（同一オリジンの /api）かを判定する（純関数）。
  * origin はテストのため明示的に受け取る。
  */
 export function isGuardedUrl(url: string, origin: string): boolean {
@@ -41,7 +41,6 @@ export function isGuardedUrl(url: string, origin: string): boolean {
     const resolved = new URL(url, origin)
     if (resolved.origin !== origin) return false
     return (
-      resolved.pathname === '/map.geojson' ||
       resolved.pathname === '/api' ||
       resolved.pathname.startsWith('/api/')
     )

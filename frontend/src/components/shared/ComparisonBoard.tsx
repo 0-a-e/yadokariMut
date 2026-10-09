@@ -1,12 +1,16 @@
-import React, { useMemo } from 'react';
-import type { PropertyFeature } from '../../types.ts';
+import React, { useMemo, useState } from 'react';
+import type { BuildingFeature, PriceMode, PropertyFeature } from '../../types.ts';
 import { computeStayEstimate } from '../../lib/filterLogic.ts';
 import {
   activeCampaignSummary,
+  BUILDING_COMPARISON_ROWS,
   COMPARISON_BOARD_ROWS,
   computeHighlightIds,
+  buildingFeaturesLabel,
+  type ComparisonBuildingInput,
   type ComparisonPropertyInput,
 } from '../../lib/comparisonRows.ts';
+import { savedCountOf, buildingFloorInfo, buildingFloorsLabel } from '../../lib/building.ts';
 import { EXPLORER_MAX_COMPARE } from '../../lib/explorerSearch.ts';
 import {
   Sheet,
@@ -18,7 +22,8 @@ import {
 import { Button } from '@/components/ui/button.tsx';
 import { Badge } from '@/components/ui/badge.tsx';
 import { cn } from '@/lib/utils.ts';
-import { FaScaleBalanced, FaMapLocationDot, FaCheck } from 'react-icons/fa6';
+import { EmptyState } from '@/components/shared/EmptyState.tsx';
+import { FaScaleBalanced, FaMapLocationDot, FaCheck, FaCity, FaHouse } from 'react-icons/fa6';
 
 export interface ComparisonBoardProps {
   open: boolean;
@@ -33,6 +38,16 @@ export interface ComparisonBoardProps {
   checkIn: string;
   checkOut: string;
   onSelectFeature: (id: number) => void;
+  // ── 建物比較タブ(Phase B2-δ §4.5・候補ピッカーと Board 外枠は共用) ──
+  /** 建物比較候補(saved 部屋を持つ建物 + URL bcompare id 解決分) */
+  buildingCandidates: BuildingFeature[];
+  /** Explicit compare building id list (URL bcompare / SoT) */
+  compareBuildingIds: number[];
+  onCompareBuildingIdsChange: (ids: number[]) => void;
+  /** 建物選択(B2-γ で BuildingPanel 開設へ接続) */
+  onSelectBuilding: (buildingId: number) => void;
+  /** stay モード時のみ建物の期間総額(最安)行へ値を載せる */
+  priceMode?: PriceMode;
 }
 
 function toComparisonInput(
@@ -53,6 +68,11 @@ function toComparisonInput(
     stayDays: est?.ok ? est.stayDays : null,
     layout: p.layout,
     areaM2: p.area_m2,
+    // 所在階・向きは生値のみ運び、表示への導出は行定義(comparisonRows)側の
+    // lib/room.ts に一元化する
+    floorNumber: p.floor_number,
+    floorNumberMax: p.floor_number_max,
+    orientationDeg: p.orientation_deg,
     walkMinutes: p.min_walk_minutes,
     score: p.total_score,
     address: p.address,
@@ -63,6 +83,63 @@ function toComparisonInput(
   };
 }
 
+/** 建物 units の期間総額最安(stay_estimate が無い unit はその場で再計算) */
+function minUnitStayTotal(
+  b: BuildingFeature,
+  checkIn: string,
+  checkOut: string,
+): { total: number | null; days: number | null } {
+  let total: number | null = null;
+  let days: number | null = null;
+  for (const u of b.properties.units) {
+    const est =
+      u.stay_estimate?.ok && u.stay_estimate.stayTotalYen != null
+        ? u.stay_estimate
+        : computeStayEstimate(u, checkIn, checkOut);
+    if (!est.ok || est.stayTotalYen == null) continue;
+    if (total == null || est.stayTotalYen < total) {
+      total = est.stayTotalYen;
+      days = est.stayDays;
+    }
+  }
+  return { total, days };
+}
+
+function toBuildingComparisonInput(
+  b: BuildingFeature,
+  priceMode: PriceMode | undefined,
+  checkIn: string,
+  checkOut: string,
+): ComparisonBuildingInput {
+  const p = b.properties;
+  // stay 期間総額はモード時のみ算出(カタログモードは行が — になる)
+  const stay = priceMode === 'stay' ? minUnitStayTotal(b, checkIn, checkOut) : null;
+  return {
+    id: p.id,
+    name: p.name || p.address || `建物 ID ${p.id}`,
+    address: p.address,
+    builtYear: p.built_year,
+    structure: p.structure,
+    // 階数は確定値(N階建)/ 掲載部屋からの下限(N階以上)を lib/building.ts で導出(§5)
+    floorsLabel: buildingFloorsLabel(buildingFloorInfo(p)),
+    stationSummary: p.station_summary,
+    featuresLabel: buildingFeaturesLabel(p.feature_categories),
+    sourceSitesLabel: p.source_sites.join(', '),
+    unitsCount: p.units_count,
+    activeUnitsCount: p.active_units_count,
+    minDailyRent: p.min_daily_rent,
+    maxDailyRent: p.max_daily_rent,
+    minPlanTotal: p.min_plan_total,
+    minStayTotalYen: stay?.total ?? null,
+    stayDays: stay?.days ?? null,
+    savedCount: savedCountOf(p),
+    walkMinutes: p.min_walk_minutes,
+  };
+}
+
+/** 比較対象の種別。「部屋 / 建物」タブ(Phase B2-δ §4.5) */
+type ComparisonTab = 'rooms' | 'buildings';
+
 export const ComparisonBoard: React.FC<ComparisonBoardProps> = ({
   open,
   onOpenChange,
@@ -72,7 +149,17 @@ export const ComparisonBoard: React.FC<ComparisonBoardProps> = ({
   checkIn,
   checkOut,
   onSelectFeature,
+  buildingCandidates,
+  compareBuildingIds,
+  onCompareBuildingIdsChange,
+  onSelectBuilding,
+  priceMode,
 }) => {
+  // タブ状態: URL(bcompare の有無)から導出しつつ、ユーザー操作はローカル state で上書き
+  const [tabOverride, setTabOverride] = useState<ComparisonTab | null>(null);
+  const activeTab: ComparisonTab = tabOverride ?? (compareBuildingIds.length > 0 ? 'buildings' : 'rooms');
+
+  // ── 部屋比較 ──
   const selectedFeatures = useMemo(() => {
     const map = new Map(candidateFeatures.map((f) => [f.properties.id, f]));
     return compareIds
@@ -104,6 +191,44 @@ export const ComparisonBoard: React.FC<ComparisonBoardProps> = ({
     onCompareIdsChange([...compareIds, id]);
   };
 
+  // ── 建物比較 ──
+  const selectedBuildings = useMemo(() => {
+    const map = new Map(buildingCandidates.map((b) => [b.properties.id, b]));
+    return compareBuildingIds
+      .map((id) => map.get(id))
+      .filter(Boolean) as BuildingFeature[];
+  }, [buildingCandidates, compareBuildingIds]);
+
+  const buildingRowsData = useMemo(
+    () =>
+      selectedBuildings.map((b) => toBuildingComparisonInput(b, priceMode, checkIn, checkOut)),
+    [selectedBuildings, priceMode, checkIn, checkOut],
+  );
+
+  const buildingHighlights = useMemo(
+    () => computeHighlightIds(buildingRowsData, BUILDING_COMPARISON_ROWS),
+    [buildingRowsData],
+  );
+
+  const missingBuildingIds = useMemo(() => {
+    const have = new Set(buildingCandidates.map((b) => b.properties.id));
+    return compareBuildingIds.filter((id) => !have.has(id));
+  }, [buildingCandidates, compareBuildingIds]);
+
+  const toggleBuildingId = (id: number) => {
+    if (compareBuildingIds.includes(id)) {
+      onCompareBuildingIdsChange(compareBuildingIds.filter((x) => x !== id));
+      return;
+    }
+    if (compareBuildingIds.length >= EXPLORER_MAX_COMPARE) return;
+    onCompareBuildingIdsChange([...compareBuildingIds, id]);
+  };
+
+  const emptyMessage =
+    activeTab === 'rooms'
+      ? '比較対象がありません。詳細パネルで「保存」するか、共有 URL の compare で物件 ID を指定してください。'
+      : '比較対象がありません。saved 部屋を持つ建物が候補になります。共有 URL の bcompare で建物 ID を指定することもできます。';
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -118,39 +243,209 @@ export const ComparisonBoard: React.FC<ComparisonBoardProps> = ({
           </SheetTitle>
           <SheetDescription className="text-text-muted">
             最大{EXPLORER_MAX_COMPARE}件を横並び比較（期間総額は {checkIn} 〜 {checkOut}）。
-            共有 URL の compare は明示 ID リストです。
+            共有 URL の compare / bcompare は明示 ID リストです。
           </SheetDescription>
         </SheetHeader>
 
         <div className="flex flex-col gap-4 overflow-y-auto min-h-0 flex-1 p-4 app-scrollbar">
-          {candidateFeatures.length === 0 && compareIds.length === 0 ? (
-            <p className="text-sm text-text-muted">
-              比較対象がありません。詳細パネルで「保存」するか、共有 URL の compare
-              で物件 ID を指定してください。
-            </p>
+          {/* ── 「部屋 / 建物」タブ(Phase B2-δ §4.5) ── */}
+          <div className="inline-flex w-fit items-center gap-1 rounded-lg border border-border bg-black/20 p-[3px]">
+            <button
+              type="button"
+              onClick={() => setTabOverride('rooms')}
+              aria-pressed={activeTab === 'rooms'}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors border',
+                activeTab === 'rooms'
+                  ? 'border-primary/40 bg-primary/20 text-text'
+                  : 'border-transparent text-text-muted hover:text-text',
+              )}
+            >
+              <FaHouse className="text-[11px]" />
+              部屋
+            </button>
+            <button
+              type="button"
+              onClick={() => setTabOverride('buildings')}
+              aria-pressed={activeTab === 'buildings'}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors border',
+                activeTab === 'buildings'
+                  ? 'border-primary/40 bg-primary/20 text-text'
+                  : 'border-transparent text-text-muted hover:text-text',
+              )}
+            >
+              <FaCity className="text-[11px]" />
+              建物
+            </button>
+          </div>
+
+          {activeTab === 'rooms' ? (
+            candidateFeatures.length === 0 && compareIds.length === 0 ? (
+              <EmptyState message={emptyMessage} />
+            ) : (
+              <>
+                <div className="flex flex-col gap-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">
+                    比較する物件（{compareIds.length}/{EXPLORER_MAX_COMPARE}）
+                  </div>
+                  {missingIds.length > 0 && (
+                    <p className="text-xs text-amber-400/90">
+                      データ未取得または非表示の ID: {missingIds.join(', ')}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    {candidateFeatures.map((f) => {
+                      const id = f.properties.id;
+                      const checked = compareIds.includes(id);
+                      const disabled = !checked && compareIds.length >= EXPLORER_MAX_COMPARE;
+                      const isSaved = f.properties.shortlist_status === 'saved';
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => toggleId(id)}
+                          className={cn(
+                            'inline-flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs transition-colors max-w-full text-left',
+                            checked
+                              ? 'border-primary/50 bg-primary/10 text-text'
+                              : 'border-border bg-white/[0.03] text-text-muted hover:border-primary/30',
+                            disabled && 'opacity-40 cursor-not-allowed',
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'flex size-4 shrink-0 items-center justify-center rounded border text-[10px]',
+                              checked
+                                ? 'border-primary bg-primary text-primary-foreground'
+                                : 'border-input',
+                            )}
+                          >
+                            {checked ? <FaCheck /> : null}
+                          </span>
+                          <span className="truncate max-w-[200px]">
+                            {f.properties.title || `ID ${id}`}
+                          </span>
+                          {!isSaved && (
+                            <Badge variant="secondary" className="text-[10px] py-0 px-1 shrink-0">
+                              URL
+                            </Badge>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {rowsData.length === 0 ? (
+                  <p className="text-sm text-text-muted">
+                    比較する物件を1件以上選んでください。
+                  </p>
+                ) : (
+                  <div className="w-full overflow-x-auto rounded-xl border border-border bg-black/20">
+                    <table className="w-full text-xs border-collapse min-w-[480px]">
+                      <thead>
+                        <tr>
+                          <th className="text-left p-2.5 border-b border-border text-text-muted sticky left-0 bg-[#1a1c26] z-10 min-w-[96px]">
+                            項目
+                          </th>
+                          {rowsData.map((p) => (
+                            <th
+                              key={p.id}
+                              className="text-left p-2.5 border-b border-border text-text font-semibold min-w-[140px] max-w-[180px] align-bottom"
+                            >
+                              <div className="flex flex-col gap-1.5 items-start">
+                                <button
+                                  type="button"
+                                  className="text-accent hover:underline text-left leading-snug"
+                                  onClick={() => {
+                                    onSelectFeature(p.id);
+                                    onOpenChange(false);
+                                  }}
+                                >
+                                  {p.title}
+                                </button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 text-[11px] px-2"
+                                  onClick={() => {
+                                    onSelectFeature(p.id);
+                                    onOpenChange(false);
+                                  }}
+                                >
+                                  <FaMapLocationDot data-icon="inline-start" />
+                                  地図
+                                </Button>
+                              </div>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {COMPARISON_BOARD_ROWS.map((row) => (
+                          <tr key={row.key} className="border-b border-border/40">
+                            <td className="p-2.5 text-text-muted sticky left-0 bg-[#1a1c26] font-medium z-10">
+                              {row.label}
+                            </td>
+                            {rowsData.map((p) => {
+                              const win = highlights[row.key]?.has(p.id);
+                              return (
+                                <td
+                                  key={p.id}
+                                  className={cn(
+                                    'p-2.5 text-text align-top max-w-[180px] break-words',
+                                    win && 'text-accent font-semibold bg-primary/[0.07]',
+                                  )}
+                                >
+                                  {row.get(p)}
+                                  {win && (
+                                    <Badge
+                                      variant="secondary"
+                                      className="ml-1 text-[10px] py-0 px-1 align-middle"
+                                    >
+                                      最良
+                                    </Badge>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )
+          ) : buildingCandidates.length === 0 && compareBuildingIds.length === 0 ? (
+            <EmptyState message={emptyMessage} />
           ) : (
             <>
               <div className="flex flex-col gap-2">
                 <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">
-                  比較する物件（{compareIds.length}/{EXPLORER_MAX_COMPARE}）
+                  比較する建物（{compareBuildingIds.length}/{EXPLORER_MAX_COMPARE}）
                 </div>
-                {missingIds.length > 0 && (
+                {missingBuildingIds.length > 0 && (
                   <p className="text-xs text-amber-400/90">
-                    データ未取得または非表示の ID: {missingIds.join(', ')}
+                    データ未取得または非表示の建物 ID: {missingBuildingIds.join(', ')}
                   </p>
                 )}
                 <div className="flex flex-wrap gap-2">
-                  {candidateFeatures.map((f) => {
-                    const id = f.properties.id;
-                    const checked = compareIds.includes(id);
-                    const disabled = !checked && compareIds.length >= EXPLORER_MAX_COMPARE;
-                    const isSaved = f.properties.shortlist_status === 'saved';
+                  {buildingCandidates.map((b) => {
+                    const id = b.properties.id;
+                    const checked = compareBuildingIds.includes(id);
+                    const disabled = !checked && compareBuildingIds.length >= EXPLORER_MAX_COMPARE;
+                    const saved = savedCountOf(b.properties) > 0;
+                    const name = b.properties.name || b.properties.address || `建物 ID ${id}`;
+                    const roomLabel = `${b.properties.active_units_count ?? b.properties.units_count ?? 0}部屋`;
                     return (
                       <button
                         key={id}
                         type="button"
                         disabled={disabled}
-                        onClick={() => toggleId(id)}
+                        onClick={() => toggleBuildingId(id)}
                         className={cn(
                           'inline-flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs transition-colors max-w-full text-left',
                           checked
@@ -169,10 +464,11 @@ export const ComparisonBoard: React.FC<ComparisonBoardProps> = ({
                         >
                           {checked ? <FaCheck /> : null}
                         </span>
-                        <span className="truncate max-w-[200px]">
-                          {f.properties.title || `ID ${id}`}
-                        </span>
-                        {!isSaved && (
+                        <span className="truncate max-w-[200px]">{name}</span>
+                        <Badge variant="secondary" className="text-[10px] py-0 px-1 shrink-0">
+                          {roomLabel}
+                        </Badge>
+                        {!saved && (
                           <Badge variant="secondary" className="text-[10px] py-0 px-1 shrink-0">
                             URL
                           </Badge>
@@ -183,9 +479,9 @@ export const ComparisonBoard: React.FC<ComparisonBoardProps> = ({
                 </div>
               </div>
 
-              {rowsData.length === 0 ? (
+              {buildingRowsData.length === 0 ? (
                 <p className="text-sm text-text-muted">
-                  比較する物件を1件以上選んでください。
+                  比較する建物を1件以上選んでください。
                 </p>
               ) : (
                 <div className="w-full overflow-x-auto rounded-xl border border-border bg-black/20">
@@ -195,9 +491,9 @@ export const ComparisonBoard: React.FC<ComparisonBoardProps> = ({
                         <th className="text-left p-2.5 border-b border-border text-text-muted sticky left-0 bg-[#1a1c26] z-10 min-w-[96px]">
                           項目
                         </th>
-                        {rowsData.map((p) => (
+                        {buildingRowsData.map((b) => (
                           <th
-                            key={p.id}
+                            key={b.id}
                             className="text-left p-2.5 border-b border-border text-text font-semibold min-w-[140px] max-w-[180px] align-bottom"
                           >
                             <div className="flex flex-col gap-1.5 items-start">
@@ -205,18 +501,18 @@ export const ComparisonBoard: React.FC<ComparisonBoardProps> = ({
                                 type="button"
                                 className="text-accent hover:underline text-left leading-snug"
                                 onClick={() => {
-                                  onSelectFeature(p.id);
+                                  onSelectBuilding(b.id);
                                   onOpenChange(false);
                                 }}
                               >
-                                {p.title}
+                                {b.name}
                               </button>
                               <Button
                                 variant="outline"
                                 size="sm"
                                 className="h-7 text-[11px] px-2"
                                 onClick={() => {
-                                  onSelectFeature(p.id);
+                                  onSelectBuilding(b.id);
                                   onOpenChange(false);
                                 }}
                               >
@@ -229,22 +525,22 @@ export const ComparisonBoard: React.FC<ComparisonBoardProps> = ({
                       </tr>
                     </thead>
                     <tbody>
-                      {COMPARISON_BOARD_ROWS.map((row) => (
+                      {BUILDING_COMPARISON_ROWS.map((row) => (
                         <tr key={row.key} className="border-b border-border/40">
                           <td className="p-2.5 text-text-muted sticky left-0 bg-[#1a1c26] font-medium z-10">
                             {row.label}
                           </td>
-                          {rowsData.map((p) => {
-                            const win = highlights[row.key]?.has(p.id);
+                          {buildingRowsData.map((b) => {
+                            const win = buildingHighlights[row.key]?.has(b.id);
                             return (
                               <td
-                                key={p.id}
+                                key={b.id}
                                 className={cn(
                                   'p-2.5 text-text align-top max-w-[180px] break-words',
                                   win && 'text-accent font-semibold bg-primary/[0.07]',
                                 )}
                               >
-                                {row.get(p)}
+                                {row.get(b)}
                                 {win && (
                                   <Badge
                                     variant="secondary"

@@ -1,4 +1,3 @@
-import * as React from "react"
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
 
@@ -41,15 +40,13 @@ const buttonVariants = cva(
   }
 )
 
-const Button = React.forwardRef<
-  HTMLButtonElement,
-  ButtonPrimitive.Props & VariantProps<typeof buttonVariants>
->(({
+function Button({
   className,
   variant = "default",
   size = "default",
+  ref,
   ...props
-}, ref) => {
+}: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
   return (
     <ButtonPrimitive
       ref={ref}
@@ -58,7 +55,6 @@ const Button = React.forwardRef<
       {...props}
     />
   )
-})
-Button.displayName = "Button"
+}
 
 export { Button, buttonVariants }

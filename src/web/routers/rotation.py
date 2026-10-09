@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List
 
 from pydantic import BaseModel
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 import api_models
 from web.rotation_jobs import (
@@ -13,7 +13,7 @@ from web.rotation_jobs import (
     _rotation_queue_key,
     _rotation_source_config,
 )
-from web.tasks import TASK_STATUS, run_rotation_job
+from web.tasks import require_task_idle, run_rotation_job
 
 router = APIRouter()
 
@@ -22,14 +22,9 @@ router = APIRouter()
 def get_rotation_status():
     """県ローテーション・スケジュールの状態（admin UI 用・読み取り専用）."""
     from store.pref_master import pref_display_name
-    from store.source_catalog import SOURCE_CATALOG
+    from store.source_catalog import SOURCE_DISPLAY
 
     from rotation_settings import resolve_effective_limits
-
-    display_names = {
-        e.get("id"): (e.get("display_name") or e.get("id"))
-        for e in SOURCE_CATALOG
-    }
 
     repo = None
     try:
@@ -133,7 +128,7 @@ def get_rotation_status():
         sources_out.append(
             {
                 "id": sid,
-                "display_name": display_names.get(sid, sid),
+                "display_name": SOURCE_DISPLAY.get(sid, sid),
                 "cron": scfg["cron"],
                 "daily_limit": limits["daily_limit"],
                 "used_today": used_today,
@@ -155,18 +150,13 @@ class RotationRunRequest(BaseModel):
 @router.post(
     "/api/admin/rotation/run",
     response_model=api_models.RotationRunStartResponse,
+    dependencies=[Depends(require_task_idle)],
 )
 def trigger_rotation_run(background_tasks: BackgroundTasks, body: RotationRunRequest):
     """手動で県ローテーション・スクレイプを1ソース分実行する.
 
     daily_limit / default_est はジョブ側で実行時に解決する。
     """
-    if TASK_STATUS["status"] == "running":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Another task is already running: {TASK_STATUS['current_task']}",
-        )
-
     cfg_ids = [c["id"] for c in _rotation_source_config()]
     if body.source not in cfg_ids:
         raise HTTPException(

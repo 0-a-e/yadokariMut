@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-import os
-import tempfile
 import unittest
 
 
 import sources  # noqa: F401
-from domain.models import PricePlan, PropertyDraft
+from domain.models import PricePlan
+from helpers import isolated_db, make_draft
 from store.repository import Repository
 from store.source_catalog import list_source_admin_info, resolve_scrape_sources
 
@@ -53,22 +52,14 @@ class TestSourceCatalog(unittest.TestCase):
 
     def test_targets_merge_db_counts(self):
         """When v2 DB has properties, targets should reflect has_data / counts."""
-        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        tmp.close()
-        db_path = tmp.name
-        old = os.environ.get("YADOKARIMUT_V2_DB_PATH")
-        try:
-            os.environ["YADOKARIMUT_V2_DB_PATH"] = db_path
-            repo = Repository(db_path)
-            repo.init_db()
+        with isolated_db("admin-sources") as db_path:
+            repo = Repository()
             repo.upsert_property(
-                PropertyDraft(
+                make_draft(
+                    "u1",
                     source_site="unionmonthly",
-                    external_id="u1",
                     title="t",
                     detail_url="https://example.test/u1",
-                    prefecture_slug="tokyo",
-                    prefecture_name="東京都",
                     price_plans=[
                         PricePlan(
                             plan_key="short",
@@ -86,15 +77,6 @@ class TestSourceCatalog(unittest.TestCase):
             tokyo = next(t for t in union["targets"] if t["slug"] == "tokyo")
             self.assertTrue(tokyo["has_data"])
             self.assertGreaterEqual(tokyo["counts"]["total"], 1)
-        finally:
-            if old is None:
-                os.environ.pop("YADOKARIMUT_V2_DB_PATH", None)
-            else:
-                os.environ["YADOKARIMUT_V2_DB_PATH"] = old
-            try:
-                os.unlink(db_path)
-            except OSError:
-                pass
 
 
 if __name__ == "__main__":

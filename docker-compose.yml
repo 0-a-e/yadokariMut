@@ -1,29 +1,83 @@
 services:
+  # 物件ドメイン PostgreSQL (PostGIS + pgvector)。スキーマは Alembic で管理し、
+  # 初回起動後に `docker compose run --rm yadokari-mut db-init` で適用する。
+  db:
+    build:
+      context: deploy/postgres
+      dockerfile: Dockerfile
+    image: yadokari/postgis-pgvector:pg17-3.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${YADOKARIMUT_PG_USER:-yadokari}
+      POSTGRES_PASSWORD: ${YADOKARIMUT_PG_PASSWORD:-yadokari-mut}
+      POSTGRES_DB: ${YADOKARIMUT_PG_DB:-property}
+    shm_size: 256mb
+    ports:
+      # ホスト側ツール (psql 等) からのアクセス用。ループバックのみで公開はしない
+      - "127.0.0.1:${YADOKARIMUT_PG_PORT:-5433}:5432"
+    volumes:
+      - ${YADOKARIMUT_PGDATA_DIR:-./data/postgres-property}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # メディアストレージ rustfs (S3互換)。物件画像の重複排除 (dhash) 付き保存に使用。
+  # access/secret は .env で任意の値を設定する (openssl rand -hex 16 など)。
+  # 未設定のまま app を起動した場合もメディア機能が無効化されるだけで起動する。
+  rustfs:
+    image: rustfs/rustfs:1.0.1
+    restart: unless-stopped
+    ports:
+      # ループバックのみ。app コンテナからは http://rustfs:9000 で到達できる
+      - "127.0.0.1:${YADOKARIMUT_RUSTFS_PORT:-9000}:9000"
+    environment:
+      RUSTFS_ACCESS_KEY: ${YADOKARIMUT_RUSTFS_ACCESS_KEY:?set in .env}
+      RUSTFS_SECRET_KEY: ${YADOKARIMUT_RUSTFS_SECRET_KEY:?set in .env}
+      RUSTFS_REGION: ${YADOKARIMUT_RUSTFS_REGION:-us-east-1}
+    volumes:
+      - ${YADOKARIMUT_RUSTFS_DATA_DIR:-./data/rustfs}:/data
+
   yadokari-mut:
+    image: yadokari/app:latest
     build:
       context: .
-      # DOCKERFILE=Dockerfile または Dockerfile.prebuilt を指定可能
-      dockerfile: ${DOCKERFILE:-Dockerfile}
+      # frontend 供給方式をターゲットで選ぶ
+      #   final-remote: Docker ビルド内で pnpm build (既定)
+      #   final-prebuilt: ホストで pnpm build した frontend/dist を COPY
+      dockerfile: Dockerfile
+      target: ${BUILD_TARGET:-final-remote}
     container_name: yadokari-mut
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
-      # nginx からだけ到達できればよいので loopback にバインド
+      # nginx などリバースプロキシからだけ到達できればよいので loopback にバインド
       - "127.0.0.1:8000:8000"
     volumes:
-      # 永続データ（物件DB(v2)・チェックポイント・設定・APIキー）
-      - ./yadokari_mut_v2.db:/app/yadokari_mut_v2.db
+      # 永続データ (チェックポイント・生HTML・タイル・設定・APIキー)。
+      # 物件 DB は PostgreSQL (db サービス) へ保存されるためファイルマウント不要。
       - ./data:/app/data
       - ./config.json:/app/config.json
       - ./.env:/app/.env
     environment:
       - TZ=Asia/Tokyo
-      - YADOKARIMUT_V2_DB_PATH=/app/yadokari_mut_v2.db
-      - YADOKARIMUT_CHECKPOINT_DB=/app/data/agent_checkpoints.db
-      # 定期収集の有効化。収集設定（県ローテーション・日次上限・cron 等）は
-      # 管理画面（設定ボード）から app_settings (DB) に保存して変更する
-      - ENABLE_SCHEDULER=true
-      # KSJ から生成した PMTiles の配置先 (/api/tiles 配信)
-      - TILES_DIR=/app/data/tiles
       - PYTHONUNBUFFERED=1
+      - ENABLE_SCHEDULER=true
+      # 定期収集の設定 (県ローテーション・日次上限・cron 等) は管理画面 (設定ボード) から
+      # app_settings (DB) に保存して変更する
+      # コード既定は CWD 相対 data/tiles。ボリュームマウントの永続領域へ確実に向けるため pin
+      - TILES_DIR=/app/data/tiles
+      # 物件ドメイン DB (PostgreSQL)。接続先は db サービス
+      - YADOKARIMUT_PG_DSN=postgresql://${YADOKARIMUT_PG_USER:-yadokari}:${YADOKARIMUT_PG_PASSWORD:-yadokari-mut}@db:5432/${YADOKARIMUT_PG_DB:-property}
+      - YADOKARIMUT_PG_POOL=1
+      # メディアストレージ rustfs。access/secret 未設定なら機能は無効化されて起動する
+      - YADOKARIMUT_RUSTFS_ENDPOINT=${YADOKARIMUT_RUSTFS_ENDPOINT:-http://rustfs:9000}
+      - YADOKARIMUT_RUSTFS_ACCESS_KEY=${YADOKARIMUT_RUSTFS_ACCESS_KEY:-}
+      - YADOKARIMUT_RUSTFS_SECRET_KEY=${YADOKARIMUT_RUSTFS_SECRET_KEY:-}
+      - YADOKARIMUT_RUSTFS_BUCKET=${YADOKARIMUT_RUSTFS_BUCKET:-yadokari-media}
+      - YADOKARIMUT_RUSTFS_REGION=${YADOKARIMUT_RUSTFS_REGION:-us-east-1}
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/copilotkit/health', timeout=5)"]

@@ -1,7 +1,7 @@
 /**
  * 「開発用: GeoJSON 読込」区画。ドラッグ&ドロップ / ファイル選択で
- * public/map.geojson 相当を App の状態へ差し込む(開発・デバッグ用)。
- * 成功/失敗は toast で通知する。
+ * 建物 GeoJSON(/api/buildings/geojson 応答相当)を App の状態へ差し込む
+ * (開発・デバッグ用)。成功/失敗は toast で通知する。
  */
 import React, { useRef, useState } from 'react';
 import { FaCloudArrowUp } from 'react-icons/fa6';
@@ -51,7 +51,7 @@ export const GeoJsonUploadSection: React.FC<{
       >
         <FaCloudArrowUp className="text-2xl text-primary mb-2 inline-block" />
         <p className="text-sm text-text-muted">
-          <b>map.geojson</b> をアップロード
+          <b>建物 GeoJSON</b> をアップロード
         </p>
         <p className="text-xs text-text-muted mt-1">
           通常は API 経由で読み込みます（開発・デバッグ用）

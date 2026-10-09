@@ -7,7 +7,8 @@ import os
 from datetime import datetime
 
 from sources.base import FetchedPage
-from store.repository import Repository
+from store.pg import open_connection
+from store.repository import Repository, now_iso
 
 RAW_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "raw_pages_v2"
@@ -30,19 +31,18 @@ def save_raw_page(
         f.write(page.html)
 
     if repo is not None:
-        conn = repo.connect()
-        try:
+        with open_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO raw_pages
                 (source_site, url, page_type, fetched_at, status_code, content_hash, storage_path, parser_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     source_site,
                     page.url,
                     page.page_type,
-                    datetime.now().isoformat(),
+                    now_iso(),
                     page.status_code,
                     content_hash,
                     path,
@@ -50,6 +50,4 @@ def save_raw_page(
                 ),
             )
             conn.commit()
-        finally:
-            conn.close()
     return path

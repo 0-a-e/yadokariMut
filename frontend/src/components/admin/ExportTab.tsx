@@ -1,11 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import { FaFileExport } from 'react-icons/fa6';
-import type { PropertyFeature } from '../../types.ts';
+import type { BuildingFeature } from '../../types.ts';
 import {
   downloadBlob,
   exportFilename,
-  featuresToIds,
-  selectExportFeatures,
+  selectExportUnits,
+  unitsToIds,
   type ExportScope,
 } from '../../lib/exportTargets.ts';
 import { postKmlExport } from '../../lib/api/export.ts';
@@ -13,20 +13,21 @@ import { ApiError } from '../../lib/api/client.ts';
 import { Checkbox } from '@/components/ui/checkbox.tsx';
 
 interface ExportTabProps {
-  /** 表示中 (フィルタ適用済み) の物件 */
-  filteredFeatures: PropertyFeature[];
-  /** 全物件 */
-  allFeatures: PropertyFeature[];
+  /** 表示中 (フィルタ適用済み) の建物 */
+  filteredBuildings: BuildingFeature[];
+  /** 全建物 */
+  allBuildings: BuildingFeature[];
 }
 
 /**
  * 管理者モーダル「エクスポート」タブ。
  * Google Earth で開ける KML を BE (/api/export/kml) 経由でダウンロードする。
- * 送信するのは物件 ID のみで、KML への変換は BE 側で行う。
+ * 送信するのは部屋 ID のみで(フィルタ後建物の units を flatten・Phase B2-δ §4.7)、
+ * KML への変換(部屋 Placemark+建物フィールド)は BE 側で行う。
  */
 export const ExportTab: React.FC<ExportTabProps> = ({
-  filteredFeatures,
-  allFeatures,
+  filteredBuildings,
+  allBuildings,
 }) => {
   const [scope, setScope] = useState<ExportScope>('filtered');
   const [includeInactive, setIncludeInactive] = useState(true);
@@ -34,13 +35,10 @@ export const ExportTab: React.FC<ExportTabProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [doneCount, setDoneCount] = useState<number | null>(null);
 
-  const options = useMemo(
-    () => ({ scope, includeInactive }),
-    [scope, includeInactive],
-  );
+  const buildings = scope === 'all' ? allBuildings : filteredBuildings;
   const targets = useMemo(
-    () => selectExportFeatures(allFeatures, filteredFeatures, options),
-    [allFeatures, filteredFeatures, options],
+    () => selectExportUnits(buildings, includeInactive),
+    [buildings, includeInactive],
   );
   const targetCount = targets.length;
 
@@ -50,7 +48,7 @@ export const ExportTab: React.FC<ExportTabProps> = ({
     setError(null);
     setDoneCount(null);
     try {
-      const blob = await postKmlExport(featuresToIds(targets));
+      const blob = await postKmlExport(unitsToIds(targets));
       downloadBlob(blob, exportFilename());
       setDoneCount(targetCount);
     } catch (err: unknown) {
@@ -101,10 +99,9 @@ export const ExportTab: React.FC<ExportTabProps> = ({
         <h4 className="text-xs font-semibold text-text-muted mb-2">対象範囲</h4>
         <div className="border border-border rounded-lg divide-y divide-border">
           {scopeRows.map((row) => {
-            const count = selectExportFeatures(
-              allFeatures,
-              filteredFeatures,
-              { scope: row.id, includeInactive },
+            const count = selectExportUnits(
+              row.id === 'all' ? allBuildings : filteredBuildings,
+              includeInactive,
             ).length;
             return (
               <label

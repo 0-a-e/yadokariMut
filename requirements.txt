@@ -15,5 +15,14 @@ copilotkit==0.1.96
 ag-ui-langgraph==0.0.46
 ag-ui-protocol==1.0.0
 langchain-deepseek
-langgraph-checkpoint-sqlite>=2.0.0
-aiosqlite
+# 物件ドメイン DB = PostgreSQL (SQLite→PG移行 docs/sqlite-pg-migration-plan.md)。
+# psycopg3 (同期・dict_row) + 接続プール。alembic はスキーマ変更の正本。
+psycopg[binary,pool]>=3.2,<4
+alembic>=1.14,<2
+# LangGraph チェックポイントの PG 版 (AsyncPostgresSaver・asyncpg 同伴)。
+# SQLite 版 (langgraph-checkpoint-sqlite / aiosqlite) は移行で廃止。
+langgraph-checkpoint-postgres>=2.0.0
+# メディアストレージ (rustfs/S3互換・docs/media-storage-rustfs-plan.md)。
+# boto3 は endpoint_url+path-style 指定で rustfs へ接続。Pillow は dHash・サムネイル生成。
+boto3>=1.35,<2
+Pillow>=10.4
